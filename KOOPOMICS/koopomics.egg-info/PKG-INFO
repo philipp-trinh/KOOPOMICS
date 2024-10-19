@@ -1,0 +1,15 @@
+Metadata-Version: 2.1
+Name: koopomics
+Version: 0.0.1
+Summary: Koopman Model for OMICS data
+Author-email: Philipp Trinh <trinh.philipp@hotmail.com>
+License: Apache 2.0
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Operating System :: OS Independent
+Classifier: Topic :: Scientific/Engineering :: Bio-Informatics
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+
+# PyTorch Implementation of Koopman OMICS modelling #
+

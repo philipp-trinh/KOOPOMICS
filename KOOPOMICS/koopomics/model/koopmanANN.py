@@ -10,6 +10,37 @@ import torch.nn.functional as F
 from koopomics.model.build_nn_functions import _build_nn_layers
 
 
+# ---------------------- Matrix Regularizations -----------------------
+
+class BandedKoopmanMatrix(nn.Module):
+    def __init__(self, latent_dim, bandwidth):
+        super(BandedKoopmanMatrix, self).__init__()
+        self.latent_dim = latent_dim
+        self.bandwidth = bandwidth
+
+        # Number of trainable parameters in the band (diagonals + off-diagonals)
+        num_banded_params = sum(2 * min(i, latent_dim - i) + 1 for i in range(bandwidth + 1))
+        
+        # Initialize only the banded parameters as trainable
+        self.banded_params = nn.Parameter(torch.rand(num_banded_params))
+
+    def Kmatrix(self):
+        # Create an empty matrix to hold the full Koopman matrix
+        koopman_matrix = torch.zeros(self.latent_dim, self.latent_dim)
+        
+        param_idx = 0
+        # Fill the main diagonal and the diagonals within the bandwidth
+        for offset in range(-self.bandwidth, self.bandwidth + 1):
+            # Get the length of the diagonal for the current offset
+            diagonal_length = self.latent_dim - abs(offset)
+            
+            # Fill the current diagonal with banded parameters
+            koopman_matrix.diagonal(offset).copy_(self.banded_params[param_idx:param_idx + diagonal_length])
+            param_idx += diagonal_length
+
+        return koopman_matrix
+
+
 # All Koopman Operator Architectures (LinearizingKoop, Koop, InvKoop)
 
 
@@ -156,17 +187,11 @@ class LinearizingKoop(nn.Module): # Encapsulated Operator with Linearizer Neural
             self.bwd = False 
 
 
-    def linOperation(self, e_lin):
-
-        e_lin_fwd = e_lin @ self.kMatrix
-
-        return e_lin_fwd
-
     def fwd_step(self, e):
 
-        e_lin = self.linearize(e)
-        e_lin_fwd = self.linOperation(e_lin)
-        e_fwd = self.delinearize(e_lin_fwd)
+        e_lin = self.linearizer.linearize(e)
+        e_lin_fwd = self.koop.fwdkoopOperation(e_lin)
+        e_fwd = self.linearizer.delinearize(e_lin_fwd)
 
         return e_fwd
         
@@ -174,9 +199,9 @@ class LinearizingKoop(nn.Module): # Encapsulated Operator with Linearizer Neural
         if not self.bwd:
             raise NotImplementedError("Backward operation is not implemented for this Operator instance.")
         
-        e_lin = self.linearizer.encode(e)
+        e_lin = self.linearizer.linearize(e)
         e_lin_bwd = self.koop.bwdkoopOperation(e_lin) 
-        e_bwd = self.linearizer.decode(e_lin_bwd)
+        e_bwd = self.linearizer.delinearize(e_lin_bwd)
         
         return e_bwd
 

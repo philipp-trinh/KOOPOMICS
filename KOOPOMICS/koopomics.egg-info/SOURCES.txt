@@ -8,6 +8,27 @@ training_job.slurm
 .ipynb_checkpoints/training_job-checkpoint.slurm
 examples/Testing.ipynb
 examples/.ipynb_checkpoints/Testing-checkpoint.ipynb
+input_data/pea_fungal/247Metabolite - Knapsack_new_Table_PD.csv
+input_data/pea_fungal/247Metabolite_Preprocessing.ipynb
+input_data/pea_fungal/247Metabolite_pea_interpolated_normalized.csv
+input_data/pea_fungal/247Metabolite_pea_interpolated_preprocessed.csv
+input_data/pea_fungal/247Metabolite_pea_preprocessed.csv
+input_data/pea_fungal/9Metabolite - Infection dataset.csv
+input_data/pea_fungal/9Metabolite_Preprocecssing.ipynb
+input_data/pea_fungal/9Metabolite_pea_interpolated_normalized.csv
+input_data/pea_fungal/9Metabolite_pea_interpolated_preprocessed.csv
+input_data/pea_fungal/.ipynb_checkpoints/247Metabolite_Preprocessing-checkpoint.ipynb
+input_data/pea_fungal/.ipynb_checkpoints/247Metabolite_pea_interpolated_preprocessed-checkpoint.csv
+input_data/pea_fungal/.ipynb_checkpoints/247Metabolite_pea_preprocessed-checkpoint.csv
+input_data/pea_fungal/.ipynb_checkpoints/9Metabolite_Preprocecssing-checkpoint.ipynb
+input_data/pregnancy/pregnancy_interpolated_preprocessed.csv
+input_data/pregnancy/pregnancy_mmc2.csv
+input_data/pregnancy/pregnancy_preprocessed.csv
+input_data/pregnancy/pregnancy_preprocessing.ipynb
+input_data/pregnancy/pregnancy_visuals.ipynb
+input_data/pregnancy/.ipynb_checkpoints/pregnancy_mmc2-checkpoint.csv
+input_data/pregnancy/.ipynb_checkpoints/pregnancy_preprocessing-checkpoint.ipynb
+input_data/pregnancy/.ipynb_checkpoints/pregnancy_visuals-checkpoint.ipynb
 koopomics/__init__.py
 koopomics.egg-info/PKG-INFO
 koopomics.egg-info/SOURCES.txt
@@ -23,6 +44,7 @@ koopomics/model/embeddingANN.py
 koopomics/model/koopmanANN.py
 koopomics/model/model_loader.py
 koopomics/model/.ipynb_checkpoints/__init__-checkpoint.py
+koopomics/model/.ipynb_checkpoints/build_nn_functions-checkpoint.py
 koopomics/model/.ipynb_checkpoints/embeddingANN-checkpoint.py
 koopomics/model/.ipynb_checkpoints/koopmanANN-checkpoint.py
 koopomics/model/.ipynb_checkpoints/model_loader-checkpoint.py

@@ -19,11 +19,13 @@ class KoopmanModel(nn.Module):
 
         if isinstance(embedding, DiffeomMap):
             self.diffeom = True  
+            print('DiffeomMap')
         else:
             self.diffeom = False 
 
         if isinstance(embedding, FF_AE):
             self.ff_ae = True  
+            print('FF_AE')
         else:
             self.ff_ae = False 
     
@@ -40,6 +42,7 @@ class KoopmanModel(nn.Module):
         if self.diffeom:
             
             e = self.embedding.encode(input_vector)
+            print(e)
 
             if bwd > 0:
                 e_temp = e
@@ -64,7 +67,6 @@ class KoopmanModel(nn.Module):
         
         if self.ff_ae:
             e = self.embedding.encode(input_vector)
-            
             if bwd > 0:
                 e_temp = e
                 for step in range(bwd):
@@ -89,5 +91,23 @@ class KoopmanModel(nn.Module):
             return predict_fwd
         else:
             return predict_bwd, predict_fwd
+
+    def forward(self, input_vector, fwd=0, bwd=0):
+        
+        if self.operator.bwd == False:
+            predict_fwd = self.predict(input_vector, fwd, bwd)
+            return predict_fwd
+        else:
+            predict_bwd, predict_fwd = self.predict(input_vector, fwd, bwd)
+            return predict_bwd, predict_fwd
+
+    def Kmatrix(self):
+        
+        if self.operator.bwd == False:
+
+            return self.operator.koop.kMatrix.detach()#.numpy()
+        else:
+            return self.operator.koop.bwdkoop.detach(), self.operator.koop.fwdkoop.detach()
+        
 
 

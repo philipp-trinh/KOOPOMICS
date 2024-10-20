@@ -1,0 +1,4 @@
+21-10-2024: TestingKOOP trained on pregnancy data: 
+embedding_model = em.FF_AE([264,100,100,20], [20,100,100,264])
+operator_model = op.LinearizingKoop(linearizer=op.FFLinearizer([20,30,40], [40,30,20]), koop=op.InvKoop(latent_dim=40))
+LinKoopAE_model = ko.KoopmanModel(embedding=embedding_model, operator=operator_model)

@@ -156,17 +156,11 @@ class LinearizingKoop(nn.Module): # Encapsulated Operator with Linearizer Neural
             self.bwd = False 
 
 
-    def linOperation(self, e_lin):
-
-        e_lin_fwd = e_lin @ self.kMatrix
-
-        return e_lin_fwd
-
     def fwd_step(self, e):
 
-        e_lin = self.linearize(e)
-        e_lin_fwd = self.linOperation(e_lin)
-        e_fwd = self.delinearize(e_lin_fwd)
+        e_lin = self.linearizer.linearize(e)
+        e_lin_fwd = self.koop.fwdkoopOperation(e_lin)
+        e_fwd = self.linearizer.delinearize(e_lin_fwd)
 
         return e_fwd
         
@@ -174,9 +168,9 @@ class LinearizingKoop(nn.Module): # Encapsulated Operator with Linearizer Neural
         if not self.bwd:
             raise NotImplementedError("Backward operation is not implemented for this Operator instance.")
         
-        e_lin = self.linearizer.encode(e)
+        e_lin = self.linearizer.linearize(e)
         e_lin_bwd = self.koop.bwdkoopOperation(e_lin) 
-        e_bwd = self.linearizer.decode(e_lin_bwd)
+        e_bwd = self.linearizer.delinearize(e_lin_bwd)
         
         return e_bwd
 

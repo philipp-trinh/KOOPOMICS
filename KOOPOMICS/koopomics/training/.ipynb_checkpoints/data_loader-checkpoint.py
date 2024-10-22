@@ -1,8 +1,10 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
+import pandas as pd
+import numpy as np
 
 
-class TimeSeriesDataset(Dataset):
+class TimeSeriesDataset(Dataset): # Loads all kinds of timeseries data with condition -> sample -> time structure
     def __init__(self, df, feature_list, sample_id='', time_id=''):
         """
         Args:
@@ -28,19 +30,24 @@ class TimeSeriesDataset(Dataset):
         current_sample_id = self.sample_ids[idx]
         
         # Retrieve all rows for this sample (time points) and filter by features
-        sample_df = self.grouped.get_group(current_sample_id)[self.feature_list]
+        sample_df = self.grouped.get_group(current_sample_id)
+        filtered_sample_df = sample_df[self.feature_list]
         row_indices = self.grouped.get_group(current_sample_id).index
         time_indices = self.grouped.get_group(current_sample_id)[self.time_id].round().astype(int).values
         
         # Convert the filtered DataFrame (time points x features) to a tensor [num_time_points [num_features]]
-        input_data = torch.tensor(sample_df.values.astype(np.float32))  # Shape: (num_time_points, num_features)
+        input_data = torch.tensor(filtered_sample_df.values.astype(np.float32))  # Shape: (num_time_points, num_features)
         
         
         return {
             'input_data': input_data,  # Input data as a 2D tensor (time points, features)
             'row_ids': row_indices.tolist(),
             'sample_id': current_sample_id,  # The sample ID (e.g., 'Subject ID')
-            'time_ids' : time_indices.tolist()
+            'time_ids' : time_indices.tolist(),
+            'sample_df': sample_df,
+            'feature_list' : self.feature_list,
+            'sample_id': self.sample_id,
+            'time_id': self.time_id
         }
 
 def collate_fn(batch):
@@ -51,13 +58,30 @@ def collate_fn(batch):
     sample_ids = [item['sample_id'] for item in batch]
     row_indices = [item['row_ids'] for item in batch]
     time_indices = [item['time_ids'] for item in batch]
+    sample_df = [item['sample_df'] for item in batch]
+    feature_list = batch[0]['feature_list']
+    sample_id = batch[0]['sample_id']
+    time_id = batch[0]['time_id']
     
     return {
         'input_data': input_data,  # List of 2D tensors, each with (num_time_points, num_features)
         'sample_id': sample_ids,  # List of sample IDs
         'row_ids': row_indices,  # List of row index lists
-        'time_ids': time_indices # List of time index lists
+        'time_ids': time_indices, # List of time index lists
+        'sample_df': sample_df, # Dataframes of sample timeseries (for target calling)
+        'feature_list' : feature_list, # List of features (for target calling)
+        'sample_id': sample_id, # sample identifier
+        'time_id': time_id # time identifier
     }
+
+def dataloader_AE(df, feature_list, sample_id, time_id, batch_size):
+    
+    dataset = TimeSeriesDataset(df, feature_list, sample_id='Subject ID', time_id='Gestational age (GA)/weeks')
+    dataloader = DataLoader(dataset, batch_size=5, shuffle=True, collate_fn=collate_fn)
+
+    return dataloader
+
+
 
 
 

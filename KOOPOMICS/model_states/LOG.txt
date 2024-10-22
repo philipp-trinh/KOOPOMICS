@@ -1,4 +1,15 @@
 21-10-2024: TestingKOOP trained on pregnancy data: 
-embedding_model = em.FF_AE([264,100,100,20], [20,100,100,264])
-operator_model = op.LinearizingKoop(linearizer=op.FFLinearizer([20,30,40], [40,30,20]), koop=op.InvKoop(latent_dim=40))
-LinKoopAE_model = ko.KoopmanModel(embedding=embedding_model, operator=operator_model)
+embedding_model = ko.FF_AE([264,100,100,20], [20,100,100,264])
+operator_model = ko.LinearizingKoop(linearizer=ko.FFLinearizer([20,30,40], [40,30,20]), koop=ko.InvKoop(latent_dim=40))
+TestingKoop = ko.KoopmanModel(embedding=embedding_model, operator=operator_model)
+
+Notes: Temporal consistent; inverse consistency decreases slowly
+
+21-10-2024: TestingKOOP2 trained on pregnancy data: 
+embedding = ko.FF_AE([264,1000,1000,20],[20,1000,1000,264])
+linearizer = ko.FFLinearizer([20, 1000, 20], [20, 1000, 20])
+koop = ko.InvKoop(latent_dim=20)
+operator = ko.LinearizingKoop(linearizer=linearizer,koop = koop)
+TestingKoop2 = ko.KoopmanModel(embedding=embedding,operator=operator)
+
+Notes: Temporal consistency not reachable; inverse consistency not reachable

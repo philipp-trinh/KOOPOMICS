@@ -1,4 +1,7 @@
+.training_script.py.swp
 README.md
+TestingKoop264M_tanh_nondelay.pth
+interrupted_TestingKoop264M_tanh_nondelay.pth
 pyproject.toml
 setup.py
 training_job.slurm
@@ -194,6 +197,7 @@ koopomics/.ipynb_checkpoints/__init__-checkpoint.py
 koopomics/.ipynb_checkpoints/all_functions-checkpoint.py
 koopomics/data_prep/__init__.py
 koopomics/data_prep/.ipynb_checkpoints/__init__-checkpoint.py
+koopomics/model/.build_nn_functions.py.swp
 koopomics/model/__init__.py
 koopomics/model/build_nn_functions.py
 koopomics/model/embeddingANN.py

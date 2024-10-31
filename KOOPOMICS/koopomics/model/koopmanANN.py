@@ -84,7 +84,7 @@ class BandedKoopmanMatrix(nn.Module):
 class dynamicsC(nn.Module):
     '''Create a nondelay forward koopman matrix, code by: 
     Liu S, You Y, Tong Z, Zhang L. Developing an Embedding, Koopman and Autoencoder Technologies-Based Multi-Omics Time Series Predictive Model (EKATP) for Systems Biology research. Front Genet. 2021 Oct 26;12:761629. doi: 10.3389/fgene.2021.761629. PMID: 34764986; PMCID: PMC8576451.'''
-    def __init__(self, b, init_scale=1):
+    def __init__(self, b, init_scale=0.99):
         super(dynamicsC, self).__init__()
 
         self.dynamics = nn.Linear(b, b, bias=False)
@@ -93,12 +93,14 @@ class dynamicsC(nn.Module):
             p.requires_grad=False
         self.flexi = nn.Linear(b, 1, bias=False)
 
-        random_weights = torch.randn_like(self.flexi.weight) * init_scale
-        self.flexi.weight.data += random_weights
+        #random_weights = torch.randn_like(self.flexi.weight) * init_scale
+        #self.flexi.weight.data += random_weights
         
         for j in range(0,b):
             self.dynamics.weight.data[b-1][j]=self.flexi.weight.data[0][j]=0
-        self.dynamics.weight.data[b-1][0]=self.flexi.weight.data[0][0]=1
+            
+        self.dynamics.weight.data[b-1][0]=1
+        print(self.dynamics.weight.data[b-1][0])
 
         for i in range(0,b-1):
             for j in range (0,b):
@@ -113,7 +115,7 @@ class dynamicsC(nn.Module):
         #print(self.dynamics.weight)
         #print(self.fixed.weight)
         #print(self.flexi.weight)
-        #self.tanh = nn.Tanh()
+        self.tanh = nn.Tanh()
 
     def forward(self, x):
         up = self.fixed(x)
@@ -124,9 +126,9 @@ class dynamicsC(nn.Module):
         return x
 
     def kmatrix(self):
-        self.dynamics.weight.data = torch.cat((self.fixed.weight.data,self.flexi.weight.data),0)
+        kmatrix = torch.cat((self.fixed.weight.data,self.flexi.weight.data),0)
 
-        return self.dynamics.weight.data.clone()
+        return kmatrix
         
 
 class dynamics_backD(nn.Module):
@@ -142,10 +144,12 @@ class dynamics_backD(nn.Module):
         self.flexi = nn.Linear(b, 1, bias=False)
 
         for j in range(0,b-1):
+
+
             self.dynamics.weight.data[0][j]=-omega.dynamics.weight.data[b-1][j+1]/omega.dynamics.weight.data[b-1][0]
+
             self.flexi.weight.data[0][j]=self.dynamics.weight.data[0][j]
         self.flexi.weight.data[0][b-1]=self.dynamics.weight.data[0][b-1]=1.0/omega.dynamics.weight.data[b-1][0]
-
         for i in range(1,b):
             for j in range (0,b):
                 if i-1==j:
@@ -168,9 +172,9 @@ class dynamics_backD(nn.Module):
 
 
     def kmatrix(self):
-        self.dynamics.weight.data = torch.cat(( self.flexi.weight.data,self.fixed.weight.data),0)
+        kmatrix = torch.cat(( self.flexi.weight.data,self.fixed.weight.data),0)
 
-        return self.dynamics.weight.data.clone()
+        return kmatrix
         
 
 

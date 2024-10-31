@@ -4,12 +4,64 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.autograd import Variable
 import torch.nn.functional as F
+from torch import nn
 
 
 
 from koopomics.model.build_nn_functions import _build_nn_layers, _build_nn_layers_with_dropout, _build_deconv_layers, _build_conv_layers_with_dropout
 
 # All Embedding Architectures (Autoencoder, Diffeommap)
+
+class encoderNet(nn.Module):
+    def __init__(self):
+        super(encoderNet, self).__init__()
+        self.N = 84 * 1
+        self.tanh = nn.Tanh()
+
+        self.fc1 = nn.Linear(self.N, 56)
+        self.fc2 = nn.Linear(56, 56)
+        self.fc3 = nn.Linear(56, 6)
+
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)          
+
+    def forward(self, x):
+        x = x
+        x = self.tanh(self.fc1(x))
+        x = self.tanh(self.fc2(x))
+        x = self.fc3(x)
+        
+        return x
+
+
+class decoderNet(nn.Module):
+    def __init__(self):
+        super(decoderNet, self).__init__()
+
+        self.tanh = nn.Tanh()
+
+        self.fc1 = nn.Linear(6, 56)
+        self.fc2 = nn.Linear(56, 56)
+        self.fc3 = nn.Linear(56, 84)
+
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)   
+          
+
+    def forward(self, x):
+        x = x
+        x = self.tanh(self.fc1(x)) 
+        x = self.tanh(self.fc2(x))
+        x = self.fc3(x)
+        x = x
+        return x
+
 
 class FF_AE(nn.Module):
     """
@@ -41,8 +93,8 @@ class FF_AE(nn.Module):
         self.E_layer_dims = E_layer_dims
         self.D_layer_dims = D_layer_dims
 
-        self.encode = _build_nn_layers_with_dropout(E_layer_dims, E_dropout_rates, activation_fn=activation_fn)
-        self.decode = _build_nn_layers_with_dropout(D_layer_dims, D_dropout_rates, activation_fn=activation_fn)
+        self.encode = encoderNet()#_build_nn_layers_with_dropout(E_layer_dims, E_dropout_rates, activation_fn=activation_fn)
+        self.decode = decoderNet()#_build_nn_layers_with_dropout(D_layer_dims, D_dropout_rates, activation_fn=activation_fn)
     
     def ae_forward(self, x):
         e_ae = self.encode(x)

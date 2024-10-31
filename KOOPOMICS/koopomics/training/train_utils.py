@@ -294,7 +294,7 @@ def train(model, train_dl, test_dl,
           model_name='Koop'):
    
     device = get_device()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=weight_decay)
     criterion = masked_criterion(nn.MSELoss().to(device), mask_value = mask_value)
     # Save Losses for Epoch Plotting
     epoch_list = []
@@ -319,6 +319,7 @@ def train(model, train_dl, test_dl,
 
     try:
         for epoch in range(num_epochs+1):
+            print(model.operator.nondelay_fwd.flexi.weight.cpu().data.numpy())
             print(f'----------Training epoch--------')
             print(f'----------------{epoch}---------------')
             print('')
@@ -326,7 +327,7 @@ def train(model, train_dl, test_dl,
             for batch_idx, data_list in enumerate(train_dl):
                 model.train()
 
-                data_list = data_list.to(device)
+                #data_list = data_list.to(device)
                 loss_fwd_batch = torch.tensor(0.0)
                 loss_bwd_batch = torch.tensor(0.0)
                 
@@ -344,8 +345,6 @@ def train(model, train_dl, test_dl,
 
                         y = model.operator.fwd_step(y)
 
-
-                        loss = criterion(model.embedding.decode(y).to(device), data_list[step+1].to(device))
                         loss_fwd_batch += criterion(model.embedding.decode(y).to(device), data_list[step+1].to(device))
                         if loss_weights[2] > 0:
                             loss_identity_y_batch += criterion(y, model.embedding.encode(data_list[step+1].to(device)))
@@ -354,7 +353,8 @@ def train(model, train_dl, test_dl,
                 if loss_weights[1] > 0:                
                     # ------------------- Backward prediction ------------------
                     y = model.embedding.encode(data_list[-1].to(device))
-                    reverse_data_list = torch.flip(data_list, dims=[0])
+                    reverse_data_list = data_list[::-1]
+                    #torch.flip(data_list, dims=[0])
                     for step in range(max_Kstep):
                         
                         y = model.operator.bwd_step(y)
@@ -376,8 +376,15 @@ def train(model, train_dl, test_dl,
                     # ------------------- Inverse Consistency Calculation ------------------
                 if loss_weights[4] > 0:
 
-                    for step in range(max_Kstep): 
-                        loss_inv_cons_batch = get_inv_cons_nondelay_loss(model, data_list[step], criterion)
+                    for step in range(max_Kstep):
+                            y = model.embedding.encode(data_list[step].to(device))
+                        
+                            x = model.embedding.decode(model.operator.bwd_step(model.operator.fwd_step(y)))
+                            loss_inv_cons_batch += criterion(x, data_list[step].to(device))
+                        
+                            x = model.embedding.decode(model.operator.fwd_step(model.operator.bwd_step(y)))
+                            loss_inv_cons_batch += criterion(x, data_list[step].to(device))
+
                     
                     #get_inv_cons_loss(model)
 
@@ -397,10 +404,10 @@ def train(model, train_dl, test_dl,
                 loss_total = (
                                 loss_fwd_batch * loss_weights[0]
                                 + loss_bwd_batch * loss_weights[1]
-                                + loss_identity_y_batch * loss_weights[2]
-                                + loss_identity_batch * loss_weights[3]
-                                + loss_inv_cons_batch * loss_weights[4]
-                                + loss_temp_cons_batch * loss_weights[5]
+                                + loss_identity_y_batch #* loss_weights[2]
+                                + loss_identity_batch * loss_weights[3] *0.5
+                                + loss_inv_cons_batch * loss_weights[4] *0.5
+                                #+ loss_temp_cons_batch * loss_weights[5]
                             )
 
                 # ================ Backward Propagation =================================
@@ -459,6 +466,9 @@ def train(model, train_dl, test_dl,
             print(f'Latent Loss: {loss_identity_y_batch}')
             print(f'Inv_Cons_Loss: {loss_inv_cons_batch}')
             print(f'Temp_Cons_Loss: {loss_temp_cons_batch}')
+            w, _ = np.linalg.eig(model.operator.nondelay_fwd.dynamics.weight.cpu().data.numpy())
+
+            print(np.abs(w))
             
             
             if plot_train:

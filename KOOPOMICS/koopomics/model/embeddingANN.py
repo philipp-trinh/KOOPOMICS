@@ -7,13 +7,13 @@ import torch.nn.functional as F
 
 
 
-from koopomics.model.build_nn_functions import _build_nn_layers
+from koopomics.model.build_nn_functions import _build_nn_layers, _build_nn_layers_with_dropout, _build_deconv_layers, _build_conv_layers_with_dropout
 
 # All Embedding Architectures (Autoencoder, Diffeommap)
 
 class FF_AE(nn.Module):
     """
-    FeedForward Autoencoder for learning an embedding of the data.
+    FeedForward Autoencoder for learning an non-delay embedding of the data.
     
     Parameters:
     E_layer_dims (list): A list of integers where each pair of consecutive elements 
@@ -29,14 +29,20 @@ class FF_AE(nn.Module):
     with ReLU activations.
     """
 
-    def __init__(self, E_layer_dims, D_layer_dims):
+    def __init__(self, E_layer_dims, D_layer_dims, E_dropout_rates=None, D_dropout_rates=None, activation_fn='tanh'):
         super(FF_AE, self).__init__()
 
+        if E_dropout_rates is None:
+            E_dropout_rates = [0] * len(E_layer_dims)
+
+        if D_dropout_rates is None:
+            D_dropout_rates = [0] * len(D_layer_dims)
+        
         self.E_layer_dims = E_layer_dims
         self.D_layer_dims = D_layer_dims
-        
-        self.encode = _build_nn_layers(E_layer_dims)
-        self.decode = _build_nn_layers(D_layer_dims)
+
+        self.encode = _build_nn_layers_with_dropout(E_layer_dims, E_dropout_rates, activation_fn=activation_fn)
+        self.decode = _build_nn_layers_with_dropout(D_layer_dims, D_dropout_rates, activation_fn=activation_fn)
     
     def ae_forward(self, x):
         e_ae = self.encode(x)
@@ -47,6 +53,73 @@ class FF_AE(nn.Module):
         e_ae = self.encode(x)
         x_ae = self.decode(e_ae)
         return e_ae, x_ae
+
+class Conv_AE(nn.Module):
+    """
+    Convolutional Autoencoder for learning an delay embedding of the data.
+    
+    """
+    
+    def __init__(self, num_features, E_num_conv, D_num_conv, E_dropout_rates=None, D_dropout_rates=None, kernel_size=2, activation_fn='tanh'):
+        super(Conv_AE, self).__init__()
+
+        if E_dropout_rates is None:
+            E_dropout_rates = [0] * E_num_conv
+
+        if D_dropout_rates is None:
+            D_dropout_rates = [0] * D_num_conv
+            
+        self.encode_Conv = _build_conv_layers_with_dropout(mode='conv', num_features=num_features, num_conv=E_num_conv, kernel_size=kernel_size, dropout_rates=E_dropout_rates, activation_fn=activation_fn)
+        self.decode_Conv = _build_conv_layers_with_dropout(mode='deconv', num_features=num_features, num_conv=D_num_conv, kernel_size=kernel_size, dropout_rates=D_dropout_rates, activation_fn=activation_fn)
+
+    def encode(self, x, squeeze=False):
+        e = self.encode_Conv(x)
+        if squeeze:
+            e.squeeze()
+        return e
+    
+    def decode(self, e):
+        delay_output = self.decode_Conv(e)
+        return delay_output
+
+    def forward(self, input_tensor):
+        e = self.encode(input_tensor)
+        delay_output = self.decode(e)
+        return delay_output
+
+class Conv_E_FF_D(nn.Module):
+    """
+    Convolutional Autoencoder for learning an delay embedding of the data.
+    
+    """
+    
+    def __init__(self, num_features, E_num_conv, D_layer_dims, E_dropout_rates=None, D_dropout_rates=None, kernel_size=2, activation_fn=None):
+        super(Conv_E_FF_D, self).__init__()
+
+        if E_dropout_rates is None:
+            E_dropout_rates = [0] * E_num_conv
+
+        if D_dropout_rates is None:
+            D_dropout_rates = [0] * len(D_layer_dims)
+            
+        self.encode_Conv = _build_conv_layers_with_dropout(mode='conv', num_features=num_features, num_conv=E_num_conv, kernel_size=kernel_size, dropout_rates=E_dropout_rates, activation_fn=activation_fn)
+        self.decode_Conv = _build_nn_layers_with_dropout(D_layer_dims, D_dropout_rates,activation_fn=activation_fn)
+    
+
+    def encode(self, x, squeeze=False):
+        e = self.encode_Conv(x)
+        if squeeze:
+            e.squeeze()
+        return e
+    
+    def decode(self, e):
+        delay_output = self.decode_Conv(e)
+        return delay_output
+
+    def forward(self, input_tensor):
+        e = self.encode(input_tensor)
+        delay_output = self.decode(e)
+        return delay_output
 
 class DiffeomMap(nn.Module):
     """
@@ -70,23 +143,6 @@ class DiffeomMap(nn.Module):
     nn.Sequential: A sequential model for a learnable mapping between a high-n-feature-dimensional non-delay single timepoint vector 
     to n times 1-feature-dimensional delay timepoints vector. 
     """
-
-    def _build_deconv_layers(self, DC_lift_output_dim, DC_output_layer_dims):
-        """Builds separate output layers for each metabolite based on deconv_dims."""
-        # Create a ModuleList to hold separate deconvolutional networks for each metabolite
-        
-        deconv_layers = nn.ModuleList()
-
-        num_metabolites = DC_lift_output_dim
-        # Create a separate deconvolution network for each metabolite
-        for _ in range(num_metabolites):
-            layers = []
-            for i in range(len(DC_output_layer_dims) - 1):
-                layers.append(nn.Linear(DC_output_layer_dims[i], DC_output_layer_dims[i + 1]))
-                layers.append(nn.ReLU())
-            deconv_layers.append(nn.Sequential(*layers))
-        
-        return deconv_layers
     
     def __init__(self, E_layer_dims, DC_lift_layer_dims, DC_output_layer_dims):
         super(DiffeomMap, self).__init__()
@@ -99,7 +155,7 @@ class DiffeomMap(nn.Module):
         self.DC_output_layer_dims = DC_output_layer_dims
 
         self.deconv_liftNN = _build_nn_layers(DC_lift_layer_dims)
-        self.deconv_outputNN = self._build_deconv_layers(DC_lift_layer_dims[-1], DC_output_layer_dims)
+        self.deconv_outputNN = _build_deconv_layers(DC_lift_layer_dims[-1], DC_output_layer_dims)
 
 
     def encode(self, x):
@@ -119,6 +175,11 @@ class DiffeomMap(nn.Module):
         outputs = torch.stack(deconv_outputs, dim=1)  # Shape: [batch_size, num_metabolites, time_series_length]
 
         return outputs
+
+    def forward(self, input_tensor):
+        e = self.encode(input_tensor)
+        delay_outputs = self.deconvolute(e)
+        return delay_outputs
         
 
 

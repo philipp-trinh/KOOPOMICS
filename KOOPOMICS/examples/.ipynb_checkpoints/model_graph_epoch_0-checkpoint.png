@@ -1,0 +1,68 @@
+digraph {
+	graph [size="12,12"]
+	node [align=left fontname=monospace fontsize=10 height=0.2 ranksep=0.1 shape=box style=filled]
+	5487132592 [label="
+ ()" fillcolor=darkolivegreen1]
+	5489028032 [label=MseLossBackward0]
+	5489026208 -> 5489028032
+	5489026208 [label=AddmmBackward0]
+	5489027504 -> 5489026208
+	5446309488 [label="embedding.decode.2.bias
+ (62)" fillcolor=lightblue]
+	5446309488 -> 5489027504
+	5489027504 [label=AccumulateGrad]
+	5489027072 -> 5489026208
+	5489027072 [label=ReluBackward0]
+	5489026304 -> 5489027072
+	5489026304 [label=AddmmBackward0]
+	5489025104 -> 5489026304
+	5446309568 [label="embedding.decode.0.bias
+ (2000)" fillcolor=lightblue]
+	5446309568 -> 5489025104
+	5489025104 [label=AccumulateGrad]
+	5489026256 -> 5489026304
+	5489026256 [label=AddmmBackward0]
+	5489026880 -> 5489026256
+	5439363712 [label="embedding.encode.3.bias
+ (30)" fillcolor=lightblue]
+	5439363712 -> 5489026880
+	5489026880 [label=AccumulateGrad]
+	5489027456 -> 5489026256
+	5489027456 [label=ReluBackward0]
+	5489028224 -> 5489027456
+	5489028224 [label=AddmmBackward0]
+	5489028416 -> 5489028224
+	5446312688 [label="embedding.encode.1.bias
+ (2000)" fillcolor=lightblue]
+	5446312688 -> 5489028416
+	5489028416 [label=AccumulateGrad]
+	5489028368 -> 5489028224
+	5489028368 [label=TBackward0]
+	5489028464 -> 5489028368
+	5446309008 [label="embedding.encode.1.weight
+ (2000, 62)" fillcolor=lightblue]
+	5446309008 -> 5489028464
+	5489028464 [label=AccumulateGrad]
+	5489028176 -> 5489026256
+	5489028176 [label=TBackward0]
+	5489028512 -> 5489028176
+	5439364352 [label="embedding.encode.3.weight
+ (30, 2000)" fillcolor=lightblue]
+	5439364352 -> 5489028512
+	5489028512 [label=AccumulateGrad]
+	5489027744 -> 5489026304
+	5489027744 [label=TBackward0]
+	5489028608 -> 5489027744
+	5446309648 [label="embedding.decode.0.weight
+ (2000, 30)" fillcolor=lightblue]
+	5446309648 -> 5489028608
+	5489028608 [label=AccumulateGrad]
+	5489026832 -> 5489026208
+	5489026832 [label=TBackward0]
+	5489028320 -> 5489026832
+	5446309088 [label="embedding.decode.2.weight
+ (62, 2000)" fillcolor=lightblue]
+	5446309088 -> 5489028320
+	5489028320 [label=AccumulateGrad]
+	5489028032 -> 5487132592
+}

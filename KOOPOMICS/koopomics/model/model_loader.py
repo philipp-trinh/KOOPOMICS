@@ -5,7 +5,7 @@ import torch.optim as optim
 from torch.autograd import Variable
 import torch.nn.functional as F
 
-from koopomics.model.embeddingANN import DiffeomMap, FF_AE
+from koopomics.model.embeddingANN import DiffeomMap, FF_AE, Conv_AE, Conv_E_FF_D
 from koopomics.model.koopmanANN import LinearizingKoop, InvKoop, Koop
 
 
@@ -31,6 +31,19 @@ class KoopmanModel(nn.Module):
             print('FF_AE module')
         else:
             self.ff_ae = False 
+        
+        if isinstance(embedding, Conv_AE):
+            self.conv_ae = True  
+            print('Conv_AE module')
+        else:
+            self.conv_ae = False 
+
+        if isinstance(embedding, Conv_E_FF_D):
+            self.conv_e_ff_d = True  
+            print('Conv_E_FF_D module')
+        else:
+            self.conv_e_ff_d = False 
+        
 
         if isinstance(operator, LinearizingKoop):
             self.linkoop = True  
@@ -61,10 +74,28 @@ class KoopmanModel(nn.Module):
         # training function
         return
 
+    def embed(self, input_vector):
+        if self.diffeom:
+            e = self.embedding.encode(input_vector)
+            x = self.embedding.decode(e)
+        elif self.ff_ae:
+            e = self.embedding.encode(input_vector)
+            x = self.embedding.decode(e)
+        elif self.conv_ae:
+            e = self.embedding.encode(input_vector)
+            x = self.embedding.decode(e)
+        elif self.conv_e_ff_d:
+            e = self.embedding.encode(input_vector)
+            x = self.embedding.decode(e)
+
+        return e, x
+            
     def predict(self, input_vector, fwd=0, bwd=0):
 
         predict_bwd = []
         predict_fwd = []
+        latent_bwd = []
+        latent_fwd = []
         
         if self.diffeom:
             
@@ -75,20 +106,20 @@ class KoopmanModel(nn.Module):
                 e_temp = e
                 for step in range(bwd):
                     e_bwd = self.operator.bwd_step(e_temp)
-                    outputs = self.embedding.deconvolute(e_bwd)
+                    outputs = self.embedding.decode(e_bwd)
 
                     predict_bwd.append(outputs)
-                    
+                    latent_bwd.append(e_bwd)
                     e_temp = e_bwd
             
             if fwd > 0:
                 e_temp = e
                 for step in range(fwd):
                     e_fwd = self.operator.fwd_step(e_temp)
-                    outputs = self.embedding.deconvolute(e_fwd)
+                    outputs = self.embedding.decode(e_fwd)
                     
                     predict_fwd.append(outputs)
-                    
+                    latent_fwd.append(e_fwd)
                     e_temp = e_fwd
 
         
@@ -101,6 +132,7 @@ class KoopmanModel(nn.Module):
                     outputs = self.embedding.decode(e_bwd)
 
                     predict_bwd.append(outputs)
+                    latent_bwd.append(e_bwd)
                     
                     e_temp = e_bwd
             
@@ -111,11 +143,12 @@ class KoopmanModel(nn.Module):
                     outputs = self.embedding.decode(e_fwd)
                     
                     predict_fwd.append(outputs)
+                    latent_fwd.append(e_fwd)
                     
                     e_temp = e_fwd
 
         if self.operator.bwd == False:
-            return predict_fwd
+            return predict_fwd, latent_fwd
         else:
             return predict_bwd, predict_fwd
 
@@ -127,16 +160,18 @@ class KoopmanModel(nn.Module):
         else:
             predict_bwd, predict_fwd = self.predict(input_vector, fwd, bwd)
             return predict_bwd, predict_fwd
-
     def kmatrix(self):
         
         if self.operator.bwd == False:
 
             return self.operator.koop.kmatrix#.numpy()
         elif self.operator.bwd:
-            return self.operator.koop.bwdkoop, self.operator.koop.fwdkoop
-        #elif self.operator.koop.reg = 'banded':
-        #    return self.
+            if self.linkoop:
+                return self.operator.koop.bwdkoop, self.operator.koop.fwdkoop
+            elif self.invkoop:
+                return self.operator.bwdkoop, self.operator.fwdkoop
+        elif self.operator.koop.reg == 'nondelay':
+            return self.operator.bwdkoop, self.operator.fwdkoop
         
 
 

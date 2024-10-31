@@ -119,7 +119,6 @@ class dynamicsC(nn.Module):
         up = self.fixed(x)
         down = self.flexi(x)
         x = torch.cat((up,down),dim=-1)
-
         self.dynamics.weight.data = torch.cat(( self.fixed.weight.data,self.flexi.weight.data),0)
         #print("self.dynamics.weight.data=",self.dynamics.weight.data)
         return x

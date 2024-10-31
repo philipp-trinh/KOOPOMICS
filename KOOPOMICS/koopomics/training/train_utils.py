@@ -273,14 +273,13 @@ def masked_criterion(criterion, mask_value=-1):
         mask = targets != mask_value  
         masked_targets = targets[mask]  
         masked_predictions = predictions[mask]  
-        
         # If all values are masked, return 0 loss
         if masked_targets.numel() == 0:
             return torch.tensor(0.0, device=predictions.device)
         
         # Calculate the loss with the given criterion
         return criterion(masked_predictions, masked_targets)
-    
+   
     return compute_loss
 
 def train(model, train_dl, test_dl,
@@ -293,11 +292,10 @@ def train(model, train_dl, test_dl,
           mask_value=-1,
           print_batch_info=False, comp_graph=False, plot_train=False,
           model_name='Koop'):
-    
-    device = get_device() 
+   
+    device = get_device()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    criterion = masked_criterion(nn.MSELoss(), mask_value = mask_value)
-
+    criterion = masked_criterion(nn.MSELoss().to(device), mask_value = mask_value)
     # Save Losses for Epoch Plotting
     epoch_list = []
     
@@ -327,7 +325,8 @@ def train(model, train_dl, test_dl,
 
             for batch_idx, data_list in enumerate(train_dl):
                 model.train()
-    
+
+                data_list = data_list.to(device)
                 loss_fwd_batch = torch.tensor(0.0)
                 loss_bwd_batch = torch.tensor(0.0)
                 
@@ -344,9 +343,10 @@ def train(model, train_dl, test_dl,
                     for step in range(max_Kstep):
 
                         y = model.operator.fwd_step(y)
-                        
-                        loss_fwd_batch += criterion(model.embedding.decode(y), data_list[step+1].to(device))
 
+
+                        loss = criterion(model.embedding.decode(y).to(device), data_list[step+1].to(device))
+                        loss_fwd_batch += criterion(model.embedding.decode(y).to(device), data_list[step+1].to(device))
                         if loss_weights[2] > 0:
                             loss_identity_y_batch += criterion(y, model.embedding.encode(data_list[step+1].to(device)))
 
@@ -414,12 +414,12 @@ def train(model, train_dl, test_dl,
 
                         # Noting down Batch Losses:
                         
-                        fwd_loss_batch_values.append(loss_fwd_batch.detach().numpy() if loss_fwd_batch > 1e-8 else 1)
-                        bwd_loss_batch_values.append(loss_bwd_batch.detach().numpy() if loss_bwd_batch > 1e-8 else 1)
+                        fwd_loss_batch_values.append(loss_fwd_batch.cpu().detach().numpy() if loss_fwd_batch > 1e-8 else 1)
+                        bwd_loss_batch_values.append(loss_bwd_batch.cpu().detach().numpy() if loss_bwd_batch > 1e-8 else 1)
 
-                        inv_cons_loss_batch_values.append(loss_inv_cons_batch.detach().numpy() if loss_inv_cons_batch > 1e-8 else 1)
-                        temp_cons_loss_batch_values.append(loss_temp_cons_batch.detach().numpy() if loss_temp_cons_batch > 1e-8 else 1)
-                        total_loss_batch_values.append(loss_total.detach().numpy() if loss_bwd_batch > 1e-8 else 1)
+                        inv_cons_loss_batch_values.append(loss_inv_cons_batch.cpu().detach().numpy() if loss_inv_cons_batch > 1e-8 else 1)
+                        temp_cons_loss_batch_values.append(loss_temp_cons_batch.cpu().detach().numpy() if loss_temp_cons_batch > 1e-8 else 1)
+                        total_loss_batch_values.append(loss_total.cpu().detach().numpy() if loss_bwd_batch > 1e-8 else 1)
         
                         batch_list.append(batches)
 

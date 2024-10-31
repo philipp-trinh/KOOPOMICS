@@ -4,18 +4,18 @@ import pandas as pd
 import numpy as np
 
 class PermutedDataLoader(DataLoader):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, device, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
+        self.device = device
     def __iter__(self):
         for batch in super().__iter__():
             # Permute the batch tensor
-            permuted_batch = batch[0].permute(1,0,2,3)  # Permute along the specified dimension
+            permuted_batch = batch[0].permute(1,0,2,3).to(self.device)  # Permute along the specified dimension
             yield permuted_batch
 
 
 def OmicsDataloader(df, feature_list, replicate_id, time_id, 
-                    batch_size=5, max_Ksteps = 10):
+                    batch_size=5, max_Ksteps = 10, device='cuda'):
     
 
     tensor_list = []
@@ -46,7 +46,7 @@ def OmicsDataloader(df, feature_list, replicate_id, time_id,
     
     train_data = TensorDataset(train_tensor)
     
-    permuted_loader = PermutedDataLoader(dataset=train_data, batch_size=batch_size, shuffle=True)
+    permuted_loader = PermutedDataLoader(dataset=train_data, batch_size=batch_size, shuffle=True, device=device, generator=torch.Generator(device=device))
     
     return permuted_loader
 

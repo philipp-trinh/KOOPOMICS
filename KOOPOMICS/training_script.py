@@ -1,8 +1,12 @@
 import koopomics as ko
 import pandas as pd
+import torch
 
+device = ko.get_device()
+print(device)
+torch.set_default_tensor_type('torch.cuda.FloatTensor')
 # Load Dataset
-pregnancy_df = pd.read_csv('/Users/daviddornig/Documents/Master_Thesis/Bioinf/Code/philipp-trinh/KOOPOMICS/input_data/pregnancy/pregnancy_interpolated_264M_robust_minmax_scaled_outlrem_uniform.csv')
+pregnancy_df = pd.read_csv('./input_data/pregnancy/pregnancy_interpolated_264M_robust_minmax_scaled_outlrem_uniform.csv')
 
 condition_id = 'Condition'
 time_id = 'Gestational age (GA)/weeks'
@@ -19,11 +23,11 @@ test_dataloader = ko.OmicsDataloader(test_set_df, feature_list, replicate_id, ti
                                      batch_size=5, max_Ksteps = 10)
 
 # Load Model
-embedding_model = ko.FF_AE([264,1000,1000,10], [10,1000,1000,264],E_dropout_rates= [0,0,0,0],activation_fn='tanh')
-operator_model = ko.InvKoop(latent_dim=10, reg='nondelay')
+embedding_model = ko.FF_AE([264,2000,2000,100], [100,2000,2000,264],E_dropout_rates= [0,0,0,0],activation_fn='leaky_relu')
+operator_model = ko.InvKoop(latent_dim=100, reg='nondelay')
 
 TestingKoopnondelay = ko.KoopmanModel(embedding=embedding_model, operator=operator_model)
-
+TestingKoopnondelay = TestingKoopnondelay.to(device)
 
 # Run training loop
 ko.train(TestingKoopnondelay, train_dataloader, test_dataloader,

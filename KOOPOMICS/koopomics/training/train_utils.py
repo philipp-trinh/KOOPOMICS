@@ -267,12 +267,13 @@ def get_temp_cons_loss(model, max_Kstep, timeseries_tensor, criterion):
     return temp_cons_fwd, temp_cons_bwd
 
 
-def masked_criterion(criterion, mask_value=-1):
+def masked_criterion(criterion, mask_value=-1, device='cpu'):
     # Inner function that applies the mask and then computes the loss
     def compute_loss(predictions, targets):
         mask = targets != mask_value  
-        masked_targets = targets[mask]  
-        masked_predictions = predictions[mask]  
+        masked_targets = targets[mask].to(device)  
+        masked_predictions = predictions[mask].to(device)  
+        
         # If all values are masked, return 0 loss
         if masked_targets.numel() == 0:
             return torch.tensor(0.0, device=predictions.device)
@@ -295,7 +296,7 @@ def train(model, train_dl, test_dl,
    
     device = get_device()
     optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=weight_decay)
-    criterion = masked_criterion(nn.MSELoss().to(device), mask_value = mask_value)
+    criterion = masked_criterion(nn.MSELoss().to(device), mask_value = mask_value, device=device)
     # Save Losses for Epoch Plotting
     epoch_list = []
     
@@ -319,7 +320,6 @@ def train(model, train_dl, test_dl,
 
     try:
         for epoch in range(num_epochs+1):
-            print(model.operator.nondelay_fwd.flexi.weight.cpu().data.numpy())
             print(f'----------Training epoch--------')
             print(f'----------------{epoch}---------------')
             print('')
@@ -327,7 +327,7 @@ def train(model, train_dl, test_dl,
             for batch_idx, data_list in enumerate(train_dl):
                 model.train()
 
-                #data_list = data_list.to(device)
+                data_list = data_list.to(device)
                 loss_fwd_batch = torch.tensor(0.0)
                 loss_bwd_batch = torch.tensor(0.0)
                 
@@ -353,7 +353,7 @@ def train(model, train_dl, test_dl,
                 if loss_weights[1] > 0:                
                     # ------------------- Backward prediction ------------------
                     y = model.embedding.encode(data_list[-1].to(device))
-                    reverse_data_list = data_list[::-1]
+                    reverse_data_list = torch.flip(data_list, dims=[0])
                     #torch.flip(data_list, dims=[0])
                     for step in range(max_Kstep):
                         
@@ -466,9 +466,7 @@ def train(model, train_dl, test_dl,
             print(f'Latent Loss: {loss_identity_y_batch}')
             print(f'Inv_Cons_Loss: {loss_inv_cons_batch}')
             print(f'Temp_Cons_Loss: {loss_temp_cons_batch}')
-            w, _ = np.linalg.eig(model.operator.nondelay_fwd.dynamics.weight.cpu().data.numpy())
 
-            print(np.abs(w))
             
             
             if plot_train:

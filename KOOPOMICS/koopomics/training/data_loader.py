@@ -48,7 +48,7 @@ def OmicsDataloader(df, feature_list, replicate_id, time_id,
     
     train_data = TensorDataset(train_tensor)
     
-    permuted_loader = PermutedDataLoader(dataset=train_data, batch_size=batch_size, shuffle=True, device=device)
+    permuted_loader = PermutedDataLoader(dataset=train_data, batch_size=batch_size, shuffle=True, device=device, generator=torch.Generator(device=device))
     
     return permuted_loader
 

@@ -261,6 +261,8 @@ def get_temp_cons_loss(model, max_Kstep, timeseries_tensor, criterion):
             temp_cons_fwd += criterion(fwd_output[-1].to(device), prior_fwd_output[-1].to(device))
             temp_cons_bwd += criterion(bwd_output[-1].to(device), prior_bwd_output[-1].to(device))
 
+            #Rearrangement Missing
+
 
     return temp_cons_fwd, temp_cons_bwd
 

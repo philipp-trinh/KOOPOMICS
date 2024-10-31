@@ -6,7 +6,7 @@ device = ko.get_device()
 print(device)
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 # Load Dataset
-pregnancy_df = pd.read_csv('./input_data/pregnancy/pregnancy_interpolated_50M_robust_minmax_scaled_outlrem_uniform.csv')
+pregnancy_df = pd.read_csv('./input_data/pregnancy/pregnancy_interpolated_264M_robust_minmax_scaled_outlrem_uniform.csv')
 
 condition_id = 'Condition'
 time_id = 'Gestational age (GA)/weeks'
@@ -23,8 +23,8 @@ test_dataloader = ko.OmicsDataloader(test_set_df, feature_list, replicate_id, ti
                                      batch_size=5, max_Ksteps = 5)
 
 # Load Model
-embedding_model = ko.FF_AE([50,2000,2000,20], [20,2000,2000,50],E_dropout_rates= [0,0,0,0],activation_fn='leaky_relu')
-operator_model = ko.InvKoop(latent_dim=20, reg='nondelay')
+embedding_model = ko.FF_AE([264,2000,2000,100], [100,2000,2000,264],E_dropout_rates= [0,0,0,0],activation_fn='leaky_relu')
+operator_model = ko.InvKoop(latent_dim=100, reg='nondelay')
 
 TestingKoopnondelay = ko.KoopmanModel(embedding=embedding_model, operator=operator_model)
 TestingKoopnondelay = TestingKoopnondelay.to(device)

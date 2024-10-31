@@ -15,8 +15,10 @@ class PermutedDataLoader(DataLoader):
 
 
 def OmicsDataloader(df, feature_list, replicate_id, time_id, 
-                    batch_size=5, max_Ksteps = 10, device='cuda'):
+                    batch_size=5, max_Ksteps = 10):
     
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device for dataloading: {device}")
 
     tensor_list = []
     
@@ -24,7 +26,7 @@ def OmicsDataloader(df, feature_list, replicate_id, time_id,
         metabolite_data = group.iloc[:, 7:].values  
         tensor_list.append(metabolite_data)
     
-    df_tensor = torch.tensor(np.stack(tensor_list)) 
+    df_tensor = torch.tensor(np.stack(tensor_list), dtype=torch.float32).to(device) 
     df_tensor.shape
     
     sampleDat=[]
@@ -42,11 +44,11 @@ def OmicsDataloader(df, feature_list, replicate_id, time_id,
         sample_tensor = torch.stack(trainDat)
         sampleDat.append(sample_tensor)
     
-    train_tensor = torch.stack(sampleDat)
+    train_tensor = torch.stack(sampleDat).to(device)
     
     train_data = TensorDataset(train_tensor)
     
-    permuted_loader = PermutedDataLoader(dataset=train_data, batch_size=batch_size, shuffle=True, device=device, generator=torch.Generator(device='cpu'))
+    permuted_loader = PermutedDataLoader(dataset=train_data, batch_size=batch_size, shuffle=True, device=device)
     
     return permuted_loader
 

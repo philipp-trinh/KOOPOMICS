@@ -2,8 +2,6 @@ import koopomics as ko
 import pandas as pd
 import torch
 
-device = ko.get_device()
-print(device)
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 # Load Dataset
 pregnancy_df = pd.read_csv('./input_data/pregnancy/pregnancy_interpolated_264M_robust_minmax_scaled_outlrem_uniform.csv')
@@ -17,21 +15,25 @@ num_features = len(feature_list)
 train_set_df = pregnancy_df[pregnancy_df['Cohort'] == 'Discovery'].copy()
 test_set_df = pregnancy_df[pregnancy_df['Cohort'] == 'Validation (Test Set 1)'].copy()
 
-train_dataloader = ko.OmicsDataloader(train_set_df, feature_list, replicate_id, time_id, 
+train_dataloader = ko.OmicsDataloader(train_set_df, feature_list, replicate_id, 
                                       batch_size=5, max_Ksteps = 5)
-test_dataloader = ko.OmicsDataloader(test_set_df, feature_list, replicate_id, time_id, 
+test_dataloader = ko.OmicsDataloader(test_set_df, feature_list, replicate_id,
                                      batch_size=5, max_Ksteps = 5)
+
+runconfig = ko.RunConfig()
 
 # Load Model
 embedding_model = ko.FF_AE([264,2000,2000,100], [100,2000,2000,264],E_dropout_rates= [0,0,0,0],activation_fn='leaky_relu')
-operator_model = ko.InvKoop(latent_dim=100, reg='nondelay')
+operator_model = ko.InvKoop(latent_dim=100, reg='nondelay',activation_fn='leaky_relu')
 
 TestingKoopnondelay = ko.KoopmanModel(embedding=embedding_model, operator=operator_model)
-TestingKoopnondelay = TestingKoopnondelay.to(device)
+baseline = ko.NaiveMeanPredictor(train_set_df, feature_list, mask_value=-2)
 
 # Run training loop
-ko.train(TestingKoopnondelay, train_dataloader, test_dataloader,
-         lr= 0.00001, learning_rate_change=0.2, loss_weights=[1,0.5,1,1,0.1,0],
-         num_epochs=600, decayEpochs=[30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330, 360, 390, 410, 440, 470, 500],
-         weight_decay=0, gradclip=0.05, max_Kstep=1, mask_value=-2,
-         print_batch_info=False, model_name='TestingKoop264M_tanh_nondelay')
+TestingKoopnondelay.fit(train_dataloader, test_dataloader, runconfig=runconfig,
+                         num_epochs = 600, lr=0.001, max_Kstep=5,
+                         loss_weights = [1,0.5,1,1,0.01,1], mask_value=-2,
+                         model_name = 'TestingKoopNonDelay_lrelu_M264', wandb_log=True,
+                        learning_rate_change=0.2,
+                        decayEpochs=[30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330, 360, 390, 410, 440, 470, 500],
+                         baseline=baseline)

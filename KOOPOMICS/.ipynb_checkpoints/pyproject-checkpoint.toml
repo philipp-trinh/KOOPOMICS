@@ -27,6 +27,7 @@ dependencies = [
     "plotly==5.24.1",
     "seaborn==0.13.2",
     "torchvision==0.17.2",
+    "wandb==0.18.5"
 ]
 [project.readme]
 file = "README.md"

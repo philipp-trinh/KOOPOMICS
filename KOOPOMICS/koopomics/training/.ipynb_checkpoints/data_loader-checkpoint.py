@@ -3,30 +3,62 @@ from torch.utils.data import DataLoader, TensorDataset
 import pandas as pd
 import numpy as np
 
+from torch.utils.data import DataLoader
+import torch
+
 class PermutedDataLoader(DataLoader):
-    def __init__(self, device, *args, **kwargs):
+    def __init__(self, mask_value=-2.0, permute_dims=(1, 0, 2), *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.device = device
+        self.mask_value = mask_value
+        self.permute_dims = permute_dims  
+        
     def __iter__(self):
         for batch in super().__iter__():
-            # Permute the batch tensor
-            permuted_batch = batch[0].permute(1,0,2,3).to(self.device)  # Permute along the specified dimension
+            # Permute the batch tensor based on the specified dimensions
+            permuted_batch = batch[0].permute(*self.permute_dims)
+
+            batch_tensor = permuted_batch
+            # Check if the first and last tensors match the mask value
+            fwd_input = batch_tensor[0]
+            bwd_input = batch_tensor[-1]
+
+            # Check the dimensionality of fwd_input
+            if fwd_input.ndim == 3:  # Case when fwd_input is 3D
+                # Check if the first feature of the first timepoint is equal to the mask value
+                if torch.all(fwd_input[:, 0, :] == self.mask_value) and torch.all(bwd_input[:, 0, :] == self.mask_value):
+                    continue  # Skip this batch if both are masked
+            elif fwd_input.ndim == 2:  # Case when fwd_input is 2D
+                # Here we assume you want to check the first element in the second dimension
+                if torch.all(fwd_input[:, 0] == self.mask_value) and torch.all(bwd_input[:, 0] == self.mask_value):
+                    continue  # Skip this batch if both are masked
+            elif fwd_input.ndim == 1:  # Case when fwd_input is 2D
+                # Here we assume you want to check the first element in the second dimension
+                if torch.all(fwd_input[0] == self.mask_value) and torch.all(bwd_input[0] == self.mask_value):
+                    continue  # Skip this batch if both are masked
+    
+            else:
+                raise ValueError(f"Unexpected tensor shape: {fwd_input.shape}")
+
             yield permuted_batch
 
 
-def OmicsDataloader(df, feature_list, replicate_id, time_id, 
-                    batch_size=5, max_Ksteps = 10):
-    
+
+def OmicsDataloader(df, feature_list, replicate_id,
+                    batch_size=5, max_Ksteps = 10, temporal=False, temporal_segm=False, 
+                    shuffle=True, mask_value=-2):
+    '''
+    df = Temporally and Replicate sorted df with uniform timeseries (gaps are filled with mask values)
+    '''
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device for dataloading: {device}")
+    print(f"Dataloading on {device}")
 
     tensor_list = []
     
     for replicate, group in df.groupby(replicate_id):
-        metabolite_data = group.iloc[:, 7:].values  
+        metabolite_data = group[feature_list].values  
         tensor_list.append(metabolite_data)
     
-    df_tensor = torch.tensor(np.stack(tensor_list), dtype=torch.float32).to(device) 
+    df_tensor = torch.tensor(np.stack(tensor_list), dtype=torch.float32)
     df_tensor.shape
     
     sampleDat=[]
@@ -43,12 +75,71 @@ def OmicsDataloader(df, feature_list, replicate_id, time_id,
     
         sample_tensor = torch.stack(trainDat)
         sampleDat.append(sample_tensor)
+
+
     
-    train_tensor = torch.stack(sampleDat).to(device)
+    train_tensor = torch.stack(sampleDat)
+    # shape: [num_samples, num_steps, num_timepoints (in timeseries), num_features]
     
-    train_data = TensorDataset(train_tensor)
+    if temporal:
+        # Generate Temporally Structured Dataloader For Temporal Consistency
+        train_data = TensorDataset(train_tensor)
+        permuted_loader = PermutedDataLoader(dataset=train_data, batch_size=batch_size, shuffle=True, permute_dims=(1,0,2,3), mask_value=mask_value)
+        # batch shape: [num_steps, num_samples, num_timepoints, num_features] this allows easier access to the targets
     
-    permuted_loader = PermutedDataLoader(dataset=train_data, batch_size=batch_size, shuffle=True, device=device)
+    elif temporal_segm:
+        if train_tensor.shape[-2] >= 3:
+            # potential segment sizes (slices up the timeseries for better training)
+            slice_sizes = [5, 4, 3]
+            
+            # Determine a valid segment size that divides timeseries evenly
+            valid_slice_size = None
+            for size in slice_sizes:
+                
+                if train_tensor.shape[2] % size == 0:
+                    valid_slice_size = size
+                    break  # Stop at the first valid slice size
+            
+    
+            if valid_slice_size is None:
+                # If there's no valid slice size, pad the tensor
+                original_num_timepoints = train_tensor.shape[2]
+                valid_slice_size = slice_sizes[-1]
+                padding_needed = valid_slice_size - (original_num_timepoints % valid_slice_size)
+                
+                mask_value_tensor = torch.full((train_tensor.shape[0], train_tensor.shape[1], padding_needed, train_tensor.shape[-1]), fill_value=mask_value, dtype=train_tensor.dtype, device=train_tensor.device)
+                # Concatenate padding to the original tensor along the timepoints dimension
+                train_tensor = torch.cat((train_tensor, mask_value_tensor), dim=2)
+    
+            # Calculate the number of segments
+            num_segments = train_tensor.shape[2] // valid_slice_size
+        
+            # Reshape the tensor
+            feature_dim = train_tensor.shape[-1]
+            segm_tensor = train_tensor.view(train_tensor.shape[0], max_Ksteps+1, num_segments, valid_slice_size, feature_dim)
+            # shape: [num_samples, num_steps, num_segments, num_timepoints (in timeseries), num_features] this allows random shuffling of temporally structured slices for training
+            
+            
+            segm_tensor = segm_tensor.permute(0, 2, 1, 3, 4).reshape(-1, max_Ksteps+1, valid_slice_size, feature_dim)
+            # shape: [num_samples * num_segments, num_steps, num_timepoints (in timeseries), num_features] this allows random shuffling of temporally structured segments for training
+            
+            train_data = TensorDataset(segm_tensor)
+    
+            permuted_loader = PermutedDataLoader(dataset=train_data, batch_size=batch_size, shuffle=True, permute_dims=(1,0,2,3), mask_value=mask_value)
+            # batch shape: [num_steps, num_samples * num_segments (stacked), num_timepoints, num_features] this allows easier access to the targets
+        else:
+            raise ValueError("Number of timepoints too small to segment; use temporal=True instead and specify a small batch_size!")
+
+    else:
+        # Generate Random Timepoints Dataloader For Prediction Training
+        
+        feature_dim = train_tensor.shape[-1]
+        random_tensor = train_tensor.permute(0, 2, 1, 3).reshape(-1, 1, max_Ksteps+1, feature_dim)
+        # shape: [num_samples * num_timepoints (stacked), 1 padding dim, num_steps, num_features] this allows random shuffling and batching of timepoints with their targets
+        train_data = TensorDataset(random_tensor)
+
+        permuted_loader = PermutedDataLoader(dataset=train_data, batch_size=batch_size, shuffle=True, permute_dims=(2,1,0,3), mask_value=mask_value)
+        # batch shape: [num_steps, 1 padding dim, num_samples * num_timepoints (stacked), num_features] this allows easier access to the targets
     
     return permuted_loader
 

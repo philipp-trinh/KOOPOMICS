@@ -92,7 +92,10 @@ class FF_AE(nn.Module):
         
         self.E_layer_dims = E_layer_dims
         self.D_layer_dims = D_layer_dims
-
+        self.E_dropout_rates = E_dropout_rates
+        self.D_dropout_rates = D_dropout_rates
+        self.activation_fn = activation_fn
+        
         self.encode = _build_nn_layers_with_dropout(E_layer_dims, E_dropout_rates, activation_fn=activation_fn)
         self.decode = _build_nn_layers_with_dropout(D_layer_dims, D_dropout_rates, activation_fn=activation_fn)
     

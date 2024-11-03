@@ -11,6 +11,7 @@ install_requires=[
     "plotly==5.24.1",
     "seaborn==0.13.2",
     "torchvision==0.17.2"
+    "wandb==0.18.5"
 ]
 
 with open("README.md", "r", encoding="utf-8") as f:

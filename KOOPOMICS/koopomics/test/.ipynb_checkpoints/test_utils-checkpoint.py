@@ -5,26 +5,27 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 from IPython.display import clear_output
 
+from ..training.KoopmanMetrics import KoopmanMetricsMixin
 
 
 # Naive model class that predicts the average of the target for reference
 class NaiveMeanPredictor(nn.Module):
-    def __init__(self):
+    def __init__(self, train_set_df, feature_list, mask_value=None):
         # Call the parent class (nn.Module) constructor
         super(NaiveMeanPredictor, self).__init__()
-        self.means = nn.Parameter(torch.zeros(1), requires_grad=False)  # Register a dummy parameter
-
-    def fit(self, df, feature_list):
-        """
-        Calculate the mean of each feature in feature_list from the dataframe
-        and store them as a tensor.
-        """
-        # Calculate means for the features and convert to a torch tensor
-        self.df = df
-        self.feature_list = feature_list
-        means_values = df[feature_list].mean().values
-        self.means = nn.Parameter(torch.tensor(means_values, dtype=torch.float32), requires_grad=False)
+        self.means = None
         
+        # Create a mask to filter out rows that contain the mask_value
+        if mask_value is not None:
+            mask = (train_set_df[feature_list] != mask_value).all(axis=1)  # True for rows without mask_value
+            filtered_df = train_set_df[mask]  # Filtered DataFrame
+        else:
+            filtered_df = train_set_df  # No masking applied
+
+        # Calculate means only for the rows that are not masked
+        means_values = filtered_df[feature_list].mean().values
+        self.means = nn.Parameter(torch.tensor(means_values, dtype=torch.float32), requires_grad=False)
+
     def kmatrix(self):
         return torch.zeros(4,4), torch.zeros(4,4)
         
@@ -33,24 +34,222 @@ class NaiveMeanPredictor(nn.Module):
         For the forward pass, ignore the input and return the mean values
         calculated during the fit step.
         """
+        device = input_vector.device
         # Return the means, repeated for each input sample
-        batch_size = input_vector.size(0)
-        return [self.means.unsqueeze(0).expand(batch_size, -1)], [self.means.unsqueeze(0).expand(batch_size, -1)]
+        sample_size = input_vector.size(0)
+        timepoint_size = input_vector.size(1)
+        return self.means.to(device).expand(sample_size, timepoint_size, -1)
 
-    def calculate_reference_values(self, train_dataloader, test_dataloader, max_Kstep=1, featurewise=False, normalize=False):
-    
-        ref_train_errors = compute_prediction_errors(self, train_dataloader, max_Kstep, featurewise=featurewise)
+
+class Evaluator(KoopmanMetricsMixin):
+    def __init__(self, model, test_loader, **kwargs):
+        """
+        Initialize the Evaluator class.
+
+        Args:
+            model (torch.nn.Module): The trained model to be evaluated.
+            test_loader (torch.utils.data.DataLoader): DataLoader for the test dataset.
+        """
+        self.model = model
+        self.test_loader = test_loader
+        self.mask_value = kwargs.get('mask_value', -2)
+        self.max_Kstep = kwargs.get('max_Kstep', 2)
+        self.baseline = kwargs.get('baseline', None)
+        self.model_name = kwargs.get('model_name', 'Koop')
+
         
-        ref_test_errors = compute_prediction_errors(self, test_dataloader, max_Kstep, featurewise=featurewise)
+        self.baseline = kwargs.get('baseline', None)
 
-        if normalize: 
-            for i, feature in enumerate(self.feature_list):
-                ref_train_errors['fwd_feature_errors'][i] = normalize_mse_loss(ref_train_errors['fwd_feature_errors'][i], self.df[feature])
-                ref_train_errors['bwd_feature_errors'][i] = normalize_mse_loss(ref_train_errors['bwd_feature_errors'][i], self.df[feature])
-                ref_test_errors['fwd_feature_errors'][i] = normalize_mse_loss(ref_test_errors['fwd_feature_errors'][i], self.df[feature])
-                ref_test_errors['bwd_feature_errors'][i] = normalize_mse_loss(ref_test_errors['bwd_feature_errors'][i], self.df[feature])
+        self.device = self.get_device()
+        
+        base_criterion = nn.MSELoss().to(self.device)
 
-        return ref_train_errors, ref_test_errors
+        self.criterion = kwargs.get('criterion', self.masked_criterion(base_criterion, mask_value=self.mask_value))
+        self.loss_weights = kwargs.get('loss_weights', [1, 1, 1, 1, 1, 1])
+        self.num_timepoints = 0
+
+        self.metrics = {} 
+        
+    def __call__(self):
+        
+        model_metrics = self.evaluate()
+
+        baseline_metrics = {}
+        
+        if self.baseline:
+            baseline_metrics = self.compute_baseline_performance()
+
+        return model_metrics, baseline_metrics 
+
+    
+    def evaluate(self):
+        """
+        Evaluate the model on the test dataset and calculate loss components.
+    
+        Args:
+            test_loader (torch.utils.data.DataLoader): DataLoader for the test dataset.
+
+        Returns:
+            dict: Dictionary of average loss values for each component and the total loss.
+        """
+        self.model.eval()  # Set the model to evaluation mode
+        
+        test_fwd_loss = 0.0
+        test_bwd_loss = 0.0
+        total_test_loss = 0.0
+    
+        with torch.no_grad():  # Disable gradient computation
+            for data_list in self.test_loader:
+                # Initialize batch losses
+                loss_fwd_batch = torch.tensor(0.0, device=self.device)
+                loss_bwd_batch = torch.tensor(0.0, device=self.device)
+                loss_latent_identity_batch = torch.tensor(0.0, device=self.device)
+                loss_identity_batch = torch.tensor(0.0, device=self.device)
+                loss_inv_cons_batch = torch.tensor(0.0, device=self.device)
+                loss_temp_cons_batch = torch.tensor(0.0, device=self.device)
+    
+                # Prepare forward and backward inputs
+                input_fwd = data_list[0].to(self.device)
+                input_bwd = data_list[-1].to(self.device)
+                latent_input_fwd = self.model.embedding.encode(input_fwd)
+                latent_input_bwd = self.model.embedding.encode(input_bwd)
+                reverse_data_list = torch.flip(data_list, dims=[0])
+    
+                # Temporal consistency storage if required
+                if self.max_Kstep > 1 and self.loss_weights[5] > 0:
+                    temporal_cons_fwd_storage = torch.zeros(self.max_Kstep, *input_fwd.shape).to(self.device)
+                    temporal_cons_bwd_storage = torch.zeros(self.max_Kstep, *input_bwd.shape).to(self.device)
+    
+                # Loop through each step in max_Kstep
+                for step in range(self.max_Kstep):
+                    target_fwd = data_list[step + 1].to(self.device)
+                    target_bwd = reverse_data_list[step + 1].to(self.device)
+    
+                    # Forward loss computation
+                    if self.loss_weights[0] > 0:
+                        shifted_latent_fwd, loss_fwd_step, loss_latent_fwd_identity_step = self.compute_forward_loss(latent_input_fwd, target_fwd)
+                        latent_input_fwd = shifted_latent_fwd
+                        loss_fwd_batch += loss_fwd_step
+                        loss_latent_identity_batch += loss_latent_fwd_identity_step
+    
+                    # Backward loss computation
+                    if self.loss_weights[1] > 0:
+                        shifted_latent_bwd, loss_bwd_step, loss_latent_bwd_identity_step = self.compute_backward_loss(latent_input_bwd, target_bwd)
+                        latent_input_bwd = shifted_latent_bwd
+                        loss_bwd_batch += loss_bwd_step
+                        loss_latent_identity_batch += loss_latent_bwd_identity_step
+    
+                    # Identity loss
+                    if self.loss_weights[3] > 0:
+                        loss_identity_step = (self.compute_identity_loss(input_fwd, target_fwd) + self.compute_identity_loss(input_bwd, target_bwd)) / 2
+                        loss_identity_batch += loss_identity_step
+    
+                    # Inverse consistency loss
+                    if self.loss_weights[4] > 0:
+                        loss_inv_cons_step = (self.inverse_consistency(input_fwd, target_fwd) + self.inverse_consistency(input_bwd, target_bwd)) / 2
+                        loss_inv_cons_batch += loss_inv_cons_step
+    
+                    # Temporal consistency loss
+                    if self.loss_weights[5] > 0 and epoch >= self.epoch_temp_cons and self.max_Kstep > 1:
+                        loss_temp_cons_step = (self.temporal_consistency(temporal_cons_fwd_storage) + self.temporal_consistency(temporal_cons_bwd_storage, bwd=True)) / 2
+                        loss_temp_cons_batch += loss_temp_cons_step
+    
+                # Calculate total batch loss
+                loss_total_batch = self.calculate_total_loss(
+                    loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch,
+                    loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch
+                )
+                
+                # Accumulate batch losses for the epoch
+                test_fwd_loss += loss_fwd_batch
+                test_bwd_loss += loss_bwd_batch
+                total_test_loss += loss_total_batch
+    
+        # Average loss for the test loader
+        avg_test_fwd_loss = test_fwd_loss_epoch / len(self.test_loader)
+        avg_test_bwd_loss = test_bwd_loss_epoch / len(self.test_loader)
+        avg_total_test_loss = total_test_loss_epoch / len(self.test_loader)
+    
+        return {
+            'forward_loss': avg_test_fwd_loss.item(),
+            'backward_loss': avg_test_bwd_loss.item(),
+            'total_loss': avg_total_test_loss.item()
+        }
+    
+    def compute_baseline_performance(self):
+        """
+        Evaluate the model on the test dataset and calculate loss components.
+    
+        Args:
+            test_loader (torch.utils.data.DataLoader): DataLoader for the test dataset.
+
+        Returns:
+            dict: Dictionary of average loss values for each component and the total loss.
+        """
+        self.baseline.eval()  # Set the model to evaluation mode
+        
+        test_fwd_loss = torch.tensor(0.0, device=self.device)
+        test_bwd_loss = torch.tensor(0.0, device=self.device)
+    
+        with torch.no_grad():  # Disable gradient computation
+            for data_list in test_loader:
+                # Initialize batch losses
+                loss_fwd_batch = torch.tensor(0.0, device=self.device)
+                loss_bwd_batch = torch.tensor(0.0, device=self.device)
+    
+                # Prepare forward and backward inputs
+                input_fwd = data_list[0].to(self.device)
+                input_bwd = data_list[-1].to(self.device)
+                reverse_data_list = torch.flip(data_list, dims=[0])
+    
+                # Loop through each step in max_Kstep
+                for step in range(self.max_Kstep):
+                    target_fwd = data_list[step + 1].to(self.device)
+                    target_bwd = reverse_data_list[step + 1].to(self.device)
+    
+                    # Forward loss computation
+                    if self.loss_weights[0] > 0:
+                        baseline_output = self.baseline(input_fwd)
+                        loss_fwd = self.criterion(baseline_output, target_fwd)
+
+                        
+                    # Backward loss computation
+                    if self.loss_weights[1] > 0:
+                        baseline_output = self.baseline(input_bwd)
+                        loss_bwd = self.criterion(baseline_output, target_bwd)
+
+                    # Collect losses
+                    loss_fwd_batch += loss_fwd
+                    loss_bwd_batch += loss_bwd
+
+                # Accumulate batch losses for the epoch
+                test_fwd_loss += loss_fwd_batch
+                test_bwd_loss += loss_bwd_batch
+    
+        # Average loss for the test loader
+        avg_test_fwd_loss = test_fwd_loss_epoch / len(self.test_loader)
+        avg_test_bwd_loss = test_bwd_loss_epoch / len(self.test_loader)
+    
+        return {
+            'forward_loss': avg_test_fwd_loss.item(),
+            'backward_loss': avg_test_bwd_loss.item(),
+        }
+
+
+def calculate_reference_values(self, train_dataloader, test_dataloader, max_Kstep=1, featurewise=False, normalize=False):
+
+    ref_train_errors = compute_prediction_errors(self, train_dataloader, max_Kstep, featurewise=featurewise)
+    
+    ref_test_errors = compute_prediction_errors(self, test_dataloader, max_Kstep, featurewise=featurewise)
+
+    if normalize: 
+        for i, feature in enumerate(self.feature_list):
+            ref_train_errors['fwd_feature_errors'][i] = normalize_mse_loss(ref_train_errors['fwd_feature_errors'][i], self.df[feature])
+            ref_train_errors['bwd_feature_errors'][i] = normalize_mse_loss(ref_train_errors['bwd_feature_errors'][i], self.df[feature])
+            ref_test_errors['fwd_feature_errors'][i] = normalize_mse_loss(ref_test_errors['fwd_feature_errors'][i], self.df[feature])
+            ref_test_errors['bwd_feature_errors'][i] = normalize_mse_loss(ref_test_errors['bwd_feature_errors'][i], self.df[feature])
+
+    return ref_train_errors, ref_test_errors
 
 def normalize_mse_loss(mse_loss, target_tensor):
     min_target = target_tensor.min()
@@ -151,6 +350,8 @@ def compute_prediction_errors(model, dataloader, max_Kstep=2, featurewise=False)
         'total_fwd_loss': total_fwd_loss,
         'total_bwd_loss': total_bwd_loss
     }
+
+
 
 
 

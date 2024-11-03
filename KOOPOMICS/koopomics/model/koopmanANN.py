@@ -8,7 +8,7 @@ import torch.nn.init as init
 
 
 
-from koopomics.model.build_nn_functions import _build_nn_layers, _build_nn_layers_with_dropout
+from koopomics.model.build_nn_functions import _build_nn_layers, _build_nn_layers_with_dropout, get_activation_fn
 
 
 # ---------------------- Matrix Regularizations -----------------------
@@ -81,101 +81,85 @@ class BandedKoopmanMatrix(nn.Module):
 
         return kmatrix
 
-class dynamicsC(nn.Module):
-    '''Create a nondelay forward koopman matrix, code by: 
+class NondelayMatrix(nn.Module):
+    '''Superclass for nondelay Koopman matrix with shared methods.
+    code based on: 
     Liu S, You Y, Tong Z, Zhang L. Developing an Embedding, Koopman and Autoencoder Technologies-Based Multi-Omics Time Series Predictive Model (EKATP) for Systems Biology research. Front Genet. 2021 Oct 26;12:761629. doi: 10.3389/fgene.2021.761629. PMID: 34764986; PMCID: PMC8576451.'''
-    def __init__(self, b, init_scale=0.99):
-        super(dynamicsC, self).__init__()
+    def __init__(self, latent_dim):
+        super(NondelayMatrix, self).__init__()
+        self.dynamics = nn.Linear(latent_dim, latent_dim, bias=False)
+        self.fixed = nn.Linear(latent_dim, latent_dim - 1, bias=False)
 
-        self.dynamics = nn.Linear(b, b, bias=False)
-        self.fixed = nn.Linear(b, b-1, bias=False)
+        # Disable gradients for fixed parameters in dynamics and fixed
         for p in self.parameters():
-            p.requires_grad=False
-        self.flexi = nn.Linear(b, 1, bias=False)
+            p.requires_grad = False
 
-        #random_weights = torch.randn_like(self.flexi.weight) * init_scale
-        #self.flexi.weight.data += random_weights
+        self.flexi = nn.Linear(latent_dim, 1, bias=False)
+
+class dynamicsC(NondelayMatrix):
+    '''Nondelay forward Koopman matrix.'''
+    def __init__(self, latent_dim, init_scale=0.99, act_fn = 'leaky_relu'):
+        super(dynamicsC, self).__init__(latent_dim)
         
-        for j in range(0,b):
-            self.dynamics.weight.data[b-1][j]=self.flexi.weight.data[0][j]=0
-            
-        self.dynamics.weight.data[b-1][0]=1
-        print(self.dynamics.weight.data[b-1][0])
+        # Initialize the dynamics and fixed weights for forward Koopman
+        for j in range(0, latent_dim):
+            self.dynamics.weight.data[latent_dim-1][j] = self.flexi.weight.data[0][j] = 0
+        self.dynamics.weight.data[latent_dim-1][0] = 1
 
-        for i in range(0,b-1):
-            for j in range (0,b):
-                if i+1==j:
-                    self.dynamics.weight.data[i][j]=1
-                    self.fixed.weight.data[i][j]=1
+        for i in range(0, latent_dim - 1):
+            for j in range(0, latent_dim):
+                if i + 1 == j:
+                    self.dynamics.weight.data[i][j] = 1
+                    self.fixed.weight.data[i][j] = 1
                 else:
-                    self.dynamics.weight.data[i][j]=0
-                    self.fixed.weight.data[i][j]=0
-
-
-        #print(self.dynamics.weight)
-        #print(self.fixed.weight)
-        #print(self.flexi.weight)
-        self.tanh = nn.Tanh()
+                    self.dynamics.weight.data[i][j] = 0
+                    self.fixed.weight.data[i][j] = 0
+        
+        self.koop_act_fn = get_activation_fn(act_fn)
 
     def forward(self, x):
         up = self.fixed(x)
         down = self.flexi(x)
-        x = torch.cat((up,down),dim=-1)
-        self.dynamics.weight.data = torch.cat(( self.fixed.weight.data,self.flexi.weight.data),0)
-        #print("self.dynamics.weight.data=",self.dynamics.weight.data)
+        x = torch.cat((up, down), dim=-1)
+        self.dynamics.weight.data = torch.cat((self.fixed.weight.data, self.flexi.weight.data), 0)
         return x
-
     def kmatrix(self):
         kmatrix = torch.cat((self.fixed.weight.data,self.flexi.weight.data),0)
 
         return kmatrix
         
+class dynamics_backD(NondelayMatrix):
+    '''Nondelay backward Koopman matrix.'''
+    def __init__(self, latent_dim, dynamicsC):
+        super(dynamics_backD, self).__init__(latent_dim)
 
-class dynamics_backD(nn.Module):
-    '''Create a nondelay backward koopman matrix, code by: 
-    Liu S, You Y, Tong Z, Zhang L. Developing an Embedding, Koopman and Autoencoder Technologies-Based Multi-Omics Time Series Predictive Model (EKATP) for Systems Biology research. Front Genet. 2021 Oct 26;12:761629. doi: 10.3389/fgene.2021.761629. PMID: 34764986; PMCID: PMC8576451.'''
-    def __init__(self, b, omega):
-        super(dynamics_backD, self).__init__()
-        self.dynamics = nn.Linear(b, b, bias=False)
-        self.fixed = nn.Linear(b, b-1, bias=False)
-        for p in self.parameters():
-            p.requires_grad=False
+        # Initialize the dynamics and fixed weights for backward Koopman
+        for j in range(0, latent_dim - 1):
+            self.dynamics.weight.data[0][j] = -dynamicsC.dynamics.weight.data[latent_dim-1][j+1] / dynamicsC.dynamics.weight.data[latent_dim-1][0]
+            self.flexi.weight.data[0][j] = self.dynamics.weight.data[0][j]
 
-        self.flexi = nn.Linear(b, 1, bias=False)
+        self.flexi.weight.data[0][latent_dim-1] = self.dynamics.weight.data[0][latent_dim-1] = 1.0 / dynamicsC.dynamics.weight.data[latent_dim-1][0]
 
-        for j in range(0,b-1):
-
-
-            self.dynamics.weight.data[0][j]=-omega.dynamics.weight.data[b-1][j+1]/omega.dynamics.weight.data[b-1][0]
-
-            self.flexi.weight.data[0][j]=self.dynamics.weight.data[0][j]
-        self.flexi.weight.data[0][b-1]=self.dynamics.weight.data[0][b-1]=1.0/omega.dynamics.weight.data[b-1][0]
-        for i in range(1,b):
-            for j in range (0,b):
-                if i-1==j:
-                    self.dynamics.weight.data[i][j]=1
-                    self.fixed.weight.data[i-1][j]=1
+        for i in range(1, latent_dim):
+            for j in range(0, latent_dim):
+                if i - 1 == j:
+                    self.dynamics.weight.data[i][j] = 1
+                    self.fixed.weight.data[i-1][j] = 1
                 else:
-                    self.dynamics.weight.data[i][j]=0
-                    self.fixed.weight.data[i-1][j]=0
-
-        #print(self.dynamics.weight)
-        #print(self.flexi.weight)
-
+                    self.dynamics.weight.data[i][j] = 0
+                    self.fixed.weight.data[i-1][j] = 0
 
     def forward(self, x):
         up = self.flexi(x)
         down = self.fixed(x)
-        x = torch.cat((up,down),dim=-1)
-        self.dynamics.weight.data = torch.cat(( self.flexi.weight.data,self.fixed.weight.data),0)
+        x = torch.cat((up, down), dim=-1)
+        self.dynamics.weight.data = torch.cat((self.flexi.weight.data, self.fixed.weight.data), 0)
         return x
-
 
     def kmatrix(self):
         kmatrix = torch.cat(( self.flexi.weight.data,self.fixed.weight.data),0)
 
         return kmatrix
-        
 
 
 # All Koopman Operator Architectures (LinearizingKoop, Koop, InvKoop)
@@ -290,10 +274,11 @@ class InvKoop(nn.Module):
     nn.Module: Trainable parameters of the two kMatrices.
     """
     
-    def __init__(self, latent_dim=0, dropout=None,reg=None, bandwidth=None):
+    def __init__(self, latent_dim=0, dropout=None,reg=None, bandwidth=None, activation_fn='leaky_relu'):
         super(InvKoop, self).__init__()
 
         self.latent_dim = latent_dim
+        self.activation_fn = activation_fn
 
         if dropout != None:
             self.dropout = dropout
@@ -313,11 +298,11 @@ class InvKoop(nn.Module):
         elif self.reg == 'banded':
             self.bandwidth = bandwidth
 
-            self.bandedkoop_fwd = BandedKoopmanMatrix(latent_dim, bandwidth)
+            self.bandedkoop_fwd = BandedKoopmanMatrix(self.latent_dim, bandwidth)
             self.fwd_banded_params = self.bandedkoop_fwd.banded_params
             self.fwdkoop = self.bandedkoop_fwd.kmatrix()
 
-            self.bandedkoop_bwd = BandedKoopmanMatrix(latent_dim, bandwidth)
+            self.bandedkoop_bwd = BandedKoopmanMatrix(self.latent_dim, bandwidth)
             self.bwd_banded_params = self.bandedkoop_bwd.banded_params
             self.bwdkoop = self.bandedkoop_bwd.kmatrix()
         
@@ -331,10 +316,10 @@ class InvKoop(nn.Module):
             self.bwdkoop = self.skewsym_bwd.kmatrix()   
 
         elif self.reg == 'nondelay':
-            self.nondelay_fwd = dynamicsC(self.latent_dim)
+            self.nondelay_fwd = dynamicsC(latent_dim = self.latent_dim, act_fn = self.activation_fn)
             self.fwdkoop = self.nondelay_fwd.kmatrix()
 
-            self.nondelay_bwd = dynamics_backD(self.latent_dim, self.nondelay_fwd)
+            self.nondelay_bwd = dynamics_backD(latent_dim = self.latent_dim, dynamicsC = self.nondelay_fwd)
             self.bwdkoop = self.nondelay_bwd.kmatrix()
             
             

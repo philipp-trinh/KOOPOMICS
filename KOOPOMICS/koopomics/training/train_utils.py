@@ -1,43 +1,80 @@
+import os
+
 import pandas as pd
 import numpy as np
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
-import traceback
-from torchviz import make_dot
-
-
 import torch.nn.functional as F
 
+from .KoopmanMetrics import KoopmanMetricsMixin
+from ..test.test_utils import NaiveMeanPredictor, Evaluator
 
-from IPython.display import clear_output
-from ..test.test_utils import test, test_embedding
+from torchviz import make_dot
+import wandb
+import logging
+import matplotlib.pyplot as plt
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Check if we're in a Jupyter Notebook
+try:
+    # This will throw an error if we're not in a Jupyter Notebook
+    get_ipython().magic('pwd')
+    in_jupyter = True
+except NameError:
+    in_jupyter = False
 
 
-def set_seed(seed=0):
-    """Set one seed for reproducibility."""
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+class RunConfig:  # For WandB Model Training Run Logging
+    def __init__(self):
+        # General Project Information
+        self.project = "PregnancyKoop"
+        self.dataset = ("pregnancy dataset: Liang L, Rasmussen MH, Piening B, Shen X, "
+                        "Chen S, Röst H, Snyder JK, Tibshirani R, Skotte L, Lee NC, "
+                        "Contrepois K, Feenstra B, Zackriah H, Snyder M, Melbye M. "
+                        "Metabolic Dynamics and Prediction of Gestational Age and Time to "
+                        "Delivery in Pregnant Women. Cell. 2020 Jun 25;181(7):1680-1692.e15. "
+                        "doi: 10.1016/j.cell.2020.05.002. PMID: 32589958; PMCID: PMC7327522.")
 
-def get_device():
-    """Get a gpu if available."""
-    if torch.cuda.device_count()>0:
-        device = torch.device('cuda')
-        print("Connected to a GPU")
-    else:
-        print("Using the CPU")
-        device = torch.device('cpu')
-    return device
+        # Static Configuration Parameters
+        self.num_metabolites = 264
+        self.interpolated = True # Missing Timepoints interpolated by dataset preprocessing
+        self.feature_selected = False # Features removed by dataset preprocessing
+        self.outlier_rem = True # Outlier samples removed by dataset preprocessing
+        self.robust_scaled = True # Robustscaled (Median centering and IQR scaling)
+        self.min_max_scaled_0_1 = False # MinMax scaled to range [0, 1]
+        self.min_max_scaled_1_1 = True # MinMax scaled to range [-1, 1]
+        
+        # Embedding Parameters
+        self.embedding = None #"ff_ae" To be set in Trainer
+        self.embedding_dim = None #[264, 2000, 2000, 100] To be set in Trainer
+        self.embedding_num_hidden_layer = None # 2 To be set in Trainer
+        self.embedding_num_hidden_neurons = None #2000 To be set in Trainer
+        self.embedding_latent_dim = None #100 To be set in Trainer
+        self.embedding_input_dropout_rate = None #0 To be set in Trainer
+        self.embedding_activation_fn = None # 'leaky_relu' To be set in Trainer
+        
+        # Model Parameters (Initialized with None)
+        self.operator = None #"invkoop"
+        self.Kmatrix_modification = None #"nondelay" To be set in Trainer
+        self.learning_rate = None  # 0.001 To be set in Trainer
+        self.epochs = None  # 600 To be set in Trainer
+        self.learning_rate_change = None  # 0.8 To be set in Trainer
+        self.loss_weights = None  # [1,1,1,1,1,1] To be set in Trainer
+        self.decayEpochs = None  # [40, 100, 200] To be set in Trainer
+        self.weight_decay = None  # 0.01 To be set in Trainer
+        self.grad_clip = None  # 1 To be set in Trainer
+        self.max_Kstep = None  # 1 To be set in Trainer
+        self.mask_value = None  # -2 To be set in Trainer
+    
+    def to_dict(self):
+        return self.__dict__
+    
 
 
-def lr_scheduler(optimizer, epoch, lr_decay_rate=0.8, decayEpochs=[]):
-        """Decay learning rate by a factor of lr_decay_rate every lr_decay_epoch epochs"""
-        if epoch in decayEpochs:
-            for param_group in optimizer.param_groups:
-                param_group['lr'] *= lr_decay_rate
-            return optimizer
-        else:
-            return optimizer
+
+
 
 
 def train_embedding(model, train_dataloader, test_dataloader,
@@ -145,143 +182,10 @@ def train_embedding(model, train_dataloader, test_dataloader,
     for param in model.embedding.parameters():
         param.requires_grad = False
 
-def get_identity_loss(model, criterion, inputs):
-    embedded_output, identity_output = model.embed(inputs) 
-
-    target = inputs
-    
-    # Compute loss
-    loss_identity = criterion(identity_output, target)
-
-    return loss_identity
-
-
-def get_prediction_loss(model, criterion, inputs, timeseries_tensor,
-                        current_time_ids, timeseries_ids, delay_length=0, delay_modification=None,
-                       fwd=0, bwd=0):
-    # ------------------- Forward prediction ------------------
-    # Get dynamic forward targets
-    if fwd > 0:
-        target_tensor, comparable_booleans = get_dynamic_targets(inputs, timeseries_tensor, 
-        current_time_ids, timeseries_ids, 
-        delay_length=delay_length, delay_modification=delay_modification,                                                         
-        fwd=fwd)
-        
-    elif bwd > 0:
-        target_tensor, comparable_booleans = get_dynamic_targets(inputs, timeseries_tensor, 
-        current_time_ids, timeseries_ids,
-        delay_length=delay_length, delay_modification=delay_modification,
-        bwd=bwd)
-    
-    # Check if the first element in each row is False
-    comparable_first_elements = comparable_booleans[:, 0]
-    
-    # Count how many first elements are False (which implies the whole row is False)
-    count_all_true_rows = (comparable_first_elements == True).sum().item()
-    
-    if count_all_true_rows > 0:
-        
-        if fwd > 0:
-            bwd_output, fwd_output = model(inputs, fwd=fwd) 
-            
-            # Compute loss
-            masked_fwd_output = fwd_output[-1] * comparable_booleans.float()
-            valid_loss = criterion(masked_fwd_output, target_tensor)
-            
-        elif bwd > 0:
-            bwd_output, fwd_output = model(inputs, bwd=bwd) 
-            
-            # Compute loss
-            masked_bwd_output = bwd_output[-1] * comparable_booleans.float()
-            valid_loss = criterion(masked_bwd_output, target_tensor)
-            
-    else:
-        valid_loss = torch.tensor(1e-9)
-    
-    return valid_loss
-
-def get_inv_cons_loss(model):
-    
-    B, F = model.kmatrix()
-    K = F.shape[-1]
-
-    loss_inv_cons = 0
-    for k in range(1,K+1):
-        Fs1 = F[:,:k]
-        Bs1 = B[:k,:]
-        Fs2 = F[:k,:]
-        Bs2 = B[:,:k]
-
-        Ik = torch.eye(k).float()#.to(device)
-
-        loss_inv_cons += (torch.sum((torch.matmul(Bs1, Fs1) - Ik)**2) + \
-                             torch.sum((torch.matmul(Fs2, Bs2) - Ik)**2) ) / (2.0*k)
-        
-    return loss_inv_cons
-
-def get_inv_cons_nondelay_loss(model, inputs, criterion):
-    loss_inv_cons = torch.tensor(1e-9)
-    y = model.embedding.encode(inputs)
-
-    x = model.embedding.decode(model.operator.bwd_step(model.operator.fwd_step(y)))
-    loss_inv_cons += criterion(x, inputs)
-
-    x = model.embedding.decode(model.operator.fwd_step(model.operator.bwd_step(y)))
-    loss_inv_cons += criterion(x, inputs)
-
-    return loss_inv_cons
-
 
     
-def get_temp_cons_loss(model, max_Kstep, timeseries_tensor, criterion):
-
-    num_comparisons_fwd = 0
-    num_comparisons_bwd = 0
-
-    temp_cons_fwd = 0
-    temp_cons_bwd = 0
-
-    reverse_timeseries_tensor = torch.flip(timeseries_tensor, dims=[0])
-    for step in range(2, max_Kstep+1):
-        
-        # Temporal Forward Consistency___________________________________
-        _, fwd_output = model(timeseries_tensor[0].to(device), fwd=step) 
-
-        # Temporal Backward Consistency___________________________________
-        bwd_output, _ = model(timeseries_tensor[-1].to(device), bwd=step) 
-
-        for prior_step in range(1, step):
-
-            _, prior_fwd_output = model(timeseries_tensor[0].to(device), fwd=prior_step) 
-            num_comparisons_fwd += 1
-            
-            prior_bwd_output, _ = model(timeseries_tensor[-1].to(device), bwd=prior_step) 
-            num_comparisons_bwd += 1
-            
-            temp_cons_fwd += criterion(fwd_output[-1].to(device), prior_fwd_output[-1].to(device))
-            temp_cons_bwd += criterion(bwd_output[-1].to(device), prior_bwd_output[-1].to(device))
-
-            #Rearrangement Missing
 
 
-    return temp_cons_fwd, temp_cons_bwd
-
-
-def masked_criterion(criterion, mask_value=-1, device='cpu'):
-    # Inner function that applies the mask and then computes the loss
-    def compute_loss(predictions, targets):
-        mask = targets != mask_value  
-        masked_targets = targets[mask].to(device)  
-        masked_predictions = predictions[mask].to(device)  
-        
-        # If all values are masked, return 0 loss
-        if masked_targets.numel() == 0:
-            return torch.tensor(0.0, device=predictions.device)
-        
-        # Calculate the loss with the given criterion
-        return criterion(masked_predictions, masked_targets)
-   
-    return compute_loss
 
 def train(model, train_dl, test_dl,
           lr, learning_rate_change=0.8,
@@ -292,11 +196,12 @@ def train(model, train_dl, test_dl,
           epoch_temp_cons = 3,
           mask_value=-1,
           print_batch_info=False, comp_graph=False, plot_train=False,
+          wandb_log=False,
           model_name='Koop'):
    
     device = get_device()
     optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=weight_decay)
-    criterion = masked_criterion(nn.MSELoss().to(device), mask_value = mask_value, device=device)
+    criterion = masked_criterion(nn.MSELoss().to(device), mask_value = mask_value)
     # Save Losses for Epoch Plotting
     epoch_list = []
     
@@ -327,7 +232,7 @@ def train(model, train_dl, test_dl,
             for batch_idx, data_list in enumerate(train_dl):
                 model.train()
 
-                data_list = data_list.to(device)
+                #data_list = data_list.to(device)
                 loss_fwd_batch = torch.tensor(0.0)
                 loss_bwd_batch = torch.tensor(0.0)
                 
@@ -354,6 +259,7 @@ def train(model, train_dl, test_dl,
                     # ------------------- Backward prediction ------------------
                     y = model.embedding.encode(data_list[-1].to(device))
                     reverse_data_list = torch.flip(data_list, dims=[0])
+                    #data_list[::-1]
                     #torch.flip(data_list, dims=[0])
                     for step in range(max_Kstep):
                         
@@ -466,9 +372,14 @@ def train(model, train_dl, test_dl,
             print(f'Latent Loss: {loss_identity_y_batch}')
             print(f'Inv_Cons_Loss: {loss_inv_cons_batch}')
             print(f'Temp_Cons_Loss: {loss_temp_cons_batch}')
+            w, _ = np.linalg.eig(model.operator.nondelay_fwd.dynamics.weight.cpu().data.numpy())
 
+            print(np.abs(w))
             
-            
+            if wandb_log:
+                wandb.log({'Loss': loss_total})
+                 
+                
             if plot_train:
                 
                 # Get Train and Test Set Errors
@@ -530,7 +441,455 @@ def train(model, train_dl, test_dl,
     torch.save(model.state_dict(), f'{model_name}.pth')
 
 
+class Trainer(KoopmanMetricsMixin):
 
+    def __init__(self, model, train_dl, test_dl, runconfig: RunConfig, **kwargs):
+        self.model = model
+        self.train_dl = train_dl
+        self.test_dl = test_dl
+
+        # Set training parameters
+        self.lr = kwargs.get('lr', 0.001)
+        self.learning_rate_change = kwargs.get('learning_rate_change', 0.8)
+        self.decayEpochs = kwargs.get('decayEpochs', [40, 80, 120, 160])
+        self.num_epochs = kwargs.get('num_epochs', 10)
+        self.max_Kstep = kwargs.get('max_Kstep', 2)
+        self.weight_decay = kwargs.get('weight_decay', 0.01)
+        self.grad_clip = kwargs.get('grad_clip', 1)
+        self.loss_weights = kwargs.get('loss_weights', [1, 1, 1, 1, 1, 1])
+        self.epoch_temp_cons = kwargs.get('epoch_temp_cons', 3)
+        self.mask_value = kwargs.get('mask_value', -2)
+        self.print_batch_info = kwargs.get('print_batch_info', False)
+        self.comp_graph = kwargs.get('comp_graph', False)
+        self.plot_train = kwargs.get('plot_train', False)
+        self.wandb_log = kwargs.get('wandb_log', False)
+        self.model_name = kwargs.get('model_name', 'Koop')
+
+        # Set the device
+        self.device = self.get_device()
+        self.model.to(self.device)
+
+        # Initialize optimizer, early stopping, loss function and baseline model:
+        self.optimizer = torch.optim.AdamW(
+            filter(lambda p: p.requires_grad, self.model.parameters()),
+            lr=self.lr,
+            weight_decay=self.weight_decay
+        )
+        self.early_stopping = EarlyStopping(self.model_name, patience=10, verbose=True)
+        base_criterion = nn.MSELoss().to(self.device)
+        
+        self.criterion = kwargs.get('criterion', self.masked_criterion(
+                               base_criterion, self.mask_value))
+
+        self.baseline = kwargs.get('baseline', None)
+
+        self.Evaluator = Evaluator(self.model, self.test_dl, 
+                       mask_value = self.mask_value, max_Kstep=self.max_Kstep,
+                       baseline=self.baseline, model_name=self.model_name,
+                       criterion = self.criterion, loss_weights = self.loss_weights )
+    
+    
+        # Initialize LogIns
+        self.epoch_metrics = []
+        self.step_metrics = []
+        self.batch_metrics = []
+        self.temporal_cons_fwd_storage = []
+        self.temporal_cons_bwd_storage = []
+    
+        if self.wandb_log: # For single Run WandB Logs (For Sweeps: Use HypAgent)
+            self.wandb_initialize(runconfig)
+
+        self.current_epoch = 0
+        self.current_batch = 0
+        self.current_step = 0
+        
+    def set_seed(seed=0):
+        """Set one seed for reproducibility."""
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+
+    def train(self):
+
+        try:
+            for epoch in range(0, self.num_epochs + 1):
+                self.current_epoch += 1
+                print(f'----------Training epoch {self.current_epoch}--------')
+                
+                (train_fwd_loss_epoch, test_fwd_loss_epoch, 
+                train_bwd_loss_epoch, test_bwd_loss_epoch) = self.train_epoch()
+
+                if self.wandb_log:
+                    wandb.log({'train_fwd_loss_epoch': train_fwd_loss_epoch,
+                              'test_fwd_loss_epoch': test_fwd_loss_epoch,
+                               'train_bwd_loss_epoch': train_bwd_loss_epoch,
+                               'test_bwd_loss_epoch': test_bwd_loss_epoch
+                              })
+                    
+                
+        except KeyboardInterrupt:
+            print("Training interrupted. Saving model...")
+            torch.save(self.model.state_dict(), f"interrupted_{self.model_name}_parameters.pth")
+
+        torch.save(self.model.state_dict(), f'{self.model_name}_parameters.pth')
+
+    def train_epoch(self):
+        #-------------------------------------------------------------------------------------------------
+    
+        train_fwd_loss_epoch = torch.tensor(0.0, device=self.device)
+        train_bwd_loss_epoch = torch.tensor(0.0, device=self.device)
+        test_fwd_loss_epoch = torch.tensor(0.0, device=self.device)
+        test_bwd_loss_epoch = torch.tensor(0.0, device=self.device)
+
+        train_loss_latent_identity_epoch = torch.tensor(0.0, device=self.device)
+        train_loss_identity_epoch = torch.tensor(0.0, device=self.device)
+        train_loss_inv_cons_epoch = torch.tensor(0.0, device=self.device)
+        train_loss_temp_cons_epoch = torch.tensor(0.0, device=self.device)
+                
+        
+        #-------------------------------------------------------------------------------------------------
+        self.model.train()
+
+        for step in range(1, self.max_Kstep+1):
+            self.current_step = step
+
+            loss_fwd_step = torch.tensor(0.0, device=self.device)
+            loss_bwd_step = torch.tensor(0.0, device=self.device)
+            
+            loss_latent_identity_step = torch.tensor(0.0, device=self.device)
+            loss_identity_step = torch.tensor(0.0, device=self.device)
+            loss_inv_cons_step = torch.tensor(0.0, device=self.device)
+            loss_temp_cons_step = torch.tensor(0.0, device=self.device)
+
+            loss_total_step = torch.tensor(0.0, device=self.device)
+        
+            
+            for data_list in self.train_dl:
+                self.current_batch += 1
+                
+                #Prepare Batch Data and Loss Tensors:
+                #-------------------------------------------------------------------------------------------------
+        
+                loss_fwd_batch = torch.tensor(0.0, device=self.device)
+                loss_bwd_batch = torch.tensor(0.0, device=self.device)
+                
+                loss_latent_identity_batch = torch.tensor(0.0, device=self.device)
+                loss_identity_batch = torch.tensor(0.0, device=self.device)
+                loss_inv_cons_batch = torch.tensor(0.0, device=self.device)
+                loss_temp_cons_batch = torch.tensor(0.0, device=self.device)
+
+                loss_total_batch = torch.tensor(0.0, device=self.device)
+                #-------------------------------------------------------------------------------------------------
+                input_fwd = data_list[0].to(self.device)
+                input_bwd = data_list[-1].to(self.device)
+                
+                reverse_data_list = torch.flip(data_list, dims=[0])
+                #-------------------------------------------------------------------------------------------------
+                if self.current_step > 1 and self.loss_weights[5] > 0:
+                    self.temporal_cons_fwd_storage = torch.zeros(self.max_Kstep, *input_fwd.shape).to(self.device) 
+                    self.temporal_cons_bwd_storage = torch.zeros(self.max_Kstep, *input_bwd.shape).to(self.device) 
+        
+                # Store Prediction tensors for temporal consistency computation   
+                #-------------------------------------------------------------------------------------------------
+                # Iteratively predict shifted timepoints for input timepoint(s)
+                # Backpropagation happens for each timeshift (after batch size predictions)
+                target_fwd = data_list[step+1].to(self.device)
+                target_bwd = reverse_data_list[step+1].to(self.device)
+                #------------------------------------------------------------------------------------------------- 
+
+                loss_fwd_batch = torch.tensor(0.0, device=self.device) 
+                if self.loss_weights[0] > 0:
+                    (
+                        loss_fwd_batch, 
+                        loss_latent_fwd_identity_batch
+                    ) = self.compute_forward_loss(input_fwd, target_fwd, fwd=step)
+                    
+                loss_bwd_batch = torch.tensor(0.0, device=self.device)             
+                if self.loss_weights[1] > 0:
+                    (
+                        loss_bwd_batch, 
+                        loss_latent_bwd_identity_batch
+                    ) = self.compute_backward_loss(input_bwd, target_bwd, bwd=step)
+
+                loss_latent_identity_batch = torch.tensor(0.0, device=self.device)
+                if self.loss_weights[2] > 0:
+                    loss_latent_identity_batch = loss_latent_fwd_identity_batch
+                    loss_latent_identity_batch += loss_latent_bwd_identity_batch
+                    loss_latent_identity_batch /= 2
+
+                loss_identity_batch = torch.tensor(0.0, device=self.device)
+                if self.loss_weights[3] > 0:
+                    loss_identity_batch = self.compute_identity_loss(input_fwd, target_fwd)
+                    loss_identity_batch += self.compute_identity_loss(input_bwd, target_bwd)
+                    loss_identity_batch /= 2
+
+                loss_inv_cons_batch = torch.tensor(0.0, device=self.device)
+                if self.loss_weights[4] > 0:
+                    loss_inv_cons_batch = self.compute_inverse_consistency(input_fwd, target_fwd)
+                    loss_inv_cons_batch += self.compute_inverse_consistency(input_bwd, target_bwd)
+                    loss_inv_cons_batch /= 2
+    
+                loss_temp_cons_batch = torch.tensor(0.0, device=self.device)
+                if (self.loss_weights[5] > 0 and self.current_epoch >= self.epoch_temp_cons and self.current_step > 1):
+                    loss_temp_cons_batch = self.compute_temporal_consistency(temporal_cons_fwd_storage)
+                    loss_temp_cons_batch += self.compute_temporal_consistency(temporal_cons_bwd_storage, bwd=True)
+                    loss_temp_cons_batch /= 2
+    
+                # Calculate total loss
+                loss_total_batch = self.calculate_total_loss(loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch,
+                                                            loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch)
+    
+                # ===================Backward propagation==========================
+                self.optimize_model(loss_total_batch)
+    
+                loss_fwd_step += loss_fwd_batch.detach()
+                loss_bwd_step += loss_bwd_batch.detach()
+                loss_latent_identity_step += loss_latent_identity_batch.detach()
+                loss_identity_step += loss_identity_batch.detach()
+                loss_inv_cons_step += loss_inv_cons_batch.detach()
+                loss_temp_cons_step += loss_temp_cons_batch.detach()
+
+                loss_total_step += loss_total_batch
+
+                train_fwd_loss_epoch += loss_fwd_batch.detach() 
+                train_bwd_loss_epoch += loss_bwd_batch.detach()
+    
+                train_loss_latent_identity_epoch += loss_latent_identity_batch.detach()
+                train_loss_identity_epoch += loss_identity_batch.detach()
+                train_loss_inv_cons_epoch += loss_inv_cons_batch.detach()
+                train_loss_temp_cons_epoch += loss_temp_cons_batch.detach()
+                                    
+                
+                # Logging and printing batch info
+                self.log_batch_info(loss_total_batch, loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch, 
+                   loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch)
+        
+                self.end_batch()
+
+            self.log_step_info(loss_total_step, loss_fwd_step, loss_bwd_step, loss_latent_identity_step, loss_identity_step, loss_inv_cons_step, loss_temp_cons_step)
+            
+            self.end_step()
+            
+        # Learning rate decay
+        self.optimizer = self.lr_scheduler(epoch)
+        
+        train_fwd_loss_epoch /= len(self.train_dl)
+        train_bwd_loss_epoch /= len(self.train_dl)
+        model_test_metrics, baseline_test_metrics = self.Evaluator()
+        test_fwd_loss = model_test_metrics["forward_loss"]
+        test_bwd_loss = model_test_metrics["backward_loss"]
+    
+        baseline_fwd_loss = 0
+        baseline_bwd_loss = 0
+        if baseline is not None:
+            baseline_fwd_loss = baseline_test_metrics["forward_loss"]
+            baseline_bwd_loss = baseline_test_metrics["backward_loss"]
+            
+        # Log and plot epoch losses
+        self.log_epoch_losses(train_fwd_loss_epoch, test_fwd_loss_epoch, 
+                              train_bwd_loss_epoch, test_bwd_loss_epoch,
+                             train_loss_latent_identity_epoch, train_loss_identity_epoch,
+                             train_loss_inv_cons_epoch, train_loss_temp_cons_epoch)
+        
+        self.end_epoch(baseline_fwd_loss, baseline_bwd_loss)
+
+        return (train_fwd_loss_epoch, test_fwd_loss_epoch, 
+                train_bwd_loss_epoch, test_bwd_loss_epoch)
+
+    def optimize_model(self, loss_total):
+        self.optimizer.zero_grad()
+        if loss_total > 0:
+            loss_total.backward(retain_graph=True)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)  # gradient clip
+            self.optimizer.step()
+            
+    def wandb_initialize(self, runconfig):
+
+        wandb.init(
+            project=runconfig.project,
+            config={
+                "dataset": runconfig.dataset,
+                "num_metabolites": runconfig.num_metabolites,
+                "interpolated": runconfig.interpolated,
+                "feature_selected": runconfig.feature_selected,
+                "outlier_rem": runconfig.outlier_rem,
+                "robust_scaled": runconfig.robust_scaled,
+                "min_max_scaled_0_1": runconfig.min_max_scaled_0_1,
+                "min_max_scaled_-1_1": runconfig.min_max_scaled_1_1,
+                
+                "embedding": next((k for k, v in self.model.embedding_info.items() if v), None),
+                "embedding_dim": self.model.embedding.E_layer_dims,
+                "embedding_num_hidden_layer": len(self.model.embedding.E_layer_dims)-2,
+                "embedding_num_hidden_neurons": self.model.embedding.E_layer_dims[1],
+                "embedding_latent_dim": self.model.embedding.E_layer_dims[-1],
+                "embedding_input_dropout_rate": self.model.embedding.E_dropout_rates[0],
+                
+                "activation_fn": self.model.embedding.activation_fn,
+                
+                "operator": next((k for k, v in self.model.operator_info.items() if v), None),
+                "Kmatrix_modification": next((k for k, v in self.model.regularization_info.items() if v), None),
+                
+                "learning_rate": self.lr,
+                "epochs": self.num_epochs,
+                "learning_rate_change": self.learning_rate_change,
+                "loss_weights": self.loss_weights,
+                "decayEpochs": self.decayEpochs,
+                "weight_decay": self.weight_decay,
+                "grad_clip": self.grad_clip,
+                "max_Kstep": self.max_Kstep,
+                "mask_value": self.mask_value,
+                "optimizer": 'adam'
+            }
+        )
+
+        wandb.watch(self.model, log='all', log_freq=1)
+
+        
+    def log_batch_info(self, loss_total_batch, loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch, 
+                       loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch):
+        
+        self.batch_metrics.append({
+            'epoch': self.current_epoch,
+            'step': self.current_step,
+            'batch': self.current_batch,
+            'train_total_loss': loss_total_batch,
+            'train_fwd_loss': loss_fwd_batch,
+            'train_bwd_loss': loss_bwd_batch,
+            'train_latent_loss': loss_latent_identity_batch,
+            'train_identity_loss': loss_identity_batch,
+            'train_inv_cons_loss': loss_inv_cons_batch,
+            'train_temp_cons_loss': loss_temp_cons_batch,
+        })
+
+    def log_step_info(self, loss_total_step, loss_fwd_step, loss_bwd_step, loss_latent_identity_step, 
+                       loss_identity_step, loss_inv_cons_step, loss_temp_cons_step):
+        
+        self.step_metrics.append({
+            'epoch': self.current_epoch,
+            'step': self.current_step,
+            'train_total_loss': loss_total_step,
+            'train_fwd_loss': loss_fwd_step,
+            'train_bwd_loss': loss_bwd_step,
+            'train_latent_loss': loss_latent_identity_step,
+            'train_identity_loss': loss_identity_step,
+            'train_inv_cons_loss': loss_inv_cons_step,
+            'train_temp_cons_loss': loss_temp_cons_step,
+        })
+
+    def log_epoch_losses(self, train_fwd_loss_epoch, test_fwd_loss_epoch, 
+                         train_bwd_loss_epoch, test_bwd_loss_epoch,
+                         train_loss_latent_identity_epoch, train_loss_identity_epoch,
+                         train_loss_inv_cons_epoch, train_loss_temp_cons_epoch):
+        
+        self.epoch_metrics.append({
+            'epoch': self.current_epoch,
+            'train_fwd_loss': train_fwd_loss_epoch,
+            'test_fwd_loss': test_fwd_loss_epoch,
+            'train_bwd_loss': train_bwd_loss_epoch,
+            'test_bwd_loss': test_bwd_loss_epoch,
+            'train_loss_latent_identity_epoch': train_loss_latent_identity_epoch,
+            'train_loss_identity_epoch': train_loss_identity_epoch,
+            'train_loss_inv_cons_epoch': train_loss_inv_cons_epoch,
+            'train_loss_temp_cons_epoch': train_loss_temp_cons_epoch
+        })
+
+    def lr_scheduler(self, lr_decay_rate=0.8, decayEpochs=[]):
+            """Decay learning rate by a factor of lr_decay_rate every lr_decay_epoch epochs"""
+            if self.current_epoch in decayEpochs:
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] *= lr_decay_rate
+                return optimizer
+            else:
+                return optimizer
+
+    def end_batch(self):
+
+        if self.current_batch % 10 == 0:
+            if in_jupyter:
+                from IPython.display import clear_output
+                clear_output(wait=True)  # Clear output in Jupyter Notebook
+            else:
+                os.system('cls' if os.name == 'nt' else 'clear')  # Clear terminal output
+
+        
+        current_batch_metrics = self.batch_metrics[-1]
+        print(f'----------Training Epoch {self.current_epoch} --------')
+        print(f'----------Training Step {self.current_step}--------')
+        print(f'Batch Nr. {self.current_batch}')
+        print(f'Total Loss: {current_batch_metrics["train_total_loss"]}')
+        print('')
+        print(f'Forward Loss: {current_batch_metrics["train_fwd_loss"]}')
+        print(f'Backward Loss: {current_batch_metrics["train_bwd_loss"]}')
+        print(f'Latent Loss: {current_batch_metrics["train_latent_loss"]}')
+        print(f'Identity Loss: {current_batch_metrics["train_identity_loss"]}')
+        print(f'Inverse Consistency Loss: {current_batch_metrics["train_inv_cons_loss"]}')
+        print(f'Temporal Consistency Loss: {current_batch_metrics["train_temp_cons_loss"]}')
+
+    def end_step(self):
+        
+        current_batch_metrics = self.batch_metrics[-1]
+        print(f'----------Training Epoch {self.current_epoch}--------')
+        print(f'==========Finished Training Step {self.current_step}=======')
+        print(f'Total Loss: {current_step_metrics["train_total_loss"]}')
+        print('')
+        print(f'Forward Loss: {current_step_metrics["train_fwd_loss"]}')
+        print(f'Backward Loss: {current_step_metrics["train_bwd_loss"]}')
+        print(f'Latent Loss: {current_step_metrics["train_latent_loss"]}')
+        print(f'Identity Loss: {current_step_metrics["train_identity_loss"]}')
+        print(f'Inverse Consistency Loss: {current_step_metrics["train_inv_cons_loss"]}')
+        print(f'Temporal Consistency Loss: {current_step_metrics["train_temp_cons_loss"]}')
+
+    def end_epoch(self, baseline_fwd_loss, baseline_bwd_loss):
+
+        current_epoch_metrics = self.epoch_metrics[-1]
+        print(f'==========Finished Training Epoch {self.current_epoch}==========')
+        print(f'Train fwd Loss: {current_epoch_metrics["train_fwd_loss"]}')
+        print(f'Train bwd Loss: {current_epoch_metrics["train_bwd_loss"]}')
+        print('')
+        print(f'Test fwd Loss: {current_epoch_metrics["test_fwd_loss"]}')
+        print(f'Test bwd Loss: {current_epoch_metrics["test_bwd_loss"]}')
+
+        if self.baseline is not None:
+            print(f'Baseline Test bwd Loss: {baseline_fwd_loss}')
+            print(f'Baseline Test bwd Loss: {baseline_bwd_loss}')
+
+        # Convert batch metrics to DataFrame at the end of an epoch
+        batch_df = pd.DataFrame(self.batch_metrics)
+        self.batch_metrics.clear()  # Clear the list after logging
+        # Save to CSV or append to a file
+        batch_df.to_csv(f'{self.model_name}_batch_metrics_epoch.csv', index=False, mode='a', header=not self.current_epoch)
+
+        # Convert epoch metrics to DataFrame and save
+        epoch_df = pd.DataFrame(self.epoch_metrics)
+        self.epoch_metrics.clear()  # Clear the list after logging
+        epoch_df.to_csv(f'{self.model_name}_epoch_metrics.csv', index=False, mode='a', header=not self.current_epoch)
+
+
+class EarlyStopping:
+    def __init__(self, model_name, patience=5, verbose=False):
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.model_path = f'best_{model_name}_parameters.pth'
+
+    def __call__(self, validation_loss, model):
+        if self.best_score is None:
+            self.best_score = validation_loss
+            self.save_model(model)
+        elif validation_loss < self.best_score:
+            self.best_score = validation_loss
+            self.save_model(model)
+            self.counter = 0
+        else:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+
+    def save_model(self, model):
+        torch.save(model.state_dict(), self.model_path)
+        if self.verbose:
+            print(f'Model saved to {self.model_path}')
 
 def update_batch_loss_plot(epoch, fwd_loss_batch_values, bwd_loss_batch_values, inv_cons_loss_batch_values, temp_cons_loss_batch_values, total_loss_batch_values):
     # Clear the output to update the plot

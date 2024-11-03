@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -7,7 +6,7 @@ import torch.nn.functional as F
 
 from koopomics.model.embeddingANN import DiffeomMap, FF_AE, Conv_AE, Conv_E_FF_D
 from koopomics.model.koopmanANN import LinearizingKoop, InvKoop, Koop
-
+from koopomics.training.train_utils import Trainer
 
 class KoopmanModel(nn.Module):
   # x0 <-> g <-> g_lin <-> gnext_lin <-> gnext <-> x1
@@ -19,136 +18,87 @@ class KoopmanModel(nn.Module):
         self.embedding = embedding
         self.operator = operator
 
-        print('Model loaded with:')
-        if isinstance(embedding, DiffeomMap):
-            self.diffeom = True  
-            print('DiffeomMap module')
-        else:
-            self.diffeom = False 
+        # Store the type of modules
+        self.embedding_info = {
+            'diffeom': isinstance(embedding, DiffeomMap),
+            'ff_ae': isinstance(embedding, FF_AE),
+            'conv_ae': isinstance(embedding, Conv_AE),
+            'conv_e_ff_d': isinstance(embedding, Conv_E_FF_D),
 
-        if isinstance(embedding, FF_AE):
-            self.ff_ae = True  
-            print('FF_AE module')
-        else:
-            self.ff_ae = False 
+        }
         
-        if isinstance(embedding, Conv_AE):
-            self.conv_ae = True  
-            print('Conv_AE module')
-        else:
-            self.conv_ae = False 
-
-        if isinstance(embedding, Conv_E_FF_D):
-            self.conv_e_ff_d = True  
-            print('Conv_E_FF_D module')
-        else:
-            self.conv_e_ff_d = False 
+        self.operator_info = {
+            'linkoop': isinstance(operator, LinearizingKoop),
+            'invkoop': isinstance(operator, InvKoop),
+            'koop': isinstance(operator, Koop)
+            
+        }
         
+        self.regularization_info = {
+            'no': operator.reg == None,
+            'banded': operator.reg == 'banded',
+            'skewsym': operator.reg == 'skewsym',
+            'nondelay': operator.reg == 'nondelay',
+        }
+        self.print_model_info()
+ 
 
-        if isinstance(operator, LinearizingKoop):
-            self.linkoop = True  
-            print('LinearizingKoop module')
-            if self.operator.bwd:
-                print('An invertible Koop')
-        else:
-            self.linkoop = False 
 
-        if isinstance(operator, InvKoop):
-            self.invkoop = True  
-            print('InvKoop module')
-            if self.operator.bwd:
-                print('An invertible Koop')
-        else:
-            self.invkoop = False 
+    def print_model_info(self):
+        for name, exists in self.embedding_info.items():
+            if exists:
+                print(f'{name} embedding module is active.')
+                
+        for name, exists in self.operator_info.items():
+            if exists:
+                print(f'{name} operator module is active; with')
+                
+        for name, exists in self.regularization_info.items():
+            if exists:
+                print(f'{name} matrix regularization.')
 
-        if isinstance(operator, Koop):
-            self.Koop = True  
-            print('Koop module')
-            self.operator.bwd = False
-
-        else:
-            self.Koop = False 
     
 
-    def fit(self, input_data):
-        # training function
+    def fit(self, train_dl, test_dl, runconfig, **kwargs):
+        
+        trainer = Trainer(self, train_dl, test_dl, runconfig, **kwargs)
+        trainer.train()
         return
 
     def embed(self, input_vector):
-        if self.diffeom:
-            e = self.embedding.encode(input_vector)
-            x = self.embedding.decode(e)
-        elif self.ff_ae:
-            e = self.embedding.encode(input_vector)
-            x = self.embedding.decode(e)
-        elif self.conv_ae:
-            e = self.embedding.encode(input_vector)
-            x = self.embedding.decode(e)
-        elif self.conv_e_ff_d:
-            e = self.embedding.encode(input_vector)
-            x = self.embedding.decode(e)
-
+        e = self.embedding.encode(input_vector)
+        x = self.embedding.decode(e)
         return e, x
             
     def predict(self, input_vector, fwd=0, bwd=0):
 
         predict_bwd = []
         predict_fwd = []
-        latent_bwd = []
-        latent_fwd = []
         
-        if self.diffeom:
-            
-            e = self.embedding.encode(input_vector)
-            print(e)
 
-            if bwd > 0:
-                e_temp = e
-                for step in range(bwd):
-                    e_bwd = self.operator.bwd_step(e_temp)
-                    outputs = self.embedding.decode(e_bwd)
+        e = self.embedding.encode(input_vector)
+        if bwd > 0:
+            e_temp = e
+            for step in range(bwd):
+                e_bwd = self.operator.bwd_step(e_temp)
+                outputs = self.embedding.decode(e_bwd)
 
-                    predict_bwd.append(outputs)
-                    latent_bwd.append(e_bwd)
-                    e_temp = e_bwd
-            
-            if fwd > 0:
-                e_temp = e
-                for step in range(fwd):
-                    e_fwd = self.operator.fwd_step(e_temp)
-                    outputs = self.embedding.decode(e_fwd)
-                    
-                    predict_fwd.append(outputs)
-                    latent_fwd.append(e_fwd)
-                    e_temp = e_fwd
-
+                predict_bwd.append(outputs)
+                
+                e_temp = e_bwd
         
-        if self.ff_ae:
-            e = self.embedding.encode(input_vector)
-            if bwd > 0:
-                e_temp = e
-                for step in range(bwd):
-                    e_bwd = self.operator.bwd_step(e_temp)
-                    outputs = self.embedding.decode(e_bwd)
-
-                    predict_bwd.append(outputs)
-                    latent_bwd.append(e_bwd)
-                    
-                    e_temp = e_bwd
-            
-            if fwd > 0:
-                e_temp = e
-                for step in range(fwd):
-                    e_fwd = self.operator.fwd_step(e_temp)
-                    outputs = self.embedding.decode(e_fwd)
-                    
-                    predict_fwd.append(outputs)
-                    latent_fwd.append(e_fwd)
-                    
-                    e_temp = e_fwd
+        if fwd > 0:
+            e_temp = e
+            for step in range(fwd):
+                e_fwd = self.operator.fwd_step(e_temp)
+                outputs = self.embedding.decode(e_fwd)
+                
+                predict_fwd.append(outputs)
+                
+                e_temp = e_fwd
 
         if self.operator.bwd == False:
-            return predict_fwd, latent_fwd
+            return predict_fwd
         else:
             return predict_bwd, predict_fwd
 
@@ -160,6 +110,8 @@ class KoopmanModel(nn.Module):
         else:
             predict_bwd, predict_fwd = self.predict(input_vector, fwd, bwd)
             return predict_bwd, predict_fwd
+
+    
     def kmatrix(self):
         
         if self.operator.bwd == False:

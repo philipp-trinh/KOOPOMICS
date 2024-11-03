@@ -66,8 +66,7 @@ class Evaluator(KoopmanMetricsMixin):
 
         self.criterion = kwargs.get('criterion', self.masked_criterion(base_criterion, mask_value=self.mask_value))
         self.loss_weights = kwargs.get('loss_weights', [1, 1, 1, 1, 1, 1])
-        self.num_timepoints = 0
-
+        self.current_step = 0
         self.metrics = {} 
         
     def __call__(self):
@@ -94,10 +93,12 @@ class Evaluator(KoopmanMetricsMixin):
         """
         self.model.eval()  # Set the model to evaluation mode
         
-        test_fwd_loss = 0.0
-        test_bwd_loss = 0.0
-        total_test_loss = 0.0
-    
+        test_fwd_loss =  torch.tensor(0.0, device=self.device)
+
+        test_bwd_loss =  torch.tensor(0.0, device=self.device)
+
+        total_test_loss =  torch.tensor(0.0, device=self.device)
+   
         with torch.no_grad():  # Disable gradient computation
             for data_list in self.test_loader:
                 # Initialize batch losses
@@ -111,31 +112,29 @@ class Evaluator(KoopmanMetricsMixin):
                 # Prepare forward and backward inputs
                 input_fwd = data_list[0].to(self.device)
                 input_bwd = data_list[-1].to(self.device)
-                latent_input_fwd = self.model.embedding.encode(input_fwd)
-                latent_input_bwd = self.model.embedding.encode(input_bwd)
                 reverse_data_list = torch.flip(data_list, dims=[0])
     
-                # Temporal consistency storage if required
-                if self.max_Kstep > 1 and self.loss_weights[5] > 0:
-                    temporal_cons_fwd_storage = torch.zeros(self.max_Kstep, *input_fwd.shape).to(self.device)
-                    temporal_cons_bwd_storage = torch.zeros(self.max_Kstep, *input_bwd.shape).to(self.device)
     
                 # Loop through each step in max_Kstep
-                for step in range(self.max_Kstep):
-                    target_fwd = data_list[step + 1].to(self.device)
-                    target_bwd = reverse_data_list[step + 1].to(self.device)
+                for step in range(1,self.max_Kstep+1):
+                    self.current_step = step
+                    target_fwd = data_list[step].to(self.device)
+                    target_bwd = reverse_data_list[step].to(self.device)
+    
+                    # Temporal consistency storage if required
+                    if self.current_step > 1 and self.loss_weights[5] > 0:
+                        self.temporal_cons_fwd_storage = torch.zeros(self.max_Kstep, *input_fwd.shape).to(self.device)
+                        self.temporal_cons_bwd_storage = torch.zeros(self.max_Kstep, *input_bwd.shape).to(self.device)
     
                     # Forward loss computation
                     if self.loss_weights[0] > 0:
-                        shifted_latent_fwd, loss_fwd_step, loss_latent_fwd_identity_step = self.compute_forward_loss(latent_input_fwd, target_fwd)
-                        latent_input_fwd = shifted_latent_fwd
+                        loss_fwd_step, loss_latent_fwd_identity_step = self.compute_forward_loss(input_fwd, target_fwd, fwd=step)
                         loss_fwd_batch += loss_fwd_step
                         loss_latent_identity_batch += loss_latent_fwd_identity_step
     
                     # Backward loss computation
                     if self.loss_weights[1] > 0:
-                        shifted_latent_bwd, loss_bwd_step, loss_latent_bwd_identity_step = self.compute_backward_loss(latent_input_bwd, target_bwd)
-                        latent_input_bwd = shifted_latent_bwd
+                        loss_bwd_step, loss_latent_bwd_identity_step = self.compute_backward_loss(input_bwd, target_bwd, bwd=step)
                         loss_bwd_batch += loss_bwd_step
                         loss_latent_identity_batch += loss_latent_bwd_identity_step
     
@@ -146,12 +145,12 @@ class Evaluator(KoopmanMetricsMixin):
     
                     # Inverse consistency loss
                     if self.loss_weights[4] > 0:
-                        loss_inv_cons_step = (self.inverse_consistency(input_fwd, target_fwd) + self.inverse_consistency(input_bwd, target_bwd)) / 2
+                        loss_inv_cons_step = (self.compute_inverse_consistency(input_fwd, target_fwd) + self.compute_inverse_consistency(input_bwd, target_bwd)) / 2
                         loss_inv_cons_batch += loss_inv_cons_step
     
                     # Temporal consistency loss
-                    if self.loss_weights[5] > 0 and epoch >= self.epoch_temp_cons and self.max_Kstep > 1:
-                        loss_temp_cons_step = (self.temporal_consistency(temporal_cons_fwd_storage) + self.temporal_consistency(temporal_cons_bwd_storage, bwd=True)) / 2
+                    if self.loss_weights[5] > 0 and self.current_step > 1:
+                        loss_temp_cons_step = (self.compute_temporal_consistency(temporal_cons_fwd_storage) + self.compute_temporal_consistency(temporal_cons_bwd_storage, bwd=True)) / 2
                         loss_temp_cons_batch += loss_temp_cons_step
     
                 # Calculate total batch loss
@@ -164,16 +163,14 @@ class Evaluator(KoopmanMetricsMixin):
                 test_fwd_loss += loss_fwd_batch
                 test_bwd_loss += loss_bwd_batch
                 total_test_loss += loss_total_batch
-    
         # Average loss for the test loader
-        avg_test_fwd_loss = test_fwd_loss_epoch / len(self.test_loader)
-        avg_test_bwd_loss = test_bwd_loss_epoch / len(self.test_loader)
-        avg_total_test_loss = total_test_loss_epoch / len(self.test_loader)
-    
+        avg_test_fwd_loss = test_fwd_loss / len(self.test_loader)
+        avg_test_bwd_loss = test_bwd_loss / len(self.test_loader)
+        avg_total_test_loss = total_test_loss / len(self.test_loader)
         return {
-            'forward_loss': avg_test_fwd_loss.item(),
-            'backward_loss': avg_test_bwd_loss.item(),
-            'total_loss': avg_total_test_loss.item()
+            'forward_loss': avg_test_fwd_loss,
+            'backward_loss': avg_test_bwd_loss,
+            'total_loss': avg_total_test_loss
         }
     
     def compute_baseline_performance(self):
@@ -192,7 +189,7 @@ class Evaluator(KoopmanMetricsMixin):
         test_bwd_loss = torch.tensor(0.0, device=self.device)
     
         with torch.no_grad():  # Disable gradient computation
-            for data_list in test_loader:
+            for data_list in self.test_loader:
                 # Initialize batch losses
                 loss_fwd_batch = torch.tensor(0.0, device=self.device)
                 loss_bwd_batch = torch.tensor(0.0, device=self.device)
@@ -227,8 +224,8 @@ class Evaluator(KoopmanMetricsMixin):
                 test_bwd_loss += loss_bwd_batch
     
         # Average loss for the test loader
-        avg_test_fwd_loss = test_fwd_loss_epoch / len(self.test_loader)
-        avg_test_bwd_loss = test_bwd_loss_epoch / len(self.test_loader)
+        avg_test_fwd_loss = test_fwd_loss / len(self.test_loader)
+        avg_test_bwd_loss = test_bwd_loss / len(self.test_loader)
     
         return {
             'forward_loss': avg_test_fwd_loss.item(),

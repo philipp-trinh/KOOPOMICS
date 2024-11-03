@@ -516,13 +516,16 @@ class Trainer(KoopmanMetricsMixin):
                 print(f'----------Training epoch {self.current_epoch}--------')
                 
                 (train_fwd_loss_epoch, test_fwd_loss_epoch, 
-                train_bwd_loss_epoch, test_bwd_loss_epoch) = self.train_epoch()
+                train_bwd_loss_epoch, test_bwd_loss_epoch,
+                baseline_fwd_loss, baseline_bwd_loss) = self.train_epoch()
 
                 if self.wandb_log:
                     wandb.log({'train_fwd_loss_epoch': train_fwd_loss_epoch,
                               'test_fwd_loss_epoch': test_fwd_loss_epoch,
                                'train_bwd_loss_epoch': train_bwd_loss_epoch,
-                               'test_bwd_loss_epoch': test_bwd_loss_epoch
+                               'test_bwd_loss_epoch': test_bwd_loss_epoch,
+                               'baseline_fwd_loss': baseline_fwd_loss,
+                               'baseline_bwd_loss': baseline_bwd_loss
                               })
                     
                 
@@ -592,8 +595,8 @@ class Trainer(KoopmanMetricsMixin):
                 #-------------------------------------------------------------------------------------------------
                 # Iteratively predict shifted timepoints for input timepoint(s)
                 # Backpropagation happens for each timeshift (after batch size predictions)
-                target_fwd = data_list[step+1].to(self.device)
-                target_bwd = reverse_data_list[step+1].to(self.device)
+                target_fwd = data_list[step].to(self.device)
+                target_bwd = reverse_data_list[step].to(self.device)
                 #------------------------------------------------------------------------------------------------- 
 
                 loss_fwd_batch = torch.tensor(0.0, device=self.device) 
@@ -670,17 +673,17 @@ class Trainer(KoopmanMetricsMixin):
             self.end_step()
             
         # Learning rate decay
-        self.optimizer = self.lr_scheduler(epoch)
+        self.optimizer = self.lr_scheduler()
         
         train_fwd_loss_epoch /= len(self.train_dl)
         train_bwd_loss_epoch /= len(self.train_dl)
         model_test_metrics, baseline_test_metrics = self.Evaluator()
-        test_fwd_loss = model_test_metrics["forward_loss"]
-        test_bwd_loss = model_test_metrics["backward_loss"]
-    
+        test_fwd_loss_epoch = model_test_metrics["forward_loss"]
+        test_bwd_loss_epoch = model_test_metrics["backward_loss"]
+        
         baseline_fwd_loss = 0
         baseline_bwd_loss = 0
-        if baseline is not None:
+        if self.baseline is not None:
             baseline_fwd_loss = baseline_test_metrics["forward_loss"]
             baseline_bwd_loss = baseline_test_metrics["backward_loss"]
             
@@ -693,7 +696,8 @@ class Trainer(KoopmanMetricsMixin):
         self.end_epoch(baseline_fwd_loss, baseline_bwd_loss)
 
         return (train_fwd_loss_epoch, test_fwd_loss_epoch, 
-                train_bwd_loss_epoch, test_bwd_loss_epoch)
+                train_bwd_loss_epoch, test_bwd_loss_epoch,
+                baseline_fwd_loss, baseline_bwd_loss)
 
     def optimize_model(self, loss_total):
         self.optimizer.zero_grad()
@@ -751,13 +755,13 @@ class Trainer(KoopmanMetricsMixin):
             'epoch': self.current_epoch,
             'step': self.current_step,
             'batch': self.current_batch,
-            'train_total_loss': loss_total_batch,
-            'train_fwd_loss': loss_fwd_batch,
-            'train_bwd_loss': loss_bwd_batch,
-            'train_latent_loss': loss_latent_identity_batch,
-            'train_identity_loss': loss_identity_batch,
-            'train_inv_cons_loss': loss_inv_cons_batch,
-            'train_temp_cons_loss': loss_temp_cons_batch,
+            'train_total_loss': loss_total_batch.detach(),
+            'train_fwd_loss': loss_fwd_batch.detach(),
+            'train_bwd_loss': loss_bwd_batch.detach(),
+            'train_latent_loss': loss_latent_identity_batch.detach(),
+            'train_identity_loss': loss_identity_batch.detach(),
+            'train_inv_cons_loss': loss_inv_cons_batch.detach(),
+            'train_temp_cons_loss': loss_temp_cons_batch.detach(),
         })
 
     def log_step_info(self, loss_total_step, loss_fwd_step, loss_bwd_step, loss_latent_identity_step, 
@@ -766,13 +770,13 @@ class Trainer(KoopmanMetricsMixin):
         self.step_metrics.append({
             'epoch': self.current_epoch,
             'step': self.current_step,
-            'train_total_loss': loss_total_step,
-            'train_fwd_loss': loss_fwd_step,
-            'train_bwd_loss': loss_bwd_step,
-            'train_latent_loss': loss_latent_identity_step,
-            'train_identity_loss': loss_identity_step,
-            'train_inv_cons_loss': loss_inv_cons_step,
-            'train_temp_cons_loss': loss_temp_cons_step,
+            'train_total_loss': loss_total_step.detach(),
+            'train_fwd_loss': loss_fwd_step.detach(),
+            'train_bwd_loss': loss_bwd_step.detach(),
+            'train_latent_loss': loss_latent_identity_step.detach(),
+            'train_identity_loss': loss_identity_step.detach(),
+            'train_inv_cons_loss': loss_inv_cons_step.detach(),
+            'train_temp_cons_loss': loss_temp_cons_step.detach(),
         })
 
     def log_epoch_losses(self, train_fwd_loss_epoch, test_fwd_loss_epoch, 
@@ -782,35 +786,27 @@ class Trainer(KoopmanMetricsMixin):
         
         self.epoch_metrics.append({
             'epoch': self.current_epoch,
-            'train_fwd_loss': train_fwd_loss_epoch,
-            'test_fwd_loss': test_fwd_loss_epoch,
-            'train_bwd_loss': train_bwd_loss_epoch,
-            'test_bwd_loss': test_bwd_loss_epoch,
-            'train_loss_latent_identity_epoch': train_loss_latent_identity_epoch,
-            'train_loss_identity_epoch': train_loss_identity_epoch,
-            'train_loss_inv_cons_epoch': train_loss_inv_cons_epoch,
-            'train_loss_temp_cons_epoch': train_loss_temp_cons_epoch
+            'train_fwd_loss': train_fwd_loss_epoch.detach(),
+            'test_fwd_loss': test_fwd_loss_epoch.detach(),
+            'train_bwd_loss': train_bwd_loss_epoch.detach(),
+            'test_bwd_loss': test_bwd_loss_epoch.detach(),
+            'train_loss_latent_identity_epoch': train_loss_latent_identity_epoch.detach(),
+            'train_loss_identity_epoch': train_loss_identity_epoch.detach(),
+            'train_loss_inv_cons_epoch': train_loss_inv_cons_epoch.detach(),
+            'train_loss_temp_cons_epoch': train_loss_temp_cons_epoch.detach()
         })
 
-    def lr_scheduler(self, lr_decay_rate=0.8, decayEpochs=[]):
+    def lr_scheduler(self):
             """Decay learning rate by a factor of lr_decay_rate every lr_decay_epoch epochs"""
-            if self.current_epoch in decayEpochs:
+            if self.current_epoch in self.decayEpochs:
                 for param_group in self.optimizer.param_groups:
-                    param_group['lr'] *= lr_decay_rate
-                return optimizer
+                    param_group['lr'] *= self.learning_rate_change
+                return self.optimizer
             else:
-                return optimizer
+                return self.optimizer
 
     def end_batch(self):
 
-        if self.current_batch % 10 == 0:
-            if in_jupyter:
-                from IPython.display import clear_output
-                clear_output(wait=True)  # Clear output in Jupyter Notebook
-            else:
-                os.system('cls' if os.name == 'nt' else 'clear')  # Clear terminal output
-
-        
         current_batch_metrics = self.batch_metrics[-1]
         print(f'----------Training Epoch {self.current_epoch} --------')
         print(f'----------Training Step {self.current_step}--------')
@@ -826,7 +822,7 @@ class Trainer(KoopmanMetricsMixin):
 
     def end_step(self):
         
-        current_batch_metrics = self.batch_metrics[-1]
+        current_step_metrics = self.step_metrics[-1]
         print(f'----------Training Epoch {self.current_epoch}--------')
         print(f'==========Finished Training Step {self.current_step}=======')
         print(f'Total Loss: {current_step_metrics["train_total_loss"]}')

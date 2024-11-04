@@ -1,0 +1,10 @@
+wandb_version: 1
+
+E_layer_dims:
+  value: 264,1500,1500,50
+batch_size:
+  value: 23.00811233605395
+dl_structure:
+  value: random
+max_Kstep:
+  value: 1

@@ -66,7 +66,7 @@ def OmicsDataloader(df, feature_list, replicate_id,
     
         trainDat = []
         start=0
-        for i in np.arange(max_Ksteps,-1, -1):
+        for i in np.arange(max_Kstep,-1, -1):
         	if i == 0:
         		trainDat.append(df_tensor[sample,start:].float())
         	else:
@@ -116,11 +116,11 @@ def OmicsDataloader(df, feature_list, replicate_id,
         
             # Reshape the tensor
             feature_dim = train_tensor.shape[-1]
-            segm_tensor = train_tensor.view(train_tensor.shape[0], max_Ksteps+1, num_segments, valid_slice_size, feature_dim)
+            segm_tensor = train_tensor.view(train_tensor.shape[0], max_Kstep+1, num_segments, valid_slice_size, feature_dim)
             # shape: [num_samples, num_steps, num_segments, num_timepoints (in timeseries), num_features] this allows random shuffling of temporally structured slices for training
             
             
-            segm_tensor = segm_tensor.permute(0, 2, 1, 3, 4).reshape(-1, max_Ksteps+1, valid_slice_size, feature_dim)
+            segm_tensor = segm_tensor.permute(0, 2, 1, 3, 4).reshape(-1, max_Kstep+1, valid_slice_size, feature_dim)
             # shape: [num_samples * num_segments, num_steps, num_timepoints (in timeseries), num_features] this allows random shuffling of temporally structured segments for training
             
             train_data = TensorDataset(segm_tensor)
@@ -134,7 +134,7 @@ def OmicsDataloader(df, feature_list, replicate_id,
         # Generate Random Timepoints Dataloader For Prediction Training
         
         feature_dim = train_tensor.shape[-1]
-        random_tensor = train_tensor.permute(0, 2, 1, 3).reshape(-1, 1, max_Ksteps+1, feature_dim)
+        random_tensor = train_tensor.permute(0, 2, 1, 3).reshape(-1, 1, max_Kstep+1, feature_dim)
         # shape: [num_samples * num_timepoints (stacked), 1 padding dim, num_steps, num_features] this allows random shuffling and batching of timepoints with their targets
         train_data = TensorDataset(random_tensor)
 

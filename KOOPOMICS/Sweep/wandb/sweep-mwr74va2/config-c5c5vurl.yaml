@@ -1,0 +1,10 @@
+wandb_version: 1
+
+E_layer_dims:
+  value: 264,2000,2000,100
+batch_size:
+  value: 10.635000338252343
+dl_structure:
+  value: temp_segm
+max_Kstep:
+  value: 1

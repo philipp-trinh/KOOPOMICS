@@ -1,0 +1,28 @@
+wandb_version: 1
+
+E_dropout_rate_1:
+  value: 0.1205254310434981
+E_dropout_rate_2:
+  value: 0.2880994970044805
+E_layer_dims:
+  value: 264,150,150,10
+batch_size:
+  value: 7
+dl_structure:
+  value: temp_segm
+epochs:
+  value: 1199
+grad_clip:
+  value: 1.017152617317047
+learning_rate:
+  value: 0.0008064533288993367
+learning_rate_change:
+  value: 0.1983501617629561
+max_Kstep:
+  value: 1
+op_reg:
+  value: nondelay
+operator:
+  value: invkoop
+weight_decay:
+  value: 0.015661316921668115

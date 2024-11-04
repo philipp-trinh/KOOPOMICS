@@ -1,6 +1,27 @@
 
 import torch
 
+
+
+
+def masked_criterion(self, criterion, mask_value=-1):
+# Inner function that applies the mask and then computes the loss
+    def compute_loss(predictions, targets):
+        mask = targets != mask_value  
+        masked_targets = targets[mask]  
+        masked_predictions = predictions[mask]  
+        # If all values are masked, return 0 loss
+        if masked_targets.numel() == 0:
+            return torch.tensor(0.0, device=predictions.device)
+        
+        # Calculate the loss with the given criterion
+        return criterion(masked_predictions, masked_targets)
+
+    return compute_loss   
+ 
+
+
+
 class KoopmanMetricsMixin:
     
     def get_device(self):

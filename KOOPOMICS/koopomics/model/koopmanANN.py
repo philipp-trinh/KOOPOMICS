@@ -27,19 +27,19 @@ class SkewSymmetricMatrix(nn.Module):
         super(SkewSymmetricMatrix, self).__init__()
         self.latent_dim = latent_dim
         self.device = device
-
         # Initialize the upper triangle of the matrix as trainable parameters
-        self.skewsym_params = nn.Parameter(torch.rand(latent_dim * (latent_dim - 1) // 2))
+        num_skewsym_params = (latent_dim * (latent_dim -1) //2)
+        self.skewsym_params = nn.Linear(num_skewsym_params, 1, bias=False).to(self.device)
 
-        print(f'Skew-Symmetric Matrix initialized with {len(self.skewsym_params)} trainable parameters.')
+        print(f'Skew-Symmetric Matrix initialized with {num_skewsym_params} trainable parameters.')
 
     def kmatrix(self):
         """Creates a skew-symmetric matrix based on the trainable parameters."""
         # Initialize a zero matrix
         kmatrix = torch.zeros(self.latent_dim, self.latent_dim, device=self.device)
         upper_indices = torch.triu_indices(self.latent_dim, self.latent_dim, offset=1)
-        kmatrix[upper_indices[0], upper_indices[1]] = self.skewsym_params
-        kmatrix[upper_indices[1], upper_indices[0]] = -self.skewsym_params
+        kmatrix[upper_indices[0], upper_indices[1]] = self.skewsym_params.weight[0]
+        kmatrix[upper_indices[1], upper_indices[0]] = -self.skewsym_params.weight[0]
 
         return kmatrix
 
@@ -54,16 +54,17 @@ class BandedKoopmanMatrix(nn.Module):
     Returns:
     nn.Parameter: Num trainable parameters (of the diagonals).
     """
-    def __init__(self, latent_dim, bandwidth):
+    def __init__(self, latent_dim, bandwidth, device):
         super(BandedKoopmanMatrix, self).__init__()
         self.latent_dim = latent_dim
         self.bandwidth = bandwidth
+        self.device = device
 
         # Number of trainable parameters in the band (diagonals + off-diagonals)
         num_banded_params = sum(latent_dim - abs(i) for i in list(range(-bandwidth, bandwidth + 1)))
         
         # Initialize only the banded parameters as trainable
-        self.banded_params = nn.Parameter(torch.rand(num_banded_params))
+        self.banded_params = nn.Linear(num_banded_params,1 ,bias=False).to(device)
 
         max_params = len(torch.zeros(self.latent_dim, self.latent_dim).flatten())
         print(f'Banded Matrix initialized, with {num_banded_params} of {max_params} matrix elements trainable')
@@ -77,7 +78,7 @@ class BandedKoopmanMatrix(nn.Module):
             diagonal_length = len(kmatrix.diagonal(offset))
 
             # Fill the current diagonal with banded parameters
-            kmatrix.diagonal(offset).copy_(self.banded_params[param_idx:param_idx + diagonal_length])
+            kmatrix.diagonal(offset).copy_(self.banded_params.weight[0][param_idx:param_idx + diagonal_length])
             param_idx += diagonal_length
 
         return kmatrix
@@ -295,9 +296,8 @@ class InvKoop(nn.Module):
         
         # ---------------- Define Koopman Matrices (with or without regularization) --------------
         if reg is None:
-            self.fwdkoop = nn.Parameter(torch.rand(latent_dim, latent_dim))
-            self.bwdkoop = nn.Parameter(torch.rand(latent_dim, latent_dim))
-
+            self.fwdkoop = nn.Linear(latent_dim, latent_dim, bias=False)
+            self.bwdkoop = nn.Linear(latent_dim, latent_dim, bias=False)
         elif self.reg == 'banded':
             self.bandwidth = bandwidth
 

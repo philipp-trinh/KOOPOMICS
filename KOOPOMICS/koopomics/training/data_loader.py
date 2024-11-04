@@ -44,7 +44,7 @@ class PermutedDataLoader(DataLoader):
 
 
 def OmicsDataloader(df, feature_list, replicate_id,
-                    batch_size=5, max_Ksteps = 10, temporal=False, temporal_segm=False, 
+                    batch_size=5, max_Ksteps = 10, dl_structure='random', 
                     shuffle=True, mask_value=-2):
     '''
     df = Temporally and Replicate sorted df with uniform timeseries (gaps are filled with mask values)
@@ -81,13 +81,13 @@ def OmicsDataloader(df, feature_list, replicate_id,
     train_tensor = torch.stack(sampleDat)
     # shape: [num_samples, num_steps, num_timepoints (in timeseries), num_features]
     
-    if temporal:
+    if dl_structure == 'temporal':
         # Generate Temporally Structured Dataloader For Temporal Consistency
         train_data = TensorDataset(train_tensor)
         permuted_loader = PermutedDataLoader(dataset=train_data, batch_size=batch_size, shuffle=True, permute_dims=(1,0,2,3), mask_value=mask_value)
         # batch shape: [num_steps, num_samples, num_timepoints, num_features] this allows easier access to the targets
     
-    elif temporal_segm:
+    elif dl_structure == 'temp_segm':
         if train_tensor.shape[-2] >= 3:
             # potential segment sizes (slices up the timeseries for better training)
             slice_sizes = [5, 4, 3]
@@ -130,7 +130,7 @@ def OmicsDataloader(df, feature_list, replicate_id,
         else:
             raise ValueError("Number of timepoints too small to segment; use temporal=True instead and specify a small batch_size!")
 
-    else:
+    elif dl_structure == 'random':
         # Generate Random Timepoints Dataloader For Prediction Training
         
         feature_dim = train_tensor.shape[-1]

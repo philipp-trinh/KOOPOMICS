@@ -45,7 +45,11 @@ class RunConfig:  # For WandB Model Training Run Logging
         self.robust_scaled = True # Robustscaled (Median centering and IQR scaling)
         self.min_max_scaled_0_1 = False # MinMax scaled to range [0, 1]
         self.min_max_scaled_1_1 = True # MinMax scaled to range [-1, 1]
-        
+       
+        # Dataloading Parameters
+        self.batch_size = 10
+        self.dl_structure = 'random'
+
         # Embedding Parameters
         self.embedding = None #"ff_ae" To be set in Trainer
         self.embedding_dim = None #[264, 2000, 2000, 100] To be set in Trainer
@@ -495,9 +499,11 @@ class Trainer(KoopmanMetricsMixin):
 
         self.early_stop = kwargs.get('early_stop', False)
         self.patience = kwargs.get('patience', 10)
+        self.early_stop_verbose = kwargs.get('verbose', False)
+        self.early_stop_delta = kwargs.get('eastop_delta', 0) 
 
         if self.early_stop:
-            self.early_stopping = EarlyStopping(self.model_name, patience=self.patience, verbose=True)
+            self.early_stopping = EarlyStopping2score(self.model_name, patience=self.patience, verbose=self.early_stop_verbose, delta=self.early_stop_delta)
 
         base_criterion = nn.MSELoss().to(self.device)
         
@@ -560,8 +566,11 @@ class Trainer(KoopmanMetricsMixin):
                                'baseline_fwd_loss': baseline_fwd_loss,
                                'baseline_bwd_loss': baseline_bwd_loss
                               })
-                   
-                
+                if self.early_stop:
+                    self.early_stopping(test_fwd_loss_epoch, test_bwd_loss_epoch, self.current_epoch, self.model)
+                    if self.early_stopping.early_stop:
+                        print('Early Stop Triggered: Best Score {self.early_stopping.best_score} at Best Epoch {self.early_stopping.best_epoch}.')
+                        break
         except KeyboardInterrupt:
             print("Training interrupted. Saving model...")
             torch.save(self.model.state_dict(), f"interrupted_{self.model_name}_parameters.pth")
@@ -629,7 +638,7 @@ class Trainer(KoopmanMetricsMixin):
                 #-------------------------------------------------------------------------------------------------
                 # Iteratively predict shifted timepoints for input timepoint(s)
                 # Backpropagation happens for each timeshift (after batch size predictions)
-                    target_fwd = data_list[step].to(self.device)
+                target_fwd = data_list[step].to(self.device)
                 target_bwd = reverse_data_list[step].to(self.device)
                 #------------------------------------------------------------------------------------------------- 
 
@@ -755,6 +764,9 @@ class Trainer(KoopmanMetricsMixin):
                 "min_max_scaled_0_1": runconfig.min_max_scaled_0_1,
                 "min_max_scaled_-1_1": runconfig.min_max_scaled_1_1,
                 
+                "batch_size": runconfig.batch_size,
+                "dl_structure": runconfig.dl_structure,
+
                 "embedding": next((k for k, v in self.model.embedding_info.items() if v), None),
                 "embedding_dim": self.model.embedding.E_layer_dims,
                 "embedding_num_hidden_layer": len(self.model.embedding.E_layer_dims)-2,
@@ -780,8 +792,8 @@ class Trainer(KoopmanMetricsMixin):
             }
         )
 
-        wandb.watch(self.model, log='all', log_freq=1)
-
+        wandb.watch(self.model.embedding, log='all', log_freq=1)
+        wandb.watch(self.model.operator,log='all',log_freq=1)
         
     def log_batch_info(self, loss_total_batch, loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch, 
                        loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch):
@@ -1009,8 +1021,12 @@ class Embedding_Trainer(KoopmanMetricsMixin):
                                'baseline_identity_loss': baseline_identity_loss,
                               })
                 if self.early_stop:    
-                    self.early_stopping(test_loss_identity_epoch, self.model)
+                    self.early_stopping(self.current_epoch, test_loss_identity_epoch, self.model)
                 
+                if self.early_stopping.early_stop:
+                    print("Early stopping triggered.")
+                    print(f"Best Score: {self.early_stopping.best_score} at epoch {self.early_stopping.best_epoch}")
+                    break
         except KeyboardInterrupt:
             print("Training interrupted. Saving model...")
             torch.save(self.model.embedding.state_dict(), f"interrupted_{self.model_name}_embedding_parameters.pth")
@@ -1099,6 +1115,9 @@ class Embedding_Trainer(KoopmanMetricsMixin):
                 "min_max_scaled_0_1": runconfig.min_max_scaled_0_1,
                 "min_max_scaled_-1_1": runconfig.min_max_scaled_1_1,
                 
+                "batch_size": runconfig.batch_size,
+                "dl_structure": runconfig.dl_structure,
+
                 "embedding": next((k for k, v in self.model.embedding_info.items() if v), None),
                 "embedding_dim": self.model.embedding.E_layer_dims,
                 "embedding_num_hidden_layer": len(self.model.embedding.E_layer_dims)-2,
@@ -1124,8 +1143,8 @@ class Embedding_Trainer(KoopmanMetricsMixin):
             }
         )
 
-        wandb.watch(self.model, log='all', log_freq=1)
-
+        wandb.watch(self.model.embedding, log='all', log_freq=1)
+        wandb.watch(self.model.operator, log='all', log_freq=1)
         
     def log_batch_info(self, loss_identity_batch):
         
@@ -1181,20 +1200,65 @@ class Embedding_Trainer(KoopmanMetricsMixin):
         self.epoch_metrics.clear()  # Clear the list after logging
         epoch_df.to_csv(f'{self.model_name}_embedding_epoch_metrics.csv', index=False, mode='a', header=not self.current_epoch)
 
+class EarlyStopping2scores:
+    def __init__(self, model_name, patience=5, verbose=False, delta=0):
+        self.patience = patience
+        self.verbose = verbose
+        self.delta= delta
+        self.counter = 0
+        self.best_score1 = None
+        self.best_score2 = None
+        self.best_epoch = 0
+        self.early_stop = False
+        self.model_path = f'best_{model_name}_embedding_parameters.pth'
+    def __call__(self, score1, score2, self.current_epoch, model):
+        if self.best_score1 is None:
+            self.best_score1 = score1
+            self.best_score2 = score2
+            self.best_epoch = current_epoch
+            self.save_model(model)
+            return
+        if (score1 >= self.best_score1 + self.delta) and (score2 >= self.best_score2 + self.delta):
+            self.counter += 1
+            if self.verbose:
+                print(f'EarlyStopping counter: {self.counter} out of {self.patience}.')
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            if score1 < self.best_score1 + self.delta:
+                self.best_score1 = score1
+            if score < self.best_score2 + self.delta:
+                self.best_score2 = score2
+            self.counter = 0
+            self.best_epoch = current_epoch
+            self.best_score = validation_loss
+            self.save_model(model)
+            if self.verbose:
+                print(f'Validation improved - Test fwd loss: {score1:.6f}, Test bwd loss: {score2:.6f}')
+
+    def save_model(self, model):
+        torch.save(model.embedding.state_dict(), self.model_path)
+        if self.verbose:
+            print(f'Model saved to {self.model_path}')
+
+
+
 class EarlyStopping:
     def __init__(self, model_name, patience=5, verbose=False):
         self.patience = patience
         self.verbose = verbose
         self.counter = 0
         self.best_score = None
+        self.best_epoch = 0
         self.early_stop = False
         self.model_path = f'best_{model_name}_embedding_parameters.pth'
-
-    def __call__(self, validation_loss, model):
+    def __call__(self, current_epoch, validation_loss, model):
         if self.best_score is None:
+            self.best_epoch = current_epoch
             self.best_score = validation_loss
             self.save_model(model)
         elif validation_loss < self.best_score:
+            self.best_epoch = current_epoch
             self.best_score = validation_loss
             self.save_model(model)
             self.counter = 0
@@ -1207,6 +1271,7 @@ class EarlyStopping:
         torch.save(model.embedding.state_dict(), self.model_path)
         if self.verbose:
             print(f'Model saved to {self.model_path}')
+
 
 
 

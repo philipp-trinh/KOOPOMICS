@@ -1029,35 +1029,34 @@ class Embedding_Trainer(KoopmanMetricsMixin):
         
         #-------------------------------------------------------------------------------------------------
         self.model.train()
-        
-        for data_list in self.train_dl:
-            self.current_batch += 1
+
+        for step in range(self.max_Kstep+1):
             
-            #Prepare Batch Data and Loss Tensors:
-            #-------------------------------------------------------------------------------------------------
-
-            loss_identity_batch = torch.tensor(0.0, device=self.device)
-
-            #-------------------------------------------------------------------------------------------------
-
-            for step in range(data_list.shape[0]):
-            
+            for data_list in self.train_dl:
+                self.current_batch += 1
+                
+                #Prepare Batch Data and Loss Tensors:
+                #-------------------------------------------------------------------------------------------------
+    
+                loss_identity_batch = torch.tensor(0.0, device=self.device)
+    
+                #-------------------------------------------------------------------------------------------------
                 input_identity = data_list[step].to(self.device)
                 target_identity = data_list[step].to(self.device)
-            #------------------------------------------------------------------------------------------------- 
-
-                loss_identity_step = self.compute_identity_loss(input_identity, target_identity)
-                loss_identity_batch += loss_identity_step
-
-            # ===================Backward propagation==========================
-            self.optimize_model(loss_identity_batch)
-
-            train_loss_identity_epoch += loss_identity_batch.detach()
-            
-            # Logging and printing batch info
-            self.log_batch_info(loss_identity_batch)
+                #------------------------------------------------------------------------------------------------- 
     
-            self.end_batch()
+                loss_identity_step = self.compute_identity_loss(input_identity, None)
+                loss_identity_batch += loss_identity_step
+    
+                # ===================Backward propagation==========================
+                self.optimize_model(loss_identity_batch)
+    
+                train_loss_identity_epoch += loss_identity_batch.detach()
+                
+                # Logging and printing batch info
+                self.log_batch_info(loss_identity_batch)
+        
+                self.end_batch()
 
             
         # Learning rate decay

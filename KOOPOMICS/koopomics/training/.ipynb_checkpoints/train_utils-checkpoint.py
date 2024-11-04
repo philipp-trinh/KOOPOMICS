@@ -9,6 +9,10 @@ import torch.nn.functional as F
 from .KoopmanMetrics import KoopmanMetricsMixin
 from ..test.test_utils import NaiveMeanPredictor, Evaluator
 
+from .dataloader import OmicsDataLoader
+from ..model.koopmanANN import FFLinearizer, Koop, InvKoop, LinearizingKoop
+from ..model.embeddingANN import FF_AE
+
 from torchviz import make_dot
 import wandb
 import logging
@@ -45,7 +49,11 @@ class RunConfig:  # For WandB Model Training Run Logging
         self.robust_scaled = True # Robustscaled (Median centering and IQR scaling)
         self.min_max_scaled_0_1 = False # MinMax scaled to range [0, 1]
         self.min_max_scaled_1_1 = True # MinMax scaled to range [-1, 1]
-        
+       
+        # Dataloading Parameters
+        self.batch_size = 10
+        self.dl_structure = 'random'
+
         # Embedding Parameters
         self.embedding = None #"ff_ae" To be set in Trainer
         self.embedding_dim = None #[264, 2000, 2000, 100] To be set in Trainer
@@ -72,11 +80,143 @@ class RunConfig:  # For WandB Model Training Run Logging
         return self.__dict__
     
 
+class HypManager():
+    def __init__(self, train_df, test_df, condition_id, replicate_id, time_id, feature_list, sweepconfig: sweepconfig, **kwargs):
+        '''
+        Parameters:
+        ----------
+        train_df, test_df : DataFrame
+            Preprocessed and split DataFrames containing the dataset, organized by condition, replicate, and time.
+            Missing time points should be padded for consistent intervals, with padding specified by parameters such as `mask_value=-2`.
+
+        condition_id : str
+            The label or identifier representing experimental conditions in the dataset 
+            (e.g., 'sick' vs. 'healthy', 'resistant' vs. 'non-resistant').
+
+        replicate_id : str
+            Identifier for each sample or replicate in the dataset.
+
+        time_id : str
+            Identifier for the time intervals in the dataset (e.g., days, weeks).
+
+        feature_list : list
+            List of features or variables whose dynamics are to be learned.
+
+        sweepconfig : sweepconfig
+            Configuration for hyperparameter tuning, detailing parameters to vary and the strategy for identifying 
+            the optimal model for the dataset.
+        '''
+        
+        self.train_df = train_df
+        self.test_df = test_df
+        self.condition_id = condition_id
+        self.replicate_id = replicate_id
+        self.time_id = time_id
+        self.feature_list = feature_list
+        self.num_features = len(self.feature_list)
+
+        self.mask_value = kwargs.get('mask_value', -2)
+                    
+        self.sweepconfig = sweepconfig
 
 
+    def build_dataset(self, batch_size, dl_structure, max_Ksteps):
+        train_loader = ko.OmicsDataloader(self.train_set_df, self.feature_list, self.replicate_id, 
+                                      batch_size=batch_size, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value)
+        test_loader = ko.OmicsDataloader(self.test_set_df, self.feature_list, self.replicate_id, 
+                                     batch_size=batch_size, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value)
+        
+        return train_loader, test_loader
+    
+    def build_koopmodel(self, **kwargs):
+        embedding_E_layer_dims = kwargs.get('E_layer_dims', [self.num_features, 100, 100, 3])       
+        embedding_D_layer_dims = kwargs.get('D_layer_dims', embedding_E_layer_dims[::-1])
+        embedding_E_dropout_rates = kwargs.get('E_dropout_rates', [0] * len(embedding_E_layer_dims))
+        embedding_D_dropout_rates = kwargs.get('D_dropout_rates', [0] * len(embedding_D_layer_dims))
+        embedding_act_fn = kwargs.get('em_act_fn', 'leaky_relu')
+
+        linearizer_linE_layer_dims = kwargs.get('linE_layer_dims', [3, 100, 100, 3])  
+        linearizer_linD_layer_dims = kwargs.get('linD_layer_dims', [3, 100, 100, 3])  
+        linearizer_linE_dropout_rates = kwargs.get('linE_dropout_rates', [0] * len(linearizer_linE_layer_dims)) 
+        linearizer_linD_dropout_rates = kwargs.get('linD_dropout_rates', [0] * len(linearizer_linE_dropout_rates)) 
+        linearizer_act_fn = kwargs.get('lin_act_fn', 'leaky_relu')
+        
+        operator = kwargs.get('operator', 'invkoop') #linkoop, invkoop, koop
+        operator_latent_dim = kwargs.get('latent_dim', embedding_E_layer_dims[-1])
+        operator_reg = kwargs.get('op_reg', None) #None, banded, skewsym, nondelay
+        operator_act_fn = kwargs.get('op_act_fn', 'leaky_relu')
+        operator_bandwidth = kwargs.get('op_bandwidth', 2)
+
+        embedding_module = FF_AE(E_layer_dims=embedding_E_layer_dims, 
+                                 D_layer_dims=embedding_D_layer_dims,   
+                                 E_dropout_rates=embedding_E_dropout_rates, 
+                                 D_dropout_rates=embedding_D_dropout_rates,   
+                                 activation_fn=embedding_act_fn
+                                )
+
+        if operator == 'linkoop':
+            linearizer_module = FFLinearizer(linE_layer_dims = linearizer_linE_layer_dims,
+                                      linD_layer_dims = linearizer_linD_layer_dims,
+                                      linE_layer_dims = linearizer_linE_dropout_rates,
+                                      linD_layer_dims = linearizer_linD_dropout_rates,
+                                      activation_fn = linearizer_act_fn
+                                     )
+            koopman_module = InvKoop(latent_dim = operator_latent_dim,
+                               reg=operator_reg,
+                               bandwidth = operator_bandwidth,
+                               activation_fn = operator_act_fn
+                              )
+            operator_module = LinearizingKoop(linearizer=linearizer_module, koop=koopman_module)
+            
+            KoopOmicsModel = KoopmanModel(embedding=embedding_module, operator=operator_module)
+
+        elif operator == 'invkoop':
+            operator_module = InvKoop(latent_dim = operator_latent_dim,
+                   reg=operator_reg,
+                   bandwidth = operator_bandwidth,
+                   activation_fn = operator_act_fn
+                  )
+            
+            KoopOmicsModel = KoopmanModel(embedding=embedding_module, operator=operator_module)
+
+        return KoopOmicsModel
+
+    def hyptrain(self, sweepconfig=None, modular_train=False):
+        # Initialize a new wandb run
+        with wandb.init(config=sweepconfig):
+            # this config will be set by Sweep Controller
+            config = wandb.config
 
 
+            
 
+            train_dl, test_dl = build_dataset(self, config.batch_size, 
+                                              config.dl_structure, config.max_Kstep)
+            KoopOmicsModel = KoopOmicsModel = build_koopmodel(
+                                                    E_layer_dims=config.E_layer_dims,
+                                                    D_layer_dims=config.D_layer_dims,
+                                                    E_dropout_rates=config.E_dropout_rates,
+                                                    D_dropout_rates=config.D_dropout_rates,
+                                                    em_act_fn=config.em_act_fn,
+                                                    linE_layer_dims=config.linE_layer_dims,
+                                                    linD_layer_dims=config.linD_layer_dims,
+                                                    linE_dropout_rates=config.linE_dropout_rates,
+                                                    linD_dropout_rates=config.linD_dropout_rates,
+                                                    lin_act_fn=config.lin_act_fn,
+                                                    operator=config.operator,
+                                                    latent_dim=config.latent_dim,
+                                                    op_reg=config.op_reg,
+                                                    op_act_fn=config.op_act_fn,
+                                                    op_bandwidth=config.op_bandwidth
+                                                )
+
+            if not modular_train:
+                KoopOmicsModel.fit(train_dl, test_dl, wandb_log=True,
+                                     runconfig = runconfig
+                                    )
+    def sweep(self):
+        
+    
 def train_embedding(model, train_dataloader, test_dataloader,
           lr, learning_rate_change=0.8,
           decayEpochs=[40, 80, 120, 160], num_epochs=10, 
@@ -449,27 +589,26 @@ class Trainer(KoopmanMetricsMixin):
         self.test_dl = test_dl
 
 
-        # Set training parameters
-        self.max_Kstep = kwargs.get('max_Kstep', 2)
-        self.start_Kstep = kwargs.get('start_Kstep', 0)
+        # Set training parameters with fallback to runconfig
+        self.max_Kstep = get_param('max_Kstep', 2, **kwargs)
+        self.start_Kstep = get_param('start_Kstep', 0, **kwargs)
 
+        # Optimizer specs
+        self.opt = get_param('opt', 'adam', **kwargs)
+        self.lr = get_param('lr', 0.001, **kwargs)
+        self.weight_decay = get_param('weight_decay', 0.01, **kwargs)
 
+        self.grad_clip = get_param('grad_clip', 1, **kwargs)
 
-            # Optimizer specs:
-        self.opt = kwargs.get('opt', 'adam')
-        self.lr = kwargs.get('lr', 0.001)
-        self.weight_decay = kwargs.get('weight_decay', 0.01)
+        # Epochs and decay settings
+        self.num_epochs = get_param('num_epochs', 10, **kwargs)
+        self.decayEpochs = get_param('decayEpochs', [40, 80, 120, 160], **kwargs)
+        self.learning_rate_change = get_param('learning_rate_change', 0.8, **kwargs)
 
-        self.grad_clip = kwargs.get('grad_clip', 1)
-
-        self.num_epochs = kwargs.get('num_epochs', 10)
-        self.decayEpochs = kwargs.get('decayEpochs', [40, 80, 120, 160])
-        self.learning_rate_change = kwargs.get('learning_rate_change', 0.8)
-
-            # Loss and Loss Calculation Specs:
-        self.loss_weights = kwargs.get('loss_weights', [1, 1, 1, 1, 1, 1])
-        self.epoch_temp_cons = kwargs.get('epoch_temp_cons', 3)
-        self.mask_value = kwargs.get('mask_value', -2)
+        # Loss and loss calculation specs
+        self.loss_weights = get_param('loss_weights', [1, 1, 1, 1, 1, 1], **kwargs)
+        self.epoch_temp_cons = get_param('epoch_temp_cons', 3, **kwargs)
+        self.mask_value = get_param('mask_value', -2, **kwargs)
 
             # LogIns and Visuals:
         self.print_batch_info = kwargs.get('print_batch_info', False)
@@ -495,9 +634,11 @@ class Trainer(KoopmanMetricsMixin):
 
         self.early_stop = kwargs.get('early_stop', False)
         self.patience = kwargs.get('patience', 10)
+        self.early_stop_verbose = kwargs.get('verbose', False)
+        self.early_stop_delta = kwargs.get('eastop_delta', 0) 
 
         if self.early_stop:
-            self.early_stopping = EarlyStopping(self.model_name, patience=self.patience, verbose=True)
+            self.early_stopping = EarlyStopping2score(self.model_name, patience=self.patience, verbose=self.early_stop_verbose, delta=self.early_stop_delta)
 
         base_criterion = nn.MSELoss().to(self.device)
         
@@ -525,7 +666,10 @@ class Trainer(KoopmanMetricsMixin):
         self.current_epoch = 0
         self.current_batch = 0
         self.current_step = 0
-        
+
+    def get_param(key, default=None, **kwargs):
+        return kwargs.get(key, getattr(runconfig, key, default))
+    
     def set_seed(seed=0):
         """Set one seed for reproducibility."""
         np.random.seed(seed)
@@ -551,17 +695,23 @@ class Trainer(KoopmanMetricsMixin):
                 (train_fwd_loss_epoch, test_fwd_loss_epoch, 
                 train_bwd_loss_epoch, test_bwd_loss_epoch,
                 baseline_fwd_loss, baseline_bwd_loss) = self.train_epoch()
+                combined_test_loss = test_fwd_loss_epoch + test_bwd_loss_epoch
+                
 
                 if self.wandb_log:
                     wandb.log({'train_fwd_loss_epoch': train_fwd_loss_epoch,
                               'test_fwd_loss_epoch': test_fwd_loss_epoch,
                                'train_bwd_loss_epoch': train_bwd_loss_epoch,
                                'test_bwd_loss_epoch': test_bwd_loss_epoch,
+                               'combined_test_loss': combined_test_loss,
                                'baseline_fwd_loss': baseline_fwd_loss,
-                               'baseline_bwd_loss': baseline_bwd_loss
+                               'baseline_bwd_loss': baseline_bwd_loss,
                               })
-                   
-                
+                if self.early_stop:
+                    self.early_stopping(test_fwd_loss_epoch, test_bwd_loss_epoch, self.current_epoch, self.model)
+                    if self.early_stopping.early_stop:
+                        print('Early Stop Triggered: Best Score {self.early_stopping.best_score} at Best Epoch {self.early_stopping.best_epoch}.')
+                        break
         except KeyboardInterrupt:
             print("Training interrupted. Saving model...")
             torch.save(self.model.state_dict(), f"interrupted_{self.model_name}_parameters.pth")
@@ -755,6 +905,9 @@ class Trainer(KoopmanMetricsMixin):
                 "min_max_scaled_0_1": runconfig.min_max_scaled_0_1,
                 "min_max_scaled_-1_1": runconfig.min_max_scaled_1_1,
                 
+                "batch_size": runconfig.batch_size,
+                "dl_structure": runconfig.dl_structure,
+
                 "embedding": next((k for k, v in self.model.embedding_info.items() if v), None),
                 "embedding_dim": self.model.embedding.E_layer_dims,
                 "embedding_num_hidden_layer": len(self.model.embedding.E_layer_dims)-2,
@@ -780,8 +933,8 @@ class Trainer(KoopmanMetricsMixin):
             }
         )
 
-        wandb.watch(self.model, log='all', log_freq=1)
-
+        wandb.watch(self.model.embedding, log='all', log_freq=1)
+        wandb.watch(self.model.operator,log='all',log_freq=1)
         
     def log_batch_info(self, loss_total_batch, loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch, 
                        loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch):
@@ -1009,8 +1162,12 @@ class Embedding_Trainer(KoopmanMetricsMixin):
                                'baseline_identity_loss': baseline_identity_loss,
                               })
                 if self.early_stop:    
-                    self.early_stopping(test_loss_identity_epoch, self.model)
+                    self.early_stopping(self.current_epoch, test_loss_identity_epoch, self.model)
                 
+                if self.early_stopping.early_stop:
+                    print("Early stopping triggered.")
+                    print(f"Best Score: {self.early_stopping.best_score} at epoch {self.early_stopping.best_epoch}")
+                    break
         except KeyboardInterrupt:
             print("Training interrupted. Saving model...")
             torch.save(self.model.embedding.state_dict(), f"interrupted_{self.model_name}_embedding_parameters.pth")
@@ -1099,6 +1256,9 @@ class Embedding_Trainer(KoopmanMetricsMixin):
                 "min_max_scaled_0_1": runconfig.min_max_scaled_0_1,
                 "min_max_scaled_-1_1": runconfig.min_max_scaled_1_1,
                 
+                "batch_size": runconfig.batch_size,
+                "dl_structure": runconfig.dl_structure,
+
                 "embedding": next((k for k, v in self.model.embedding_info.items() if v), None),
                 "embedding_dim": self.model.embedding.E_layer_dims,
                 "embedding_num_hidden_layer": len(self.model.embedding.E_layer_dims)-2,
@@ -1124,8 +1284,8 @@ class Embedding_Trainer(KoopmanMetricsMixin):
             }
         )
 
-        wandb.watch(self.model, log='all', log_freq=1)
-
+        wandb.watch(self.model.embedding, log='all', log_freq=1)
+        wandb.watch(self.model.operator, log='all', log_freq=1)
         
     def log_batch_info(self, loss_identity_batch):
         
@@ -1181,20 +1341,65 @@ class Embedding_Trainer(KoopmanMetricsMixin):
         self.epoch_metrics.clear()  # Clear the list after logging
         epoch_df.to_csv(f'{self.model_name}_embedding_epoch_metrics.csv', index=False, mode='a', header=not self.current_epoch)
 
+class EarlyStopping2scores:
+    def __init__(self, model_name, patience=5, verbose=False, delta=0):
+        self.patience = patience
+        self.verbose = verbose
+        self.delta= delta
+        self.counter = 0
+        self.best_score1 = None
+        self.best_score2 = None
+        self.best_epoch = 0
+        self.early_stop = False
+        self.model_path = f'best_{model_name}_embedding_parameters.pth'
+    def __call__(self, score1, score2, self.current_epoch, model):
+        if self.best_score1 is None:
+            self.best_score1 = score1
+            self.best_score2 = score2
+            self.best_epoch = current_epoch
+            self.save_model(model)
+            return
+        if (score1 >= self.best_score1 + self.delta) and (score2 >= self.best_score2 + self.delta):
+            self.counter += 1
+            if self.verbose:
+                print(f'EarlyStopping counter: {self.counter} out of {self.patience}.')
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            if score1 < self.best_score1 + self.delta:
+                self.best_score1 = score1
+            if score < self.best_score2 + self.delta:
+                self.best_score2 = score2
+            self.counter = 0
+            self.best_epoch = current_epoch
+            self.best_score = validation_loss
+            self.save_model(model)
+            if self.verbose:
+                print(f'Validation improved - Test fwd loss: {score1:.6f}, Test bwd loss: {score2:.6f}')
+
+    def save_model(self, model):
+        torch.save(model.embedding.state_dict(), self.model_path)
+        if self.verbose:
+            print(f'Model saved to {self.model_path}')
+
+
+
 class EarlyStopping:
     def __init__(self, model_name, patience=5, verbose=False):
         self.patience = patience
         self.verbose = verbose
         self.counter = 0
         self.best_score = None
+        self.best_epoch = 0
         self.early_stop = False
         self.model_path = f'best_{model_name}_embedding_parameters.pth'
-
-    def __call__(self, validation_loss, model):
+    def __call__(self, current_epoch, validation_loss, model):
         if self.best_score is None:
+            self.best_epoch = current_epoch
             self.best_score = validation_loss
             self.save_model(model)
         elif validation_loss < self.best_score:
+            self.best_epoch = current_epoch
             self.best_score = validation_loss
             self.save_model(model)
             self.counter = 0
@@ -1207,6 +1412,7 @@ class EarlyStopping:
         torch.save(model.embedding.state_dict(), self.model_path)
         if self.verbose:
             print(f'Model saved to {self.model_path}')
+
 
 
 

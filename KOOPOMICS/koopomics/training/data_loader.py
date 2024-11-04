@@ -44,7 +44,7 @@ class PermutedDataLoader(DataLoader):
 
 
 def OmicsDataloader(df, feature_list, replicate_id,
-                    batch_size=5, max_Ksteps = 10, dl_structure='random', 
+                    batch_size=5, max_Kstep = 10, dl_structure='random', 
                     shuffle=True, mask_value=-2):
     '''
     df = Temporally and Replicate sorted df with uniform timeseries (gaps are filled with mask values)

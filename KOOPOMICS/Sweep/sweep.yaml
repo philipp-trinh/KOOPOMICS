@@ -1,0 +1,62 @@
+E_dropout_rate_1:
+  distribution: int_uniform
+  max: 0.8
+  min: 0
+E_dropout_rate_2:
+  distribution: int_uniform
+  max: 0.8
+  min: 0
+method: bayes
+metric:
+  goal: minimize
+  name: combined_test_loss
+op_reg:
+  distribution: categorical
+  epochs:
+    distribution: int_uniform
+    max: 1200
+    min: 50
+  grad_clip:
+    distribution: int_uniform
+    max: 2
+    min: 0.05
+  learning_rate:
+    distribution: uniform
+    max: 0.001
+    min: 1e-07
+  learning_rate_change:
+    distribution: uniform
+    max: 0.4
+    min: 0.1
+  values:
+    - nondelay
+    - skewsym
+    - "no"
+  weight_decay:
+    distribution: uniform
+    max: 0.02
+    min: 0.005
+operator:
+  distribution: categorical
+  values:
+    - invkoop
+parameters:
+  E_layer_dims:
+    distribution: categorical
+    values:
+      - 264,2000,2000,100
+      - 264,1500,1500,50
+      - 264,500,500,25
+      - 264,150,150,10
+  batch_size:
+    distribution: uniform
+    max: 30
+    min: 5
+  dl_structure:
+    distribution: categorical
+    values:
+      - random
+      - temp_segm
+  max_Kstep:
+    value: 1
+program: train.py

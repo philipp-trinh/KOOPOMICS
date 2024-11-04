@@ -163,7 +163,6 @@ class dynamics_backD(NondelayMatrix):
 
         return kmatrix
 
-
 # All Koopman Operator Architectures (LinearizingKoop, Koop, InvKoop)
 
 

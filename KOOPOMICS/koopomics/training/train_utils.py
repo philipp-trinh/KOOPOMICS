@@ -9,6 +9,10 @@ import torch.nn.functional as F
 from .KoopmanMetrics import KoopmanMetricsMixin
 from ..test.test_utils import NaiveMeanPredictor, Evaluator
 
+from .dataloader import OmicsDataLoader
+from ..model.koopmanANN import FFLinearizer, Koop, InvKoop, LinearizingKoop
+from ..model.embeddingANN import FF_AE
+
 from torchviz import make_dot
 import wandb
 import logging
@@ -76,11 +80,144 @@ class RunConfig:  # For WandB Model Training Run Logging
         return self.__dict__
     
 
+class HypManager():
+    def __init__(self, train_df, test_df, condition_id, replicate_id, time_id, feature_list, **kwargs):
+        '''
+        Parameters:
+        ----------
+        train_df, test_df : DataFrame
+            Preprocessed and split DataFrames containing the dataset, organized by condition, replicate, and time.
+            Missing time points should be padded for consistent intervals, with padding specified by parameters such as `mask_value=-2`.
+
+        condition_id : str
+            The label or identifier representing experimental conditions in the dataset 
+            (e.g., 'sick' vs. 'healthy', 'resistant' vs. 'non-resistant').
+
+        replicate_id : str
+            Identifier for each sample or replicate in the dataset.
+
+        time_id : str
+            Identifier for the time intervals in the dataset (e.g., days, weeks).
+
+        feature_list : list
+            List of features or variables whose dynamics are to be learned.
+
+        sweepconfig : sweepconfig
+            Configuration for hyperparameter tuning, detailing parameters to vary and the strategy for identifying 
+            the optimal model for the dataset.
+        '''
+        
+        self.train_df = train_df
+        self.test_df = test_df
+        self.condition_id = condition_id
+        self.replicate_id = replicate_id
+        self.time_id = time_id
+        self.feature_list = feature_list
+        self.num_features = len(self.feature_list)
+
+        self.mask_value = kwargs.get('mask_value', -2)
+                    
+        self.sweepconfig = sweepconfig
 
 
+    def build_dataset(self, batch_size, dl_structure, max_Ksteps):
+        train_loader = ko.OmicsDataloader(self.train_set_df, self.feature_list, self.replicate_id, 
+                                      batch_size=batch_size, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value)
+        test_loader = ko.OmicsDataloader(self.test_set_df, self.feature_list, self.replicate_id, 
+                                     batch_size=batch_size, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value)
+        
+        return train_loader, test_loader
+    
+    def build_koopmodel(self, **kwargs):
+        embedding_E_layer_dims = kwargs.get('E_layer_dims', [self.num_features, 100, 100, 3])       
+        embedding_D_layer_dims = kwargs.get('D_layer_dims', embedding_E_layer_dims[::-1])
+        embedding_E_dropout_rates = kwargs.get('E_dropout_rates', [0] * len(embedding_E_layer_dims))
+        embedding_D_dropout_rates = kwargs.get('D_dropout_rates', [0] * len(embedding_D_layer_dims))
+        embedding_act_fn = kwargs.get('em_act_fn', 'leaky_relu')
+
+        linearizer_linE_layer_dims = kwargs.get('linE_layer_dims', [3, 100, 100, 3])  
+        linearizer_linD_layer_dims = kwargs.get('linD_layer_dims', [3, 100, 100, 3])  
+        linearizer_linE_dropout_rates = kwargs.get('linE_dropout_rates', [0] * len(linearizer_linE_layer_dims)) 
+        linearizer_linD_dropout_rates = kwargs.get('linD_dropout_rates', [0] * len(linearizer_linE_dropout_rates)) 
+        linearizer_act_fn = kwargs.get('lin_act_fn', 'leaky_relu')
+        
+        operator = kwargs.get('operator', 'invkoop') #linkoop, invkoop, koop
+        operator_latent_dim = kwargs.get('latent_dim', embedding_E_layer_dims[-1])
+        operator_reg = kwargs.get('op_reg', None) #None, banded, skewsym, nondelay
+        operator_act_fn = kwargs.get('op_act_fn', 'leaky_relu')
+        operator_bandwidth = kwargs.get('op_bandwidth', 2)
+
+        embedding_module = FF_AE(E_layer_dims=embedding_E_layer_dims, 
+                                 D_layer_dims=embedding_D_layer_dims,   
+                                 E_dropout_rates=embedding_E_dropout_rates, 
+                                 D_dropout_rates=embedding_D_dropout_rates,   
+                                 activation_fn=embedding_act_fn
+                                )
+
+        if operator == 'linkoop':
+            linearizer_module = FFLinearizer(linE_layer_dims = linearizer_linE_layer_dims,
+                                      linD_layer_dims = linearizer_linD_layer_dims,
+                                      linE_layer_dims = linearizer_linE_dropout_rates,
+                                      linD_layer_dims = linearizer_linD_dropout_rates,
+                                      activation_fn = linearizer_act_fn
+                                     )
+            koopman_module = InvKoop(latent_dim = operator_latent_dim,
+                               reg=operator_reg,
+                               bandwidth = operator_bandwidth,
+                               activation_fn = operator_act_fn
+                              )
+            operator_module = LinearizingKoop(linearizer=linearizer_module, koop=koopman_module)
+            
+            KoopOmicsModel = KoopmanModel(embedding=embedding_module, operator=operator_module)
+
+        elif operator == 'invkoop':
+            operator_module = InvKoop(latent_dim = operator_latent_dim,
+                   reg=operator_reg,
+                   bandwidth = operator_bandwidth,
+                   activation_fn = operator_act_fn
+                  )
+            
+            KoopOmicsModel = KoopmanModel(embedding=embedding_module, operator=operator_module)
+
+        return KoopOmicsModel
+
+    def hyptrain(self, config=None, modular_train=False):
+        # Initialize a new wandb run
+        with wandb.init(config=config):
+            # this config will be set by Sweep Controller
+            config = wandb.config
 
 
+            
 
+            train_dl, test_dl = build_dataset(self, config.batch_size, 
+                                              config.dl_structure, config.max_Kstep)
+
+            E_layer_dims = list(map(int, config.E_layer_dims.split(',')))
+            E_dropout_rates=[config.E_dropout_rate_1, config.E_dropout_rate_2, 0, 0]
+            KoopOmicsModel = KoopOmicsModel = build_koopmodel(
+                                                    E_layer_dims=E_layer_dims,
+                                                    D_layer_dims=config.D_layer_dims,
+                                                    E_dropout_rates=E_dropout_rates,
+                                                    operator=config.operator,
+                                                    bop_reg=config.op_reg,
+                                                    #op_act_fn=config.op_act_fn,
+                                                    #op_bandwidth=config.op_bandwidth
+                                                    #latent_dim=config.latent_dim,
+                                                    #linE_layer_dims=config.linE_layer_dims,
+                                                    #linD_layer_dims=config.linD_layer_dims,
+                                                    #linE_dropout_rates=config.linE_dropout_rates,
+                                                    #linD_dropout_rates=config.linD_dropout_rates,
+                                                    #lin_act_fn=config.lin_act_fn,
+
+                                                )
+
+            if not modular_train:
+                KoopOmicsModel.fit(train_dl, test_dl, wandb_log=True,
+                                     runconfig = config
+                                    )
+        
+    
 def train_embedding(model, train_dataloader, test_dataloader,
           lr, learning_rate_change=0.8,
           decayEpochs=[40, 80, 120, 160], num_epochs=10, 
@@ -453,27 +590,26 @@ class Trainer(KoopmanMetricsMixin):
         self.test_dl = test_dl
 
 
-        # Set training parameters
-        self.max_Kstep = kwargs.get('max_Kstep', 2)
-        self.start_Kstep = kwargs.get('start_Kstep', 0)
+        # Set training parameters with fallback to runconfig
+        self.max_Kstep = get_param('max_Kstep', 2, **kwargs)
+        self.start_Kstep = get_param('start_Kstep', 0, **kwargs)
 
+        # Optimizer specs
+        self.opt = get_param('opt', 'adam', **kwargs)
+        self.lr = get_param('lr', 0.001, **kwargs)
+        self.weight_decay = get_param('weight_decay', 0.01, **kwargs)
 
+        self.grad_clip = get_param('grad_clip', 1, **kwargs)
 
-            # Optimizer specs:
-        self.opt = kwargs.get('opt', 'adam')
-        self.lr = kwargs.get('lr', 0.001)
-        self.weight_decay = kwargs.get('weight_decay', 0.01)
+        # Epochs and decay settings
+        self.num_epochs = get_param('num_epochs', 10, **kwargs)
+        self.decayEpochs = get_param('decayEpochs', [40, 80, 120, 160], **kwargs)
+        self.learning_rate_change = get_param('learning_rate_change', 0.8, **kwargs)
 
-        self.grad_clip = kwargs.get('grad_clip', 1)
-
-        self.num_epochs = kwargs.get('num_epochs', 10)
-        self.decayEpochs = kwargs.get('decayEpochs', [40, 80, 120, 160])
-        self.learning_rate_change = kwargs.get('learning_rate_change', 0.8)
-
-            # Loss and Loss Calculation Specs:
-        self.loss_weights = kwargs.get('loss_weights', [1, 1, 1, 1, 1, 1])
-        self.epoch_temp_cons = kwargs.get('epoch_temp_cons', 3)
-        self.mask_value = kwargs.get('mask_value', -2)
+        # Loss and loss calculation specs
+        self.loss_weights = get_param('loss_weights', [1, 1, 1, 1, 1, 1], **kwargs)
+        self.epoch_temp_cons = get_param('epoch_temp_cons', 3, **kwargs)
+        self.mask_value = get_param('mask_value', -2, **kwargs)
 
             # LogIns and Visuals:
         self.print_batch_info = kwargs.get('print_batch_info', False)
@@ -531,7 +667,10 @@ class Trainer(KoopmanMetricsMixin):
         self.current_epoch = 0
         self.current_batch = 0
         self.current_step = 0
-        
+
+    def get_param(key, default=None, **kwargs):
+        return kwargs.get(key, getattr(runconfig, key, default))
+    
     def set_seed(seed=0):
         """Set one seed for reproducibility."""
         np.random.seed(seed)
@@ -557,14 +696,17 @@ class Trainer(KoopmanMetricsMixin):
                 (train_fwd_loss_epoch, test_fwd_loss_epoch, 
                 train_bwd_loss_epoch, test_bwd_loss_epoch,
                 baseline_fwd_loss, baseline_bwd_loss) = self.train_epoch()
+                combined_test_loss = test_fwd_loss_epoch + test_bwd_loss_epoch
+                
 
                 if self.wandb_log:
                     wandb.log({'train_fwd_loss_epoch': train_fwd_loss_epoch,
                               'test_fwd_loss_epoch': test_fwd_loss_epoch,
                                'train_bwd_loss_epoch': train_bwd_loss_epoch,
                                'test_bwd_loss_epoch': test_bwd_loss_epoch,
+                               'combined_test_loss': combined_test_loss,
                                'baseline_fwd_loss': baseline_fwd_loss,
-                               'baseline_bwd_loss': baseline_bwd_loss
+                               'baseline_bwd_loss': baseline_bwd_loss,
                               })
                 if self.early_stop:
                     self.early_stopping(test_fwd_loss_epoch, test_bwd_loss_epoch, self.current_epoch, self.model)

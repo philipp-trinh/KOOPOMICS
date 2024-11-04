@@ -1046,7 +1046,7 @@ class Embedding_Trainer(KoopmanMetricsMixin):
                 target_identity = data_list[step].to(self.device)
             #------------------------------------------------------------------------------------------------- 
 
-                loss_identity_step = self.compute_identity_loss(input_identity, target_identity)
+                loss_identity_step = self.compute_identity_loss(input_identity, None)
                 loss_identity_batch += loss_identity_step
 
             # ===================Backward propagation==========================

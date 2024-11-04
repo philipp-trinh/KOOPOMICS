@@ -79,12 +79,13 @@ class KoopmanMetricsMixin:
         
         latent_input = self.model.embedding.encode(input_tensor)
         autoencoded_input = self.model.embedding.decode(latent_input)
-
-        latent_target = self.model.embedding.encode(shift_target_tensor)
-        autoencoded_target = self.model.embedding.decode(latent_target)
-        
         loss_identity_step += self.criterion(input_tensor, autoencoded_input)
-        loss_identity_step += self.criterion(shift_target_tensor, autoencoded_target) 
+ 
+        if shift_target_tensor is not None:
+            latent_target = self.model.embedding.encode(shift_target_tensor)
+            autoencoded_target = self.model.embedding.decode(latent_target)
+        
+            loss_identity_step += self.criterion(shift_target_tensor, autoencoded_target) 
 
         return loss_identity_step
 

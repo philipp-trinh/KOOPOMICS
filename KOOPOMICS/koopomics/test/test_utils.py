@@ -269,7 +269,7 @@ class Evaluator(KoopmanMetricsMixin):
                     input_identity = data_list[step].to(self.device)
                     target_identity = data_list[step].to(self.device)
                     
-                    loss_identity_step = self.compute_identity_loss(input_identity, target_identity) 
+                    loss_identity_step = self.compute_identity_loss(input_identity, None) 
                     loss_identity_batch += loss_identity_step
                 
                 # Accumulate batch losses for the epoch

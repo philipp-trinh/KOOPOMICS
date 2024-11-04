@@ -8,6 +8,9 @@ from .training.KoopmanMetrics import (
 from .training.train_utils import (
     RunConfig,
     Trainer,
+)
+
+from .training.param_manager import (
     HypManager
 )
 

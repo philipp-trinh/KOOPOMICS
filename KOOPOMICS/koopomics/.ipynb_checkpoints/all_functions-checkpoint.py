@@ -7,7 +7,11 @@ from .training.KoopmanMetrics import (
 
 from .training.train_utils import (
     RunConfig,
-    Trainer
+    Trainer,
+)
+
+from .training.param_manager import (
+    HypManager
 )
 
 from .test.test_utils import (

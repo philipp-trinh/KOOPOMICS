@@ -1,6 +1,7 @@
 import koopomics as ko
 import pandas as pd
 import torch
+import wandb
 
 # Load Dataset
 pregnancy_df = pd.read_csv('../input_data/pregnancy/pregnancy_interpolated_264M_robust_minmax_scaled_outlrem_uniform.csv')
@@ -14,6 +15,6 @@ num_features = len(feature_list)
 train_set_df = pregnancy_df[pregnancy_df['Cohort'] == 'Discovery'].copy()
 test_set_df = pregnancy_df[pregnancy_df['Cohort'] == 'Validation (Test Set 1)'].copy()
 
-hypmanager = ko.HypManager(train_df, test_df, condition_id, replicate_id, time_id, feature_list) 
+hypmanager = ko.HypManager(train_set_df, test_set_df, condition_id, replicate_id, time_id, feature_list) 
 
-wandb.agent("elementar1-university-of-vienna/PregnancyKoop/mwr74va2", function=hypmanager.hyptrain, count=30)
+wandb.agent("elementar1-university-of-vienna/PregnancyKoop/k3mq7wqr", function=hypmanager.hyptrain, count=30)

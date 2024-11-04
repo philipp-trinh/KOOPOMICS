@@ -9,10 +9,6 @@ import torch.nn.functional as F
 from .KoopmanMetrics import KoopmanMetricsMixin
 from ..test.test_utils import NaiveMeanPredictor, Evaluator
 
-from .dataloader import OmicsDataLoader
-from ..model.koopmanANN import FFLinearizer, Koop, InvKoop, LinearizingKoop
-from ..model.embeddingANN import FF_AE
-
 from torchviz import make_dot
 import wandb
 import logging
@@ -81,7 +77,7 @@ class RunConfig:  # For WandB Model Training Run Logging
     
 
 class HypManager():
-    def __init__(self, train_df, test_df, condition_id, replicate_id, time_id, feature_list, sweepconfig: sweepconfig, **kwargs):
+    def __init__(self, train_df, test_df, condition_id, replicate_id, time_id, feature_list, **kwargs):
         '''
         Parameters:
         ----------
@@ -117,13 +113,12 @@ class HypManager():
 
         self.mask_value = kwargs.get('mask_value', -2)
                     
-        self.sweepconfig = sweepconfig
 
 
-    def build_dataset(self, batch_size, dl_structure, max_Ksteps):
-        train_loader = ko.OmicsDataloader(self.train_set_df, self.feature_list, self.replicate_id, 
+    def build_dataset(self, batch_size, dl_structure, max_Kstep):
+        train_loader = OmicsDataloader(self.train_df, self.feature_list, self.replicate_id, 
                                       batch_size=batch_size, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value)
-        test_loader = ko.OmicsDataloader(self.test_set_df, self.feature_list, self.replicate_id, 
+        test_loader = OmicsDataloader(self.test_df, self.feature_list, self.replicate_id, 
                                      batch_size=batch_size, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value)
         
         return train_loader, test_loader
@@ -157,8 +152,8 @@ class HypManager():
         if operator == 'linkoop':
             linearizer_module = FFLinearizer(linE_layer_dims = linearizer_linE_layer_dims,
                                       linD_layer_dims = linearizer_linD_layer_dims,
-                                      linE_layer_dims = linearizer_linE_dropout_rates,
-                                      linD_layer_dims = linearizer_linD_dropout_rates,
+                                      linE_dropout_rates = linearizer_linE_dropout_rates,
+                                      linD_dropout_rates = linearizer_linD_dropout_rates,
                                       activation_fn = linearizer_act_fn
                                      )
             koopman_module = InvKoop(latent_dim = operator_latent_dim,
@@ -181,40 +176,41 @@ class HypManager():
 
         return KoopOmicsModel
 
-    def hyptrain(self, sweepconfig=None, modular_train=False):
+    def hyptrain(self, config=None, modular_train=False):
         # Initialize a new wandb run
-        with wandb.init(config=sweepconfig):
+        with wandb.init(config=config):
             # this config will be set by Sweep Controller
             config = wandb.config
 
 
             
 
-            train_dl, test_dl = build_dataset(self, config.batch_size, 
+            train_dl, test_dl = self.build_dataset(config.batch_size, 
                                               config.dl_structure, config.max_Kstep)
-            KoopOmicsModel = KoopOmicsModel = build_koopmodel(
-                                                    E_layer_dims=config.E_layer_dims,
-                                                    D_layer_dims=config.D_layer_dims,
-                                                    E_dropout_rates=config.E_dropout_rates,
-                                                    D_dropout_rates=config.D_dropout_rates,
-                                                    em_act_fn=config.em_act_fn,
-                                                    linE_layer_dims=config.linE_layer_dims,
-                                                    linD_layer_dims=config.linD_layer_dims,
-                                                    linE_dropout_rates=config.linE_dropout_rates,
-                                                    linD_dropout_rates=config.linD_dropout_rates,
-                                                    lin_act_fn=config.lin_act_fn,
+
+            E_layer_dims = list(map(int, config.E_layer_dims.split(',')))
+            E_dropout_rates=[config.E_dropout_rate_1, config.E_dropout_rate_2, 0, 0]
+            KoopOmicsModel = self.build_koopmodel(
+                                                    E_layer_dims=E_layer_dims,
+                                                    #D_layer_dims=config.D_layer_dims,
+                                                    E_dropout_rates=E_dropout_rates,
                                                     operator=config.operator,
-                                                    latent_dim=config.latent_dim,
-                                                    op_reg=config.op_reg,
-                                                    op_act_fn=config.op_act_fn,
-                                                    op_bandwidth=config.op_bandwidth
+                                                    bop_reg=config.op_reg,
+                                                    #op_act_fn=config.op_act_fn,
+                                                    #op_bandwidth=config.op_bandwidth
+                                                    #latent_dim=config.latent_dim,
+                                                    #linE_layer_dims=config.linE_layer_dims,
+                                                    #linD_layer_dims=config.linD_layer_dims,
+                                                    #linE_dropout_rates=config.linE_dropout_rates,
+                                                    #linD_dropout_rates=config.linD_dropout_rates,
+                                                    #lin_act_fn=config.lin_act_fn,
+
                                                 )
 
             if not modular_train:
                 KoopOmicsModel.fit(train_dl, test_dl, wandb_log=True,
-                                     runconfig = runconfig
+                                     runconfig = config
                                     )
-    def sweep(self):
         
     
 def train_embedding(model, train_dataloader, test_dataloader,
@@ -1352,7 +1348,7 @@ class EarlyStopping2scores:
         self.best_epoch = 0
         self.early_stop = False
         self.model_path = f'best_{model_name}_embedding_parameters.pth'
-    def __call__(self, score1, score2, self.current_epoch, model):
+    def __call__(self, score1, score2, current_epoch, model):
         if self.best_score1 is None:
             self.best_score1 = score1
             self.best_score2 = score2

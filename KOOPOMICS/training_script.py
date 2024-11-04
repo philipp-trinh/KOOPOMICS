@@ -34,7 +34,7 @@ baseline = ko.NaiveMeanPredictor(train_set_df, feature_list, mask_value=-2)
 # Run training loop
 TestingKoopnondelay.fit(train_dataloader, test_dataloader, runconfig=runconfig,
                          num_epochs = 100, lr=0.001, max_Kstep=1,
-                         loss_weights = [1,0.5,1,1,0.01,0], mask_value=-2,
+                         loss_weights = [1,0.5,0.00001,0.00001,0.01,0], mask_value=-2,
                          model_name = 'TestingKoopNonDelay_lrelu_M264', wandb_log=True,
                         learning_rate_change=0.2,
                         decayEpochs=[30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330, 360, 390, 410, 440, 470, 500],

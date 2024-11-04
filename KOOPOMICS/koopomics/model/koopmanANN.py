@@ -23,9 +23,10 @@ class SkewSymmetricMatrix(nn.Module):
     Returns:
     nn.Parameter: The parameters of the skew-symmetric matrix.
     """
-    def __init__(self, latent_dim):
+    def __init__(self, latent_dim, device):
         super(SkewSymmetricMatrix, self).__init__()
         self.latent_dim = latent_dim
+        self.device = device
 
         # Initialize the upper triangle of the matrix as trainable parameters
         self.skewsym_params = nn.Parameter(torch.rand(latent_dim * (latent_dim - 1) // 2))
@@ -35,7 +36,7 @@ class SkewSymmetricMatrix(nn.Module):
     def kmatrix(self):
         """Creates a skew-symmetric matrix based on the trainable parameters."""
         # Initialize a zero matrix
-        kmatrix = torch.zeros(self.latent_dim, self.latent_dim)
+        kmatrix = torch.zeros(self.latent_dim, self.latent_dim, device=self.device)
         upper_indices = torch.triu_indices(self.latent_dim, self.latent_dim, offset=1)
         kmatrix[upper_indices[0], upper_indices[1]] = self.skewsym_params
         kmatrix[upper_indices[1], upper_indices[0]] = -self.skewsym_params
@@ -69,7 +70,7 @@ class BandedKoopmanMatrix(nn.Module):
 
     def kmatrix(self):
         '''Create a banded Koopman matrix based on the trainable parameters.'''
-        kmatrix = torch.zeros(self.latent_dim, self.latent_dim)
+        kmatrix = torch.zeros(self.latent_dim, self.latent_dim, device=self.device)
         
         param_idx = 0
         for offset in list(range(-self.bandwidth, self.bandwidth + 1)):
@@ -277,6 +278,8 @@ class InvKoop(nn.Module):
     def __init__(self, latent_dim=0, dropout=None,reg=None, bandwidth=None, activation_fn='leaky_relu'):
         super(InvKoop, self).__init__()
 
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         self.latent_dim = latent_dim
         self.activation_fn = activation_fn
 
@@ -298,20 +301,20 @@ class InvKoop(nn.Module):
         elif self.reg == 'banded':
             self.bandwidth = bandwidth
 
-            self.bandedkoop_fwd = BandedKoopmanMatrix(self.latent_dim, bandwidth)
+            self.bandedkoop_fwd = BandedKoopmanMatrix(self.latent_dim, bandwidth, self.device)
             self.fwd_banded_params = self.bandedkoop_fwd.banded_params
             self.fwdkoop = self.bandedkoop_fwd.kmatrix()
 
-            self.bandedkoop_bwd = BandedKoopmanMatrix(self.latent_dim, bandwidth)
+            self.bandedkoop_bwd = BandedKoopmanMatrix(self.latent_dim, bandwidth, self.device)
             self.bwd_banded_params = self.bandedkoop_bwd.banded_params
             self.bwdkoop = self.bandedkoop_bwd.kmatrix()
         
         elif self.reg == 'skewsym':
-            self.skewsym_fwd = SkewSymmetricMatrix(self.latent_dim)
+            self.skewsym_fwd = SkewSymmetricMatrix(self.latent_dim, self.device)
             self.fwd_skewsym_params = self.skewsym_fwd.skewsym_params
             self.fwdkoop = self.skewsym_fwd.kmatrix()  
 
-            self.skewsym_bwd = SkewSymmetricMatrix(self.latent_dim)
+            self.skewsym_bwd = SkewSymmetricMatrix(self.latent_dim, self.device)
             self.bwd_skewsym_params = self.skewsym_bwd.skewsym_params
             self.bwdkoop = self.skewsym_bwd.kmatrix()   
 
@@ -411,6 +414,7 @@ class LinearizingKoop(nn.Module): # Encapsulated Operator with Linearizer Neural
             self.koop = koop
             self.bwd = False 
 
+        self.reg = koop.reg
 
     def fwd_step(self, e):
 

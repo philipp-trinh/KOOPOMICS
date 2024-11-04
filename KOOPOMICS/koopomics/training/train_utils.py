@@ -629,7 +629,7 @@ class Trainer(KoopmanMetricsMixin):
                 #-------------------------------------------------------------------------------------------------
                 # Iteratively predict shifted timepoints for input timepoint(s)
                 # Backpropagation happens for each timeshift (after batch size predictions)
-                target_fwd = data_list[step].to(self.device)
+                    target_fwd = data_list[step].to(self.device)
                 target_bwd = reverse_data_list[step].to(self.device)
                 #------------------------------------------------------------------------------------------------- 
 

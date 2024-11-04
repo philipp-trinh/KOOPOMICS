@@ -16,9 +16,9 @@ train_set_df = pregnancy_df[pregnancy_df['Cohort'] == 'Discovery'].copy()
 test_set_df = pregnancy_df[pregnancy_df['Cohort'] == 'Validation (Test Set 1)'].copy()
 
 train_dataloader = ko.OmicsDataloader(train_set_df, feature_list, replicate_id, 
-                                      batch_size=10, max_Ksteps = 0)
+                                      batch_size=10, max_Ksteps = 1)
 test_dataloader = ko.OmicsDataloader(test_set_df, feature_list, replicate_id,
-                                     batch_size=10, max_Ksteps = 0)
+                                     batch_size=10, max_Ksteps = 1)
 
 runconfig = ko.RunConfig()
 runconfig.num_metabolites = 50
@@ -32,8 +32,8 @@ TestingKoopnondelay = ko.KoopmanModel(embedding=embedding_model, operator=operat
 baseline = ko.NaiveMeanPredictor(train_set_df, feature_list, mask_value=-2)
 
 # Run training loop
-TestingKoopnondelay.fit_embedding(train_dataloader, test_dataloader, runconfig=runconfig,
-                         num_epochs = 100, lr=0.00001, max_Kstep=0,
+TestingKoopnondelay.fit(train_dataloader, test_dataloader, runconfig=runconfig,
+                         num_epochs = 100, lr=0.00001, max_Kstep=1,
                          loss_weights = [1,0.5,1,1,0.01,0], mask_value=-2,
                          model_name = 'TestingKoopNonDelay_lrelu_M50', use_wandb=True,
                         learning_rate_change=0.8,

@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from koopomics.model.embeddingANN import DiffeomMap, FF_AE, Conv_AE, Conv_E_FF_D
 from koopomics.model.koopmanANN import LinearizingKoop, InvKoop, Koop
-from koopomics.training.train_utils import Trainer
+from koopomics.training.train_utils import Trainer, Embedding_Trainer
 
 class KoopmanModel(nn.Module):
   # x0 <-> g <-> g_lin <-> gnext_lin <-> gnext <-> x1
@@ -64,6 +64,50 @@ class KoopmanModel(nn.Module):
         trainer = Trainer(self, train_dl, test_dl, runconfig, **kwargs)
         trainer.train()
         return
+
+    def fit_embedding(self, train_dl, test_dl, runconfig, **kwargs):
+    
+        trainer = Embedding_Trainer(self, train_dl, test_dl, runconfig, **kwargs)
+        trainer.train()
+        return
+
+    def modular_fit(self, train_dl, test_dl, runconfig, embedding_param_path = None, model_param_path = None, **kwargs):
+
+        In_Training = False
+        
+        if embedding_param_path is not None:
+            self.embedding.load_state_dict(torch.load(embedding_param_path))
+            for param in self.model.embedding.parameters():
+                param.requires_grad = False
+            print('Embedding parameters loaded and frozen.')
+        else:
+            embedding_trainer = Embedding_Trainer(self, train_dl, test_dl, runconfig, **kwargs)
+            In_Training = True
+            embedding_trainer.train()
+
+        if model_param_path is not None: # Continuing training from a state (f.ex. after training one shift step to train 2 multishifts)
+            self.load_state_dict(torch.load(model_param_path))
+            for param in self.model.embedding.parameters():
+                param.requires_grad = False
+            print('Model parameters loaded, with embedding parameters frozen.')
+
+        max_Kstep = kwargs.get('max_Kstep', 2)
+        start_Kstep = kwargs.get('start_Kstep', 0)
+
+        if In_Training:
+            wandb_init = False
+
+        for step in (self.start_Kstep+1, self.max_Kstep+1):
+            temp_start = step
+            temp_max = step+1
+ 
+            trainer = Trainer(self, train_dl, test_dl, runconfig, start_Kstep=temp_start, max_Kstep=temp_max, wandb_init=wandb_init, **kwargs)
+            trainer.train()
+            # Train each step separately
+
+        return
+
+
 
     def embed(self, input_vector):
         e = self.embedding.encode(input_vector)

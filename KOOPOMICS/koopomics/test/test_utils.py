@@ -80,6 +80,17 @@ class Evaluator(KoopmanMetricsMixin):
 
         return model_metrics, baseline_metrics 
 
+    def metrics_embedding(self):
+
+        model_metrics = self.evaluate_embedding()
+
+        baseline_metrics = {}
+        
+        if self.baseline:
+            baseline_metrics = self.compute_baseline_performance_embedding()
+
+        return model_metrics, baseline_metrics         
+
     
     def evaluate(self):
         """
@@ -168,9 +179,9 @@ class Evaluator(KoopmanMetricsMixin):
         avg_test_bwd_loss = test_bwd_loss / len(self.test_loader)
         avg_total_test_loss = total_test_loss / len(self.test_loader)
         return {
-            'forward_loss': avg_test_fwd_loss,
-            'backward_loss': avg_test_bwd_loss,
-            'total_loss': avg_total_test_loss
+            'forward_loss': avg_test_fwd_loss.detach(),
+            'backward_loss': avg_test_bwd_loss.detach(),
+            'total_loss': avg_total_test_loss.detach()
         }
     
     def compute_baseline_performance(self):
@@ -228,9 +239,90 @@ class Evaluator(KoopmanMetricsMixin):
         avg_test_bwd_loss = test_bwd_loss / len(self.test_loader)
     
         return {
-            'forward_loss': avg_test_fwd_loss.item(),
-            'backward_loss': avg_test_bwd_loss.item(),
+            'forward_loss': avg_test_fwd_loss.detach(),
+            'backward_loss': avg_test_bwd_loss.detach(),
         }
+
+
+
+    def evaluate_embedding(self):
+        """
+        Evaluate the embedding module on the test dataset and calculate loss components.
+    
+        Args:
+            test_loader (torch.utils.data.DataLoader): DataLoader for the test dataset.
+
+        Returns:
+            dict: Dictionary of average loss values for embedding.
+        """
+        self.model.eval()  # Set the model to evaluation mode
+        
+        test_identity_loss = torch.tensor(0.0, device=self.device)
+
+        with torch.no_grad():  # Disable gradient computation
+            for data_list in self.test_loader:
+
+                loss_identity_batch = torch.tensor(0.0, device=self.device)
+
+                for step in range(data_list.shape[0]):
+                    # Prepare forward and backward inputs
+                    input_identity = data_list[step].to(self.device)
+                    target_identity = data_list[step].to(self.device)
+                    
+                    loss_identity_step = self.compute_identity_loss(input_identity, target_identity) 
+                    loss_identity_batch += loss_identity_step
+                
+                # Accumulate batch losses for the epoch
+                test_identity_loss += loss_identity_batch
+    
+        # Average loss for the test loader
+        avg_test_identity_loss = test_identity_loss / len(self.test_loader)
+
+        return {
+            'identity_loss': avg_test_identity_loss.detach(),
+        }
+
+  
+    def compute_baseline_performance_embedding(self):
+        """
+        Evaluate the model on the test dataset and calculate loss components.
+    
+        Args:
+            test_loader (torch.utils.data.DataLoader): DataLoader for the test dataset.
+
+        Returns:
+            dict: Dictionary of average loss values for each component and the total loss.
+        """
+        self.baseline.eval()  # Set the model to evaluation mode
+        
+        test_identity_loss = torch.tensor(0.0, device=self.device)
+
+        with torch.no_grad():  # Disable gradient computation
+            for data_list in self.test_loader:
+
+                loss_identity_batch = torch.tensor(0.0, device=self.device)
+
+                for step in range(data_list.shape[0]):
+                    # Prepare forward and backward inputs
+                    input_identity = data_list[step].to(self.device)
+                    target_identity = data_list[step].to(self.device)
+                    baseline_output = self.baseline(input_identity)
+
+                    
+                    loss_identity_step = self.criterion(baseline_output, target_identity)
+                    loss_identity_batch += loss_identity_step
+                
+                # Accumulate batch losses for the epoch
+                test_identity_loss += loss_identity_batch
+    
+        # Average loss for the test loader
+        avg_test_identity_loss = test_identity_loss / len(self.test_loader)
+
+        return {
+            'identity_loss': avg_test_identity_loss.detach(),
+        }
+
+
 
 
 def calculate_reference_values(self, train_dataloader, test_dataloader, max_Kstep=1, featurewise=False, normalize=False):

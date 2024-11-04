@@ -448,34 +448,57 @@ class Trainer(KoopmanMetricsMixin):
         self.train_dl = train_dl
         self.test_dl = test_dl
 
+
         # Set training parameters
-        self.lr = kwargs.get('lr', 0.001)
-        self.learning_rate_change = kwargs.get('learning_rate_change', 0.8)
-        self.decayEpochs = kwargs.get('decayEpochs', [40, 80, 120, 160])
-        self.num_epochs = kwargs.get('num_epochs', 10)
         self.max_Kstep = kwargs.get('max_Kstep', 2)
+        self.start_Kstep = kwargs.get('start_Kstep', 0)
+
+
+
+            # Optimizer specs:
+        self.opt = kwargs.get('opt', 'adam')
+        self.lr = kwargs.get('lr', 0.001)
         self.weight_decay = kwargs.get('weight_decay', 0.01)
+
         self.grad_clip = kwargs.get('grad_clip', 1)
+
+        self.num_epochs = kwargs.get('num_epochs', 10)
+        self.decayEpochs = kwargs.get('decayEpochs', [40, 80, 120, 160])
+        self.learning_rate_change = kwargs.get('learning_rate_change', 0.8)
+
+            # Loss and Loss Calculation Specs:
         self.loss_weights = kwargs.get('loss_weights', [1, 1, 1, 1, 1, 1])
         self.epoch_temp_cons = kwargs.get('epoch_temp_cons', 3)
         self.mask_value = kwargs.get('mask_value', -2)
+
+            # LogIns and Visuals:
         self.print_batch_info = kwargs.get('print_batch_info', False)
         self.comp_graph = kwargs.get('comp_graph', False)
         self.plot_train = kwargs.get('plot_train', False)
-        self.wandb_log = kwargs.get('wandb_log', False)
         self.model_name = kwargs.get('model_name', 'Koop')
+
+        self.use_wandb = kwargs.get('use_wandb', False)
+    
+        if self.use_wandb is True:
+            self.wandb_init = self.use_wandb
+            self.wandb_log = self.use_wandb
+        else:
+            self.wandb_init = kwargs.get('wandb_init', False)
+            self.wandb_log = kwargs.get('wandb_log', False)
 
         # Set the device
         self.device = self.get_device()
         self.model.to(self.device)
 
-        # Initialize optimizer, early stopping, loss function and baseline model:
-        self.optimizer = torch.optim.AdamW(
-            filter(lambda p: p.requires_grad, self.model.parameters()),
-            lr=self.lr,
-            weight_decay=self.weight_decay
-        )
-        self.early_stopping = EarlyStopping(self.model_name, patience=10, verbose=True)
+        # Initialize optimizer, early stopping, loss function, baseline model and Evaluator:
+        self.optimizer = self.build_optimizer()
+
+        self.early_stop = kwargs.get('early_stop', False)
+        self.patience = kwargs.get('patience', 10)
+
+        if self.early_stop:
+            self.early_stopping = EarlyStopping(self.model_name, patience=self.patience, verbose=True)
+
         base_criterion = nn.MSELoss().to(self.device)
         
         self.criterion = kwargs.get('criterion', self.masked_criterion(
@@ -496,7 +519,7 @@ class Trainer(KoopmanMetricsMixin):
         self.temporal_cons_fwd_storage = []
         self.temporal_cons_bwd_storage = []
     
-        if self.wandb_log: # For single Run WandB Logs (For Sweeps: Use HypAgent)
+        if self.wandb_log and self.wandb_init: # For single Run WandB Logs (For Sweeps: Use HypAgent)
             self.wandb_initialize(runconfig)
 
         self.current_epoch = 0
@@ -507,7 +530,17 @@ class Trainer(KoopmanMetricsMixin):
         """Set one seed for reproducibility."""
         np.random.seed(seed)
         torch.manual_seed(seed)
-
+        
+    def build_optimizer(self):
+        if self.opt == "sgd":
+            self.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, self.model.parameters()),
+                                  lr=self.lr, weight_decay=self.weight_decay, momentum=0.9)
+        elif self.opt == "adam":
+            self.optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, self.model.parameters()),
+                                   lr=self.lr, weight_decay=self.weight_decay)
+        return self.optimizer
+        
+    
     def train(self):
 
         try:
@@ -516,21 +549,25 @@ class Trainer(KoopmanMetricsMixin):
                 print(f'----------Training epoch {self.current_epoch}--------')
                 
                 (train_fwd_loss_epoch, test_fwd_loss_epoch, 
-                train_bwd_loss_epoch, test_bwd_loss_epoch) = self.train_epoch()
+                train_bwd_loss_epoch, test_bwd_loss_epoch,
+                baseline_fwd_loss, baseline_bwd_loss) = self.train_epoch()
 
                 if self.wandb_log:
                     wandb.log({'train_fwd_loss_epoch': train_fwd_loss_epoch,
                               'test_fwd_loss_epoch': test_fwd_loss_epoch,
                                'train_bwd_loss_epoch': train_bwd_loss_epoch,
-                               'test_bwd_loss_epoch': test_bwd_loss_epoch
+                               'test_bwd_loss_epoch': test_bwd_loss_epoch,
+                               'baseline_fwd_loss': baseline_fwd_loss,
+                               'baseline_bwd_loss': baseline_bwd_loss
                               })
-                    
+                   
                 
         except KeyboardInterrupt:
             print("Training interrupted. Saving model...")
             torch.save(self.model.state_dict(), f"interrupted_{self.model_name}_parameters.pth")
 
         torch.save(self.model.state_dict(), f'{self.model_name}_parameters.pth')
+
 
     def train_epoch(self):
         #-------------------------------------------------------------------------------------------------
@@ -549,7 +586,7 @@ class Trainer(KoopmanMetricsMixin):
         #-------------------------------------------------------------------------------------------------
         self.model.train()
 
-        for step in range(1, self.max_Kstep+1):
+        for step in range(self.start_Kstep+1, self.max_Kstep+1):
             self.current_step = step
 
             loss_fwd_step = torch.tensor(0.0, device=self.device)
@@ -592,8 +629,8 @@ class Trainer(KoopmanMetricsMixin):
                 #-------------------------------------------------------------------------------------------------
                 # Iteratively predict shifted timepoints for input timepoint(s)
                 # Backpropagation happens for each timeshift (after batch size predictions)
-                target_fwd = data_list[step+1].to(self.device)
-                target_bwd = reverse_data_list[step+1].to(self.device)
+                target_fwd = data_list[step].to(self.device)
+                target_bwd = reverse_data_list[step].to(self.device)
                 #------------------------------------------------------------------------------------------------- 
 
                 loss_fwd_batch = torch.tensor(0.0, device=self.device) 
@@ -670,17 +707,17 @@ class Trainer(KoopmanMetricsMixin):
             self.end_step()
             
         # Learning rate decay
-        self.optimizer = self.lr_scheduler(epoch)
+        self.optimizer = self.lr_scheduler()
         
         train_fwd_loss_epoch /= len(self.train_dl)
         train_bwd_loss_epoch /= len(self.train_dl)
         model_test_metrics, baseline_test_metrics = self.Evaluator()
-        test_fwd_loss = model_test_metrics["forward_loss"]
-        test_bwd_loss = model_test_metrics["backward_loss"]
-    
+        test_fwd_loss_epoch = model_test_metrics["forward_loss"]
+        test_bwd_loss_epoch = model_test_metrics["backward_loss"]
+        
         baseline_fwd_loss = 0
         baseline_bwd_loss = 0
-        if baseline is not None:
+        if self.baseline is not None:
             baseline_fwd_loss = baseline_test_metrics["forward_loss"]
             baseline_bwd_loss = baseline_test_metrics["backward_loss"]
             
@@ -693,8 +730,10 @@ class Trainer(KoopmanMetricsMixin):
         self.end_epoch(baseline_fwd_loss, baseline_bwd_loss)
 
         return (train_fwd_loss_epoch, test_fwd_loss_epoch, 
-                train_bwd_loss_epoch, test_bwd_loss_epoch)
+                train_bwd_loss_epoch, test_bwd_loss_epoch,
+                baseline_fwd_loss, baseline_bwd_loss)
 
+    
     def optimize_model(self, loss_total):
         self.optimizer.zero_grad()
         if loss_total > 0:
@@ -751,13 +790,13 @@ class Trainer(KoopmanMetricsMixin):
             'epoch': self.current_epoch,
             'step': self.current_step,
             'batch': self.current_batch,
-            'train_total_loss': loss_total_batch,
-            'train_fwd_loss': loss_fwd_batch,
-            'train_bwd_loss': loss_bwd_batch,
-            'train_latent_loss': loss_latent_identity_batch,
-            'train_identity_loss': loss_identity_batch,
-            'train_inv_cons_loss': loss_inv_cons_batch,
-            'train_temp_cons_loss': loss_temp_cons_batch,
+            'train_total_loss': loss_total_batch.detach(),
+            'train_fwd_loss': loss_fwd_batch.detach(),
+            'train_bwd_loss': loss_bwd_batch.detach(),
+            'train_latent_loss': loss_latent_identity_batch.detach(),
+            'train_identity_loss': loss_identity_batch.detach(),
+            'train_inv_cons_loss': loss_inv_cons_batch.detach(),
+            'train_temp_cons_loss': loss_temp_cons_batch.detach(),
         })
 
     def log_step_info(self, loss_total_step, loss_fwd_step, loss_bwd_step, loss_latent_identity_step, 
@@ -766,13 +805,13 @@ class Trainer(KoopmanMetricsMixin):
         self.step_metrics.append({
             'epoch': self.current_epoch,
             'step': self.current_step,
-            'train_total_loss': loss_total_step,
-            'train_fwd_loss': loss_fwd_step,
-            'train_bwd_loss': loss_bwd_step,
-            'train_latent_loss': loss_latent_identity_step,
-            'train_identity_loss': loss_identity_step,
-            'train_inv_cons_loss': loss_inv_cons_step,
-            'train_temp_cons_loss': loss_temp_cons_step,
+            'train_total_loss': loss_total_step.detach(),
+            'train_fwd_loss': loss_fwd_step.detach(),
+            'train_bwd_loss': loss_bwd_step.detach(),
+            'train_latent_loss': loss_latent_identity_step.detach(),
+            'train_identity_loss': loss_identity_step.detach(),
+            'train_inv_cons_loss': loss_inv_cons_step.detach(),
+            'train_temp_cons_loss': loss_temp_cons_step.detach(),
         })
 
     def log_epoch_losses(self, train_fwd_loss_epoch, test_fwd_loss_epoch, 
@@ -782,35 +821,27 @@ class Trainer(KoopmanMetricsMixin):
         
         self.epoch_metrics.append({
             'epoch': self.current_epoch,
-            'train_fwd_loss': train_fwd_loss_epoch,
-            'test_fwd_loss': test_fwd_loss_epoch,
-            'train_bwd_loss': train_bwd_loss_epoch,
-            'test_bwd_loss': test_bwd_loss_epoch,
-            'train_loss_latent_identity_epoch': train_loss_latent_identity_epoch,
-            'train_loss_identity_epoch': train_loss_identity_epoch,
-            'train_loss_inv_cons_epoch': train_loss_inv_cons_epoch,
-            'train_loss_temp_cons_epoch': train_loss_temp_cons_epoch
+            'train_fwd_loss': train_fwd_loss_epoch.detach(),
+            'test_fwd_loss': test_fwd_loss_epoch.detach(),
+            'train_bwd_loss': train_bwd_loss_epoch.detach(),
+            'test_bwd_loss': test_bwd_loss_epoch.detach(),
+            'train_loss_latent_identity_epoch': train_loss_latent_identity_epoch.detach(),
+            'train_loss_identity_epoch': train_loss_identity_epoch.detach(),
+            'train_loss_inv_cons_epoch': train_loss_inv_cons_epoch.detach(),
+            'train_loss_temp_cons_epoch': train_loss_temp_cons_epoch.detach()
         })
 
-    def lr_scheduler(self, lr_decay_rate=0.8, decayEpochs=[]):
+    def lr_scheduler(self):
             """Decay learning rate by a factor of lr_decay_rate every lr_decay_epoch epochs"""
-            if self.current_epoch in decayEpochs:
+            if self.current_epoch in self.decayEpochs:
                 for param_group in self.optimizer.param_groups:
-                    param_group['lr'] *= lr_decay_rate
-                return optimizer
+                    param_group['lr'] *= self.learning_rate_change
+                return self.optimizer
             else:
-                return optimizer
+                return self.optimizer
 
     def end_batch(self):
 
-        if self.current_batch % 10 == 0:
-            if in_jupyter:
-                from IPython.display import clear_output
-                clear_output(wait=True)  # Clear output in Jupyter Notebook
-            else:
-                os.system('cls' if os.name == 'nt' else 'clear')  # Clear terminal output
-
-        
         current_batch_metrics = self.batch_metrics[-1]
         print(f'----------Training Epoch {self.current_epoch} --------')
         print(f'----------Training Step {self.current_step}--------')
@@ -826,7 +857,7 @@ class Trainer(KoopmanMetricsMixin):
 
     def end_step(self):
         
-        current_batch_metrics = self.batch_metrics[-1]
+        current_step_metrics = self.step_metrics[-1]
         print(f'----------Training Epoch {self.current_epoch}--------')
         print(f'==========Finished Training Step {self.current_step}=======')
         print(f'Total Loss: {current_step_metrics["train_total_loss"]}')
@@ -864,6 +895,293 @@ class Trainer(KoopmanMetricsMixin):
         epoch_df.to_csv(f'{self.model_name}_epoch_metrics.csv', index=False, mode='a', header=not self.current_epoch)
 
 
+
+class Embedding_Trainer(KoopmanMetricsMixin):
+
+    def __init__(self, model, train_dl, test_dl, runconfig: RunConfig, **kwargs):
+        self.model = model
+        self.train_dl = train_dl
+        self.test_dl = test_dl
+
+        # Set training parameters
+        self.max_Kstep = kwargs.get('max_Kstep', 2)
+        self.freeze_embedding = kwargs.get('freeze', True)
+
+
+
+            # Optimizer specs:
+        self.opt = kwargs.get('opt', 'adam')
+        self.lr = kwargs.get('lr', 0.001)
+        self.weight_decay = kwargs.get('weight_decay', 0.01)
+
+        self.grad_clip = kwargs.get('grad_clip', 1)
+
+        self.num_epochs = kwargs.get('num_epochs', 10)
+        self.decayEpochs = kwargs.get('decayEpochs', [40, 80, 120, 160])
+        self.learning_rate_change = kwargs.get('learning_rate_change', 0.8)
+
+            # Loss and Loss Calculation Specs:
+        self.loss_weights = kwargs.get('loss_weights', [1, 1, 1, 1, 1, 1]) # placeholder
+        self.epoch_temp_cons = kwargs.get('epoch_temp_cons', 3)
+        self.mask_value = kwargs.get('mask_value', -2)
+
+            # LogIns and Visuals:
+        self.print_batch_info = kwargs.get('print_batch_info', False)
+        self.comp_graph = kwargs.get('comp_graph', False)
+        self.plot_train = kwargs.get('plot_train', False)
+
+    
+        self.use_wandb = kwargs.get('use_wandb', False)
+    
+        if self.use_wandb is True:
+            self.wandb_init = self.use_wandb
+            self.wandb_log = self.use_wandb
+        else:
+            self.wandb_init = kwargs.get('wandb_init', False)
+            self.wandb_log = kwargs.get('wandb_log', False)
+
+        self.model_name = kwargs.get('model_name', 'Koop')
+
+        # Set the device
+        self.device = self.get_device()
+        self.model.to(self.device)
+
+        # Initialize optimizer, early stopping, loss function, baseline model and Evaluator:
+        self.optimizer = self.build_optimizer()
+
+        self.early_stop = kwargs.get('early_stop', False)
+        self.patience = kwargs.get('patience', 10)
+
+        if self.early_stop:
+            self.early_stopping = EarlyStopping(self.model_name, patience=self.patience, verbose=True)
+
+        
+        base_criterion = nn.MSELoss().to(self.device)
+        
+        self.criterion = kwargs.get('criterion', self.masked_criterion(
+                               base_criterion, self.mask_value))
+
+        self.baseline = kwargs.get('baseline', None)
+
+        self.Evaluator = Evaluator(self.model, self.test_dl, 
+                       mask_value = self.mask_value, max_Kstep=self.max_Kstep,
+                       baseline=self.baseline, model_name=self.model_name,
+                       criterion = self.criterion, loss_weights = self.loss_weights )
+    
+    
+        # Initialize LogIns
+        self.epoch_metrics = []
+        self.batch_metrics = []
+
+        if self.wandb_log and self.wandb_init: # For single Run WandB Logs (For Sweeps: Use HypAgent)
+            self.wandb_initialize(runconfig)
+
+        self.current_epoch = 0
+        self.current_batch = 0
+
+    def build_optimizer(self):
+        if self.opt == "sgd":
+            self.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, self.model.parameters()),
+                                  lr=self.lr, weight_decay=self.weight_decay, momentum=0.9)
+        elif self.opt == "adam":
+            self.optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, self.model.parameters()),
+                                   lr=self.lr, weight_decay=self.weight_decay)
+        return self.optimizer
+        
+    def set_seed(seed=0):
+        """Set one seed for reproducibility."""
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        
+    def train(self):
+
+        try:
+            for epoch in range(0, self.num_epochs + 1):
+                self.current_epoch += 1
+                print(f'----------Training epoch {self.current_epoch}--------')
+                
+                (train_loss_identity_epoch, test_loss_identity_epoch,
+                baseline_identity_loss) = self.train_epoch_embedding()
+
+                if self.wandb_log:
+                    wandb.log({'train_loss_identity_epoch': train_loss_identity_epoch,
+                              'test_loss_identity_epoch': test_loss_identity_epoch,
+                               'baseline_identity_loss': baseline_identity_loss,
+                              })
+                if self.early_stop:    
+                    self.early_stopping(test_loss_identity_epoch, self.model)
+                
+        except KeyboardInterrupt:
+            print("Training interrupted. Saving model...")
+            torch.save(self.model.embedding.state_dict(), f"interrupted_{self.model_name}_embedding_parameters.pth")
+
+        if self.freeze_embedding:
+            for param in self.model.embedding.parameters():
+                param.requires_grad = False
+
+        torch.save(self.model.embedding.state_dict(), f'{self.model_name}_embedding_parameters.pth')
+
+
+    def train_epoch_embedding(self):
+        #-------------------------------------------------------------------------------------------------
+
+        train_loss_identity_epoch = torch.tensor(0.0, device=self.device)
+        
+        #-------------------------------------------------------------------------------------------------
+        self.model.train()
+        
+        for data_list in self.train_dl:
+            self.current_batch += 1
+            
+            #Prepare Batch Data and Loss Tensors:
+            #-------------------------------------------------------------------------------------------------
+
+            loss_identity_batch = torch.tensor(0.0, device=self.device)
+
+            #-------------------------------------------------------------------------------------------------
+
+            for step in range(data_list.shape[0]):
+            
+                input_identity = data_list[step].to(self.device)
+                target_identity = data_list[step].to(self.device)
+            #------------------------------------------------------------------------------------------------- 
+
+                loss_identity_step = self.compute_identity_loss(input_identity, target_identity)
+                loss_identity_batch += loss_identity_step
+
+            # ===================Backward propagation==========================
+            self.optimize_model(loss_identity_batch)
+
+            train_loss_identity_epoch += loss_identity_batch.detach()
+            
+            # Logging and printing batch info
+            self.log_batch_info(loss_identity_batch)
+    
+            self.end_batch()
+
+            
+        # Learning rate decay
+        self.optimizer = self.lr_scheduler()
+        
+        train_loss_identity_epoch /= len(self.train_dl)
+        model_test_metrics, baseline_test_metrics = self.Evaluator.metrics_embedding()
+        test_loss_identity_epoch = model_test_metrics["identity_loss"]
+        
+        baseline_identity_loss = 0
+        if self.baseline is not None:
+            baseline_identity_loss = baseline_test_metrics["identity_loss"]
+            
+        # Log and plot epoch losses
+        self.log_epoch_losses(train_loss_identity_epoch, test_loss_identity_epoch)
+        
+        self.end_epoch(baseline_identity_loss)
+
+        return (train_loss_identity_epoch, test_loss_identity_epoch, baseline_identity_loss)
+
+    
+    def optimize_model(self, loss_total):
+        self.optimizer.zero_grad()
+        if loss_total > 0:
+            loss_total.backward(retain_graph=True)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)  # gradient clip
+            self.optimizer.step()
+            
+    def wandb_initialize(self, runconfig):
+
+        wandb.init(
+            project=runconfig.project,
+            config={
+                "dataset": runconfig.dataset,
+                "num_metabolites": runconfig.num_metabolites,
+                "interpolated": runconfig.interpolated,
+                "feature_selected": runconfig.feature_selected,
+                "outlier_rem": runconfig.outlier_rem,
+                "robust_scaled": runconfig.robust_scaled,
+                "min_max_scaled_0_1": runconfig.min_max_scaled_0_1,
+                "min_max_scaled_-1_1": runconfig.min_max_scaled_1_1,
+                
+                "embedding": next((k for k, v in self.model.embedding_info.items() if v), None),
+                "embedding_dim": self.model.embedding.E_layer_dims,
+                "embedding_num_hidden_layer": len(self.model.embedding.E_layer_dims)-2,
+                "embedding_num_hidden_neurons": self.model.embedding.E_layer_dims[1],
+                "embedding_latent_dim": self.model.embedding.E_layer_dims[-1],
+                "embedding_input_dropout_rate": self.model.embedding.E_dropout_rates[0],
+                
+                "activation_fn": self.model.embedding.activation_fn,
+                
+                "operator": next((k for k, v in self.model.operator_info.items() if v), None),
+                "Kmatrix_modification": next((k for k, v in self.model.regularization_info.items() if v), None),
+                
+                "learning_rate": self.lr,
+                "epochs": self.num_epochs,
+                "learning_rate_change": self.learning_rate_change,
+                "loss_weights": self.loss_weights,
+                "decayEpochs": self.decayEpochs,
+                "weight_decay": self.weight_decay,
+                "grad_clip": self.grad_clip,
+                "max_Kstep": self.max_Kstep,
+                "mask_value": self.mask_value,
+                "optimizer": 'adam'
+            }
+        )
+
+        wandb.watch(self.model, log='all', log_freq=1)
+
+        
+    def log_batch_info(self, loss_identity_batch):
+        
+        self.batch_metrics.append({
+            'epoch': self.current_epoch,
+            'batch': self.current_batch,
+            'train_identity_loss': loss_identity_batch.detach()
+        })
+
+    def log_epoch_losses(self, train_loss_identity_epoch, test_loss_identity_epoch):
+        
+        self.epoch_metrics.append({
+            'epoch': self.current_epoch,
+            'train_loss_identity_epoch': train_loss_identity_epoch.detach(),
+            'test_loss_identity_epoch': test_loss_identity_epoch.detach(),
+        })
+
+    def lr_scheduler(self):
+            """Decay learning rate by a factor of lr_decay_rate every lr_decay_epoch epochs"""
+            if self.current_epoch in self.decayEpochs:
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] *= self.learning_rate_change
+                return self.optimizer
+            else:
+                return self.optimizer
+
+    def end_batch(self):
+
+        current_batch_metrics = self.batch_metrics[-1]
+        print(f'----------Training Epoch {self.current_epoch} --------')
+        print(f'Batch Nr. {self.current_batch}')
+        print(f'Train Identity Loss: {current_batch_metrics["train_identity_loss"]}')
+        
+
+    def end_epoch(self, baseline_identity_loss):
+
+        current_epoch_metrics = self.epoch_metrics[-1]
+        print(f'==========Finished Training Epoch {self.current_epoch}==========')
+        print(f'Train Identity Loss: {current_epoch_metrics["train_loss_identity_epoch"]}')
+        print(f'Test Identity Loss: {current_epoch_metrics["test_loss_identity_epoch"]}')
+
+        if self.baseline is not None:
+            print(f'Baseline Test bwd Loss: {baseline_identity_loss}')
+
+        # Convert batch metrics to DataFrame at the end of an epoch
+        batch_df = pd.DataFrame(self.batch_metrics)
+        self.batch_metrics.clear()  # Clear the list after logging
+        # Save to CSV or append to a file
+        batch_df.to_csv(f'{self.model_name}_embedding_batch_metrics_epoch.csv', index=False, mode='a', header=not self.current_epoch)
+
+        # Convert epoch metrics to DataFrame and save
+        epoch_df = pd.DataFrame(self.epoch_metrics)
+        self.epoch_metrics.clear()  # Clear the list after logging
+        epoch_df.to_csv(f'{self.model_name}_embedding_epoch_metrics.csv', index=False, mode='a', header=not self.current_epoch)
+
 class EarlyStopping:
     def __init__(self, model_name, patience=5, verbose=False):
         self.patience = patience
@@ -871,7 +1189,7 @@ class EarlyStopping:
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.model_path = f'best_{model_name}_parameters.pth'
+        self.model_path = f'best_{model_name}_embedding_parameters.pth'
 
     def __call__(self, validation_loss, model):
         if self.best_score is None:
@@ -887,9 +1205,11 @@ class EarlyStopping:
                 self.early_stop = True
 
     def save_model(self, model):
-        torch.save(model.state_dict(), self.model_path)
+        torch.save(model.embedding.state_dict(), self.model_path)
         if self.verbose:
             print(f'Model saved to {self.model_path}')
+
+
 
 def update_batch_loss_plot(epoch, fwd_loss_batch_values, bwd_loss_batch_values, inv_cons_loss_batch_values, temp_cons_loss_batch_values, total_loss_batch_values):
     # Clear the output to update the plot

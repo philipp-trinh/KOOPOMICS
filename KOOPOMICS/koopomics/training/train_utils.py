@@ -527,7 +527,8 @@ class Trainer(KoopmanMetricsMixin):
                                'baseline_fwd_loss': baseline_fwd_loss,
                                'baseline_bwd_loss': baseline_bwd_loss
                               })
-                    
+                   
+        print('')
                 
         except KeyboardInterrupt:
             print("Training interrupted. Saving model...")

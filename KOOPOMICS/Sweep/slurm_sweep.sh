@@ -1,3 +1,5 @@
+#!/bin/bash
+
 #SBATCH --job-name=param_sweep                # Job name
 #SBATCH --array=0-9                            # Array range (0-9 for 10 tasks; adjust as needed)
 #SBATCH --ntasks=1                             # Number of tasks per job

@@ -126,11 +126,10 @@ class HypManager():
             E_layer_dims = E_layer_dims = list(map(int, getattr(config, 'E_layer_dims',
                                                                 "264,128,10").split(',')))
 
-            E_dropout_rates = [getattr(config, 'E_dropout_rate_1', 0),
-                               getattr(config, 'E_dropout_rate_2', 0),
-                               0,0]     
+            #E_dropout_rates = [getattr(config, 'E_dropout_rate_1', 0),
+            #                   getattr(config, 'E_dropout_rate_2', 0),
+            #                   0,0]     
             E_layer_dims=E_layer_dims
-            E_dropout_rates=E_dropout_rates
             operator=getattr(config, 'operator', 'invkoop')
             op_reg=getattr(config, 'op_reg', 'skewsym')
             op_act_fn=getattr(config, 'op_act_fn', 'leaky_relu')
@@ -144,14 +143,13 @@ class HypManager():
             lin_act_fn=getattr(config, 'lin_act_fn', 'leaky_relu')
 
             
-            train_dl, test_dl = self.build_dataset(self, config.batch_size, 
+            train_dl, test_dl = self.build_dataset(config.batch_size, 
                                               config.dl_structure, config.max_Kstep)
 
        
             
             KoopOmicsModel = self.build_koopmodel(
                                                     E_layer_dims=E_layer_dims,
-                                                    E_dropout_rates=E_dropout_rates,
                                                     operator=operator,
                                                     op_reg=op_reg,
                                                     op_act_fn=op_act_fn,
@@ -163,15 +161,15 @@ class HypManager():
                                                 )
             baseline = NaiveMeanPredictor(self.train_df, self.feature_list, mask_value=self.mask_value)
 
-            if self.modular_train:
+            if self.modular_fit:
                 KoopOmicsModel.modular_fit(train_dl, test_dl, wandb_log=True,
                                      runconfig = config, mask_value=self.mask_value
-                                    )
-            elif self.embedding_train:
+                                    baseline=baseline)
+            elif self.embedding_fit:
                 KoopOmicsModel.embedding_fit(train_dl, test_dl, wandb_log=True,
                                      runconfig = config, mask_value=self.mask_value
-                                    )
+                                    baseline=baseline)
             else:
                 KoopOmicsModel.fit(train_dl, test_dl, wandb_log=True,
                                      runconfig = config, mask_value=self.mask_value
-                                    )
+                                    baseline=baseline)

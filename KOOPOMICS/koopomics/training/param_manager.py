@@ -163,13 +163,13 @@ class HypManager():
 
             if self.modular_fit:
                 KoopOmicsModel.modular_fit(train_dl, test_dl, wandb_log=True,
-                                     runconfig = config, mask_value=self.mask_value
+                                     runconfig = config, mask_value=self.mask_value,
                                     baseline=baseline)
             elif self.embedding_fit:
                 KoopOmicsModel.embedding_fit(train_dl, test_dl, wandb_log=True,
-                                     runconfig = config, mask_value=self.mask_value
+                                     runconfig = config, mask_value=self.mask_value,
                                     baseline=baseline)
             else:
                 KoopOmicsModel.fit(train_dl, test_dl, wandb_log=True,
-                                     runconfig = config, mask_value=self.mask_value
+                                     runconfig = config, mask_value=self.mask_value,
                                     baseline=baseline)

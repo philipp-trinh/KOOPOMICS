@@ -586,25 +586,25 @@ class Trainer(KoopmanMetricsMixin):
 
 
         # Set training parameters with fallback to runconfig
-        self.max_Kstep = get_param('max_Kstep', 2, **kwargs)
-        self.start_Kstep = get_param('start_Kstep', 0, **kwargs)
+        self.max_Kstep = self.get_param('max_Kstep', 2, **kwargs)
+        self.start_Kstep = self.get_param('start_Kstep', 0, **kwargs)
 
         # Optimizer specs
-        self.opt = get_param('opt', 'adam', **kwargs)
-        self.lr = get_param('lr', 0.001, **kwargs)
-        self.weight_decay = get_param('weight_decay', 0.01, **kwargs)
+        self.opt = self.get_param('opt', 'adam', **kwargs)
+        self.lr = self.get_param('lr', 0.001, **kwargs)
+        self.weight_decay = self.get_param('weight_decay', 0.01, **kwargs)
 
-        self.grad_clip = get_param('grad_clip', 1, **kwargs)
+        self.grad_clip = self.get_param('grad_clip', 1, **kwargs)
 
         # Epochs and decay settings
-        self.num_epochs = get_param('num_epochs', 10, **kwargs)
-        self.decayEpochs = get_param('decayEpochs', [40, 80, 120, 160], **kwargs)
-        self.learning_rate_change = get_param('learning_rate_change', 0.8, **kwargs)
+        self.num_epochs = self.get_param('num_epochs', 10, **kwargs)
+        self.decayEpochs = self.get_param('decayEpochs', [40, 80, 120, 160], **kwargs)
+        self.learning_rate_change = self.get_param('learning_rate_change', 0.8, **kwargs)
 
         # Loss and loss calculation specs
-        self.loss_weights = get_param('loss_weights', [1, 1, 1, 1, 1, 1], **kwargs)
-        self.epoch_temp_cons = get_param('epoch_temp_cons', 3, **kwargs)
-        self.mask_value = get_param('mask_value', -2, **kwargs)
+        self.loss_weights = self.get_param('loss_weights', [1, 1, 1, 1, 1, 1], **kwargs)
+        self.epoch_temp_cons = self.get_param('epoch_temp_cons', 3, **kwargs)
+        self.mask_value = self.get_param('mask_value', -2, **kwargs)
 
             # LogIns and Visuals:
         self.print_batch_info = kwargs.get('print_batch_info', False)
@@ -634,7 +634,7 @@ class Trainer(KoopmanMetricsMixin):
         self.early_stop_delta = kwargs.get('eastop_delta', 0) 
 
         if self.early_stop:
-            self.early_stopping = EarlyStopping2score(self.model_name, patience=self.patience, verbose=self.early_stop_verbose, delta=self.early_stop_delta)
+            self.early_stopping = EarlyStopping2scores(self.model_name, patience=self.patience, verbose=self.early_stop_verbose, delta=self.early_stop_delta, wandb_log=self.wandb_log, start_Kstep = self.start_Kstep, max_Kstep=self.max_Kstep)
 
         base_criterion = nn.MSELoss().to(self.device)
         
@@ -663,8 +663,8 @@ class Trainer(KoopmanMetricsMixin):
         self.current_batch = 0
         self.current_step = 0
 
-    def get_param(key, default=None, **kwargs):
-        return kwargs.get(key, getattr(runconfig, key, default))
+    def get_param(self, key, default=None, **kwargs):
+        return kwargs.get(key, getattr(RunConfig, key, default))
     
     def set_seed(seed=0):
         """Set one seed for reproducibility."""
@@ -680,6 +680,7 @@ class Trainer(KoopmanMetricsMixin):
                                    lr=self.lr, weight_decay=self.weight_decay)
         return self.optimizer
         
+    #==================================Training Function=======================
     
     def train(self):
 
@@ -691,8 +692,14 @@ class Trainer(KoopmanMetricsMixin):
                 (train_fwd_loss_epoch, test_fwd_loss_epoch, 
                 train_bwd_loss_epoch, test_bwd_loss_epoch,
                 baseline_fwd_loss, baseline_bwd_loss) = self.train_epoch()
-                combined_test_loss = test_fwd_loss_epoch + test_bwd_loss_epoch
                 
+                
+                combined_test_loss = (test_fwd_loss_epoch + test_bwd_loss_epoch) / 2
+
+                baseline_ratio = 0
+                if self.baseline is not None:
+                    combined_baseline_loss = (baseline_fwd_loss + baseline_bwd_loss) / 2
+                    baseline_ratio = (combined_baseline_loss-combined_test_loss)/combined_baseline_loss
 
                 if self.wandb_log:
                     wandb.log({'train_fwd_loss_epoch': train_fwd_loss_epoch,
@@ -702,11 +709,18 @@ class Trainer(KoopmanMetricsMixin):
                                'combined_test_loss': combined_test_loss,
                                'baseline_fwd_loss': baseline_fwd_loss,
                                'baseline_bwd_loss': baseline_bwd_loss,
+                               'baseline_ratio': baseline_ratio
                               })
                 if self.early_stop:
                     self.early_stopping(test_fwd_loss_epoch, test_bwd_loss_epoch, self.current_epoch, self.model)
                     if self.early_stopping.early_stop:
-                        print('Early Stop Triggered: Best Score {self.early_stopping.best_score} at Best Epoch {self.early_stopping.best_epoch}.')
+                        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Early stopping triggered!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                        print(f'Best Score {self.early_stopping.best_score} at Best Epoch {self.early_stopping.best_epoch}.')
+                        self.load_state_dict(torch.load(self.early_stopping.model_path,  map_location=torch.device(self.device)))
+                        print(f'Best Model Parameters of Shift {self.start_Kstep+1} Loaded.')
+                        for param in self.embedding.parameters():
+                            
+                            param.requires_grad = False
                         break
         except KeyboardInterrupt:
             print("Training interrupted. Saving model...")
@@ -714,6 +728,7 @@ class Trainer(KoopmanMetricsMixin):
 
         torch.save(self.model.state_dict(), f'{self.model_name}_parameters.pth')
 
+    #==================================Training Function=======================
 
     def train_epoch(self):
         #-------------------------------------------------------------------------------------------------
@@ -1008,7 +1023,7 @@ class Trainer(KoopmanMetricsMixin):
         
         current_step_metrics = self.step_metrics[-1]
         print(f'----------Training Epoch {self.current_epoch}--------')
-        print(f'==========Finished Training Step {self.current_step}=======')
+        print(f'============================Finished Training Step {self.current_step}=======================')
         print(f'Total Loss: {current_step_metrics["train_total_loss"]}')
         print('')
         print(f'Forward Loss: {current_step_metrics["train_fwd_loss"]}')
@@ -1021,7 +1036,7 @@ class Trainer(KoopmanMetricsMixin):
     def end_epoch(self, baseline_fwd_loss, baseline_bwd_loss):
 
         current_epoch_metrics = self.epoch_metrics[-1]
-        print(f'==========Finished Training Epoch {self.current_epoch}==========')
+        print(f'============================Finished Training Epoch {self.current_epoch}=============================')
         print(f'Train fwd Loss: {current_epoch_metrics["train_fwd_loss"]}')
         print(f'Train bwd Loss: {current_epoch_metrics["train_bwd_loss"]}')
         print('')
@@ -1102,7 +1117,7 @@ class Embedding_Trainer(KoopmanMetricsMixin):
         self.patience = kwargs.get('patience', 10)
 
         if self.early_stop:
-            self.early_stopping = EarlyStopping(self.model_name, patience=self.patience, verbose=True)
+            self.early_stopping = EarlyStopping(self.model_name, patience=self.patience, verbose=True, wandb_log=self.wandb_log)
 
         
         base_criterion = nn.MSELoss().to(self.device)
@@ -1141,7 +1156,8 @@ class Embedding_Trainer(KoopmanMetricsMixin):
         """Set one seed for reproducibility."""
         np.random.seed(seed)
         torch.manual_seed(seed)
-        
+
+    #==================================Training Function=======================
     def train(self):
 
         try:
@@ -1152,18 +1168,27 @@ class Embedding_Trainer(KoopmanMetricsMixin):
                 (train_loss_identity_epoch, test_loss_identity_epoch,
                 baseline_identity_loss) = self.train_epoch_embedding()
 
+                baseline_ratio = 0
+                if self.baseline is not None:
+                    baseline_ratio = (baseline_identity_loss-test_loss_identity_epoch)/baseline_identity_loss
+
                 if self.wandb_log:
                     wandb.log({'train_loss_identity_epoch': train_loss_identity_epoch,
                               'test_loss_identity_epoch': test_loss_identity_epoch,
                                'baseline_identity_loss': baseline_identity_loss,
+                               'baseline_ratio': baseline_ratio
                               })
                 if self.early_stop:    
                     self.early_stopping(self.current_epoch, test_loss_identity_epoch, self.model)
                 
-                if self.early_stopping.early_stop:
-                    print("Early stopping triggered.")
-                    print(f"Best Score: {self.early_stopping.best_score} at epoch {self.early_stopping.best_epoch}")
-                    break
+                    if self.early_stopping.early_stop:
+                        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Early stopping triggered!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                        print(f"Best Score: {self.early_stopping.best_score} at epoch {self.early_stopping.best_epoch}")
+                        self.embedding.load_state_dict(torch.load(self.early_stopping.model_path,  map_location=torch.device(self.device)))
+                        for param in self.embedding.parameters():
+                            param.requires_grad = False
+                        print(f"!!Best Model Embedding Params Loaded and Frozen!!")
+                        break
         except KeyboardInterrupt:
             print("Training interrupted. Saving model...")
             torch.save(self.model.embedding.state_dict(), f"interrupted_{self.model_name}_embedding_parameters.pth")
@@ -1173,6 +1198,7 @@ class Embedding_Trainer(KoopmanMetricsMixin):
                 param.requires_grad = False
 
         torch.save(self.model.embedding.state_dict(), f'{self.model_name}_embedding_parameters.pth')
+    #==================================Training Function=======================
 
 
     def train_epoch_embedding(self):
@@ -1319,7 +1345,7 @@ class Embedding_Trainer(KoopmanMetricsMixin):
     def end_epoch(self, baseline_identity_loss):
 
         current_epoch_metrics = self.epoch_metrics[-1]
-        print(f'==========Finished Training Epoch {self.current_epoch}==========')
+        print(f'==============================Finished Training Epoch {self.current_epoch}==================================')
         print(f'Train Identity Loss: {current_epoch_metrics["train_loss_identity_epoch"]}')
         print(f'Test Identity Loss: {current_epoch_metrics["test_loss_identity_epoch"]}')
 
@@ -1338,7 +1364,7 @@ class Embedding_Trainer(KoopmanMetricsMixin):
         epoch_df.to_csv(f'{self.model_name}_embedding_epoch_metrics.csv', index=False, mode='a', header=not self.current_epoch)
 
 class EarlyStopping2scores:
-    def __init__(self, model_name, patience=5, verbose=False, delta=0):
+    def __init__(self, model_name, patience=5, verbose=False, delta=0, wandb_log=False, start_Kstep=0, max_Kstep=1):
         self.patience = patience
         self.verbose = verbose
         self.delta= delta
@@ -1347,7 +1373,17 @@ class EarlyStopping2scores:
         self.best_score2 = None
         self.best_epoch = 0
         self.early_stop = False
-        self.model_path = f'best_{model_name}_embedding_parameters.pth'
+        self.wandb_log = wandb_log
+        self.start_Kstep = start_Kstep
+        self.max_Kstep = max_Kstep
+
+
+        if self.wandb_log:
+            run_id = wandb.run.id
+            self.model_path = f'best_{model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters_run_{run_id}.pth'
+        else:
+            self.model_path = f'best_{model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters.pth'
+            
     def __call__(self, score1, score2, current_epoch, model):
         if self.best_score1 is None:
             self.best_score1 = score1
@@ -1364,11 +1400,12 @@ class EarlyStopping2scores:
         else:
             if score1 < self.best_score1 + self.delta:
                 self.best_score1 = score1
-            if score < self.best_score2 + self.delta:
+            if score2 < self.best_score2 + self.delta:
                 self.best_score2 = score2
             self.counter = 0
             self.best_epoch = current_epoch
-            self.best_score = validation_loss
+            self.best_score1 = score1
+            self.best_score2 = score2
             self.save_model(model)
             if self.verbose:
                 print(f'Validation improved - Test fwd loss: {score1:.6f}, Test bwd loss: {score2:.6f}')
@@ -1381,14 +1418,21 @@ class EarlyStopping2scores:
 
 
 class EarlyStopping:
-    def __init__(self, model_name, patience=5, verbose=False):
+    def __init__(self, model_name, patience=5, verbose=False, wandb_log=False):
         self.patience = patience
         self.verbose = verbose
         self.counter = 0
         self.best_score = None
         self.best_epoch = 0
         self.early_stop = False
-        self.model_path = f'best_{model_name}_embedding_parameters.pth'
+        self.wandb_log = wandb_log
+        
+        if self.wandb_log:
+            run_id = wandb.run.id
+            self.model_path = f'best_{model_name}_embedding_parameters_run_{run_id}.pth'
+        else:
+            self.model_path = f'best_{model_name}_embedding_parameters.pth'
+            
     def __call__(self, current_epoch, validation_loss, model):
         if self.best_score is None:
             self.best_epoch = current_epoch

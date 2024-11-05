@@ -46,6 +46,6 @@ TestingKoopnondelay.embedding_fit(train_dataloader, test_dataloader, runconfig=r
                          num_epochs = 164, learning_rate=0.0002139288706079624, max_Kstep=max_Kstep,
                          loss_weights = [1,0.5,1,1,0.01,0], mask_value=mask_value,
                          model_name = 'TestingKoopNonDelay_lrelu_M264', use_wandb=True,
-                        learning_rate_change=0.5964962693362547, early_stop=True, patience=20,
+                        learning_rate_change=0.5964962693362547, early_stop=False, patience=20,
                          decayEpochs=[40,100,200],
                          baseline=baseline, grad_clip=0.11383412477331167, weight_decay=0.009149468955168997)

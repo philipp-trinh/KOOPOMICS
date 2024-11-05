@@ -656,7 +656,7 @@ class Trainer(KoopmanMetricsMixin):
     def optimize_model(self, loss_total):
         self.optimizer.zero_grad()
         if loss_total > 0:
-            loss_total.backward(retain_graph=True)
+            loss_total.backward
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)  # gradient clip
             self.optimizer.step()
             
@@ -948,8 +948,8 @@ class Embedding_Trainer(KoopmanMetricsMixin):
                     if self.early_stopping.early_stop:
                         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Early stopping triggered!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
                         print(f"Best Score: {self.early_stopping.best_score} at epoch {self.early_stopping.best_epoch}")
-                        self.embedding.load_state_dict(torch.load(self.early_stopping.model_path,  map_location=torch.device(self.device)))
-                        for param in self.embedding.parameters():
+                        self.model.embedding.load_state_dict(torch.load(self.early_stopping.model_path,  map_location=torch.device(self.device)))
+                        for param in self.model.embedding.parameters():
                             param.requires_grad = False
                         print(f"!!Best Model Embedding Params Loaded and Frozen!!")
                         break
@@ -1030,7 +1030,7 @@ class Embedding_Trainer(KoopmanMetricsMixin):
     def optimize_model(self, loss_total):
         self.optimizer.zero_grad()
         if loss_total > 0:
-            loss_total.backward(retain_graph=True)
+            loss_total.backward
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)  # gradient clip
             self.optimizer.step()
             
@@ -1146,14 +1146,8 @@ class EarlyStopping2scores:
         self.wandb_log = wandb_log
         self.start_Kstep = start_Kstep
         self.max_Kstep = max_Kstep
-
-
-        if self.wandb_log:
-            run_id = wandb.run.id
-            self.model_path = f'best_{model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters_run_{run_id}.pth'
-        else:
-            self.model_path = f'best_{model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters.pth'
-            
+        self.model_name = model_name
+           
     def __call__(self, score1, score2, current_epoch, model):
         if self.best_score1 is None:
             self.best_score1 = score1
@@ -1181,6 +1175,14 @@ class EarlyStopping2scores:
                 print(f'Validation improved - Test fwd loss: {score1:.6f}, Test bwd loss: {score2:.6f}')
 
     def save_model(self, model):
+        
+
+        if self.wandb_log:
+            run_id = wandb.run.id
+            self.model_path = f'best_{model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters_run_{run_id}.pth'
+        else:
+            self.model_path = f'best_{model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters.pth'
+ 
         torch.save(model.embedding.state_dict(), self.model_path)
         if self.verbose:
             print(f'Model saved to {self.model_path}')
@@ -1196,13 +1198,7 @@ class EarlyStopping:
         self.best_epoch = 0
         self.early_stop = False
         self.wandb_log = wandb_log
-        
-        if self.wandb_log:
-            run_id = wandb.run.id
-            self.model_path = f'best_{model_name}_embedding_parameters_run_{run_id}.pth'
-        else:
-            self.model_path = f'best_{model_name}_embedding_parameters.pth'
-            
+        self.model_name = model_name 
     def __call__(self, current_epoch, validation_loss, model):
         if self.best_score is None:
             self.best_epoch = current_epoch
@@ -1219,6 +1215,13 @@ class EarlyStopping:
                 self.early_stop = True
 
     def save_model(self, model):
+        
+        if self.wandb_log:
+            run_id = wandb.run.id
+            self.model_path = f'best_{self.model_name}_embedding_parameters_run_{run_id}.pth'
+        else:
+            self.model_path = f'best_{self.model_name}_embedding_parameters.pth'
+            
         torch.save(model.embedding.state_dict(), self.model_path)
         if self.verbose:
             print(f'Model saved to {self.model_path}')

@@ -35,10 +35,23 @@ class NaiveMeanPredictor(nn.Module):
         calculated during the fit step.
         """
         device = input_vector.device
-        # Return the means, repeated for each input sample
-        sample_size = input_vector.size(0)
-        timepoint_size = input_vector.size(1)
-        return self.means.to(device).expand(sample_size, timepoint_size, -1)
+        input_shape = input_vector.shape
+        
+        # If input is 2D (batch_size, num_features)
+        if len(input_shape) == 2:
+            batch_size, num_features = input_shape
+            expanded_means = self.means.to(device).unsqueeze(0)  # Shape: (1, num_features)
+            return expanded_means.expand(batch_size, num_features)  # Shape: (batch_size, num_features)
+        
+        # If input is 3D (batch_size, timepoints, num_features)
+        elif len(input_shape) == 3:
+            batch_size, timepoints, num_features = input_shape
+            expanded_means = self.means.to(device).unsqueeze(0).unsqueeze(0)  # Shape: (1, 1, num_features)
+            return expanded_means.expand(batch_size, timepoints, num_features)  # Shape: (batch_size, timepoints, num_features)
+        
+        # Handle cases where the input is not 2D or 3D
+        else:
+            raise ValueError("Input must be either 2D or 3D.")
 
 
 class Evaluator(KoopmanMetricsMixin):
@@ -269,7 +282,7 @@ class Evaluator(KoopmanMetricsMixin):
                     input_identity = data_list[step].to(self.device)
                     target_identity = data_list[step].to(self.device)
                     
-                    loss_identity_step = self.compute_identity_loss(input_identity, target_identity) 
+                    loss_identity_step = self.compute_identity_loss(input_identity, None) 
                     loss_identity_batch += loss_identity_step
                 
                 # Accumulate batch losses for the epoch

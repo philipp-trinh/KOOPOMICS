@@ -656,7 +656,7 @@ class Trainer(KoopmanMetricsMixin):
     def optimize_model(self, loss_total):
         self.optimizer.zero_grad()
         if loss_total > 0:
-            loss_total.backward(retain_graph=True)
+            loss_total.backward
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)  # gradient clip
             self.optimizer.step()
             
@@ -1030,7 +1030,7 @@ class Embedding_Trainer(KoopmanMetricsMixin):
     def optimize_model(self, loss_total):
         self.optimizer.zero_grad()
         if loss_total > 0:
-            loss_total.backward(retain_graph=True)
+            loss_total.backward
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)  # gradient clip
             self.optimizer.step()
             

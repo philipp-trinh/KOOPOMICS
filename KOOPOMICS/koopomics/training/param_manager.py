@@ -160,6 +160,7 @@ class HypManager():
 
                                                 )
             baseline = NaiveMeanPredictor(self.train_df, self.feature_list, mask_value=self.mask_value)
+            wandb.watch(KoopOmicsModel,log='all', log_freq=1) 
 
             if self.modular_fit:
                 KoopOmicsModel.modular_fit(train_dl, test_dl, wandb_log=True,

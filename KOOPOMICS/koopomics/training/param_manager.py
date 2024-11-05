@@ -50,7 +50,10 @@ class HypManager():
 
         self.mask_value = kwargs.get('mask_value', -2)
                     
-        self.sweepconfig = sweepconfig
+        self.modular_fit = kwargs.get('modular_fit', False)
+        self.embedding_fit = kwargs.get('embedding_fit', False)
+        self.fit = kwargs.get('fit', False)
+
 
 
     def build_dataset(self, batch_size, dl_structure, max_Kstep):
@@ -114,47 +117,61 @@ class HypManager():
 
         return KoopOmicsModel
 
-    def hyptrain(self, config=None, modular_train=False, embedding_train=False):
+    def hyptrain(self, config=None):
         # Initialize a new wandb run
         with wandb.init(config=config):
             # this config will be set by Sweep Controller
             config = wandb.config
 
+            E_layer_dims = E_layer_dims = list(map(int, getattr(config, 'E_layer_dims',
+                                                                "264,128,10").split(',')))
+
+            E_dropout_rates = [getattr(config, 'E_dropout_rate_1', 0),
+                               getattr(config, 'E_dropout_rate_2', 0),
+                               0,0]     
+            E_layer_dims=E_layer_dims
+            E_dropout_rates=E_dropout_rates
+            operator=getattr(config, 'operator', 'invkoop')
+            op_reg=getattr(config, 'op_reg', 'skewsym')
+            op_act_fn=getattr(config, 'op_act_fn', 'leaky_relu')
+            op_bandwidth=getattr(config, 'op_bandwidth', 2)
+            #latent_dim=getattr(config, 'latent_dim', 'latent_dim')
+            linE_layer_dims=list(map(int, getattr(config, 'linE_layer_dims',
+                                                                "10,128,10").split(',')))
+            linE_dropout_rates=[getattr(config, 'linE_dropout_rate_1', 0),
+                               getattr(config, 'linE_dropout_rate_2', 0),
+                               0,0]     
+            lin_act_fn=getattr(config, 'lin_act_fn', 'leaky_relu')
 
             
-
             train_dl, test_dl = self.build_dataset(self, config.batch_size, 
                                               config.dl_structure, config.max_Kstep)
 
-            E_layer_dims = list(map(int, config.E_layer_dims.split(',')))
-            E_dropout_rates=[config.E_dropout_rate_1, config.E_dropout_rate_2, 0, 0]
-            KoopOmicsModel = KoopOmicsModel = self.build_koopmodel(
+       
+            
+            KoopOmicsModel = self.build_koopmodel(
                                                     E_layer_dims=E_layer_dims,
-                                                    #D_layer_dims=config.D_layer_dims,
-                                                    #E_dropout_rates=E_dropout_rates,
-                                                    operator=config.operator,
-                                                    bop_reg=config.op_reg,
-                                                    #op_act_fn=config.op_act_fn,
-                                                    #op_bandwidth=config.op_bandwidth
-                                                    #latent_dim=config.latent_dim,
-                                                    #linE_layer_dims=config.linE_layer_dims,
-                                                    #linD_layer_dims=config.linD_layer_dims,
-                                                    #linE_dropout_rates=config.linE_dropout_rates,
-                                                    #linD_dropout_rates=config.linD_dropout_rates,
-                                                    #lin_act_fn=config.lin_act_fn,
+                                                    E_dropout_rates=E_dropout_rates,
+                                                    operator=operator,
+                                                    op_reg=op_reg,
+                                                    op_act_fn=op_act_fn,
+                                                    op_bandwidth=op_bandwidth,
+                                                    linE_layer_dims=linE_layer_dims,
+                                                    linE_dropout_rates=linE_dropout_rates,
+                                                    lin_act_fn=lin_act_fn,
 
                                                 )
             baseline = NaiveMeanPredictor(self.train_df, self.feature_list, mask_value=self.mask_value)
 
-            if modular_train:
+            if self.modular_train:
                 KoopOmicsModel.modular_fit(train_dl, test_dl, wandb_log=True,
-                                     runconfig = config
+                                     runconfig = config, mask_value=self.mask_value
                                     )
-            elif embedding_train:
+            elif self.embedding_train:
                 KoopOmicsModel.embedding_fit(train_dl, test_dl, wandb_log=True,
-                                     runconfig = config
+                                     runconfig = config, mask_value=self.mask_value
                                     )
             else:
                 KoopOmicsModel.fit(train_dl, test_dl, wandb_log=True,
-                                     runconfig = config
+                                     runconfig = config, mask_value=self.mask_value
                                     )

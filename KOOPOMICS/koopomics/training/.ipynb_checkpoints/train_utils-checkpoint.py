@@ -584,14 +584,14 @@ class Trainer(KoopmanMetricsMixin):
         self.train_dl = train_dl
         self.test_dl = test_dl
 
-
+        self.runconfig = runconfig
         # Set training parameters with fallback to runconfig
         self.max_Kstep = self.get_param('max_Kstep', 2, **kwargs)
         self.start_Kstep = self.get_param('start_Kstep', 0, **kwargs)
 
         # Optimizer specs
         self.opt = self.get_param('opt', 'adam', **kwargs)
-        self.lr = self.get_param('lr', 0.001, **kwargs)
+        self.lr = self.get_param('learning_rate', 0.001, **kwargs)
         self.weight_decay = self.get_param('weight_decay', 0.01, **kwargs)
 
         self.grad_clip = self.get_param('grad_clip', 1, **kwargs)
@@ -664,7 +664,7 @@ class Trainer(KoopmanMetricsMixin):
         self.current_step = 0
 
     def get_param(self, key, default=None, **kwargs):
-        return kwargs.get(key, getattr(RunConfig, key, default))
+        return kwargs.get(key, getattr(self.runconfig, key, default))
     
     def set_seed(seed=0):
         """Set one seed for reproducibility."""
@@ -1066,27 +1066,30 @@ class Embedding_Trainer(KoopmanMetricsMixin):
         self.model = model
         self.train_dl = train_dl
         self.test_dl = test_dl
+        
+        self.runconfig = runconfig
 
         # Set training parameters
-        self.max_Kstep = kwargs.get('max_Kstep', 2)
-        self.freeze_embedding = kwargs.get('freeze', True)
-
+        self.max_Kstep = self.get_param('max_Kstep', 2, **kwargs)
+        self.freeze_embedding = self.get_param('freeze', True, **kwargs)
 
 
             # Optimizer specs:
-        self.opt = kwargs.get('opt', 'adam')
-        self.lr = kwargs.get('lr', 0.001)
-        self.weight_decay = kwargs.get('weight_decay', 0.01)
+        self.opt = self.get_param('opt', 'adam', **kwargs)
+        self.lr = self.get_param('learning_rate', 0.001, **kwargs)
+        self.weight_decay = self.get_param('weight_decay', 0.01, **kwargs)
 
-        self.grad_clip = kwargs.get('grad_clip', 1)
+        self.grad_clip = self.get_param('grad_clip', 1, **kwargs)
 
-        self.num_epochs = kwargs.get('num_epochs', 10)
-        self.decayEpochs = kwargs.get('decayEpochs', [40, 80, 120, 160])
-        self.learning_rate_change = kwargs.get('learning_rate_change', 0.8)
+        self.num_epochs = self.get_param('num_epochs', 10, **kwargs)
+        self.decayEpochs = self.get_param('decayEpochs', [40, 80, 120, 160], **kwargs)
+        self.learning_rate_change = self.get_param('learning_rate_change', 0.8, **kwargs)
 
             # Loss and Loss Calculation Specs:
-        self.loss_weights = kwargs.get('loss_weights', [1, 1, 1, 1, 1, 1]) # placeholder
-        self.epoch_temp_cons = kwargs.get('epoch_temp_cons', 3)
+        self.loss_weights = self.get_param('loss_weights', [1, 1, 1, 1, 1, 1], **kwargs) # placeholder
+        self.epoch_temp_cons = self.get_param('epoch_temp_cons', 3, **kwargs)
+        
+        
         self.mask_value = kwargs.get('mask_value', -2)
 
             # LogIns and Visuals:
@@ -1142,7 +1145,10 @@ class Embedding_Trainer(KoopmanMetricsMixin):
 
         self.current_epoch = 0
         self.current_batch = 0
-
+        
+    def get_param(self, key, default=None, **kwargs):
+        return kwargs.get(key, getattr(self.runconfig, key, default))
+    
     def build_optimizer(self):
         if self.opt == "sgd":
             self.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, self.model.parameters()),

@@ -11,10 +11,11 @@ time_id = 'Gestational age (GA)/weeks'
 replicate_id = 'Subject ID'
 feature_list = pregnancy_df.columns[7:]
 num_features = len(feature_list)
+mask_value = -1e-9
 
 train_set_df = pregnancy_df[pregnancy_df['Cohort'] == 'Discovery'].copy()
 test_set_df = pregnancy_df[pregnancy_df['Cohort'] == 'Validation (Test Set 1)'].copy()
 
-hypmanager = ko.HypManager(train_set_df, test_set_df, condition_id, replicate_id, time_id, feature_list) 
+hypmanager = ko.HypManager(train_set_df, test_set_df, condition_id, replicate_id, time_id, feature_list, mask_value=-1e-9) 
 
-wandb.agent("elementar1-university-of-vienna/PregnancyKoop/k3mq7wqr", function=hypmanager.hyptrain, count=30)
+wandb.agent("elementar1-university-of-vienna/PregnancyKoop/", function=hypmanager.hyptrain, count=5)

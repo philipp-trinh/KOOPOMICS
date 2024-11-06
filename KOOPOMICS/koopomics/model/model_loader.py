@@ -103,7 +103,6 @@ class KoopmanModel(nn.Module):
             
         train_max_Kstep = kwargs.pop('max_Kstep', None)  # Use pop to remove and optionally get its value
         train_start_Kstep = kwargs.pop('start_Kstep', 0)  # Use pop to remove and optionally get its value
-        wandb.watch(self,log='all', log_freq=1) 
 
         for step in range(train_start_Kstep, train_max_Kstep):
             print(f'========================KOOPMAN SHIFT {step} TRAINING===================')

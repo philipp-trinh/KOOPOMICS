@@ -20,4 +20,4 @@ embedding_param_path = './bestparams/Koop_embedding_parameters_run_xhb2hi1k.pth'
 
 hypmanager = ko.HypManager(train_set_df, test_set_df, condition_id, replicate_id, time_id, feature_list, mask_value=-1e-9, em_param_path=embedding_param_path) 
 
-wandb.agent("elementar1-university-of-vienna/PregnancyKoop/e3y8ddqo", function=hypmanager.hyptrain, count=10)
+wandb.agent("elementar1-university-of-vienna/PregnancyKoop/dxhjtlwg", function=hypmanager.hyptrain, count=10)

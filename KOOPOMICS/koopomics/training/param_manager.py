@@ -8,7 +8,7 @@ from ..test.test_utils import NaiveMeanPredictor
 import torch
 import pandas as pd
 import wandb
-
+import numpy as np
 
 
 
@@ -76,7 +76,7 @@ class HypManager():
         embedding_act_fn = kwargs.get('em_act_fn', 'leaky_relu')
 
         linearizer_linE_layer_dims = kwargs.get('linE_layer_dims', [3, 100, 100, 3])  
-        linearizer_linD_layer_dims = kwargs.get('linD_layer_dims', linearizer_linE_layer_dims[::-1]])  
+        linearizer_linD_layer_dims = kwargs.get('linD_layer_dims', linearizer_linE_layer_dims[::-1])  
         linearizer_linE_dropout_rates = kwargs.get('linE_dropout_rates', [0] * len(linearizer_linE_layer_dims)) 
         linearizer_linD_dropout_rates = kwargs.get('linD_dropout_rates', [0] * len(linearizer_linE_dropout_rates)) 
         linearizer_act_fn = kwargs.get('lin_act_fn', 'leaky_relu')
@@ -151,7 +151,7 @@ class HypManager():
                                #0,0]     
             lin_act_fn=getattr(config, 'lin_act_fn', 'leaky_relu')
 
-            loss_weights = E_layer_dims = list(map(int, getattr(config, 'loss_weights',
+            loss_weights =  list(map(int, getattr(config, 'loss_weights',
                                                                 "1,1,1,1,1,1").split(',')))
             decayEpochs = self.create_decay_epochs(config.num_epochs, config.num_decays)
 
@@ -168,13 +168,12 @@ class HypManager():
                                                     op_act_fn=op_act_fn,
                                                     op_bandwidth=op_bandwidth,
                                                     linE_layer_dims=linE_layer_dims,
-                                                    linE_dropout_rates=linE_dropout_rates,
                                                     lin_act_fn=lin_act_fn,
 
                                                 )
             baseline = NaiveMeanPredictor(self.train_df, self.feature_list, mask_value=self.mask_value)
-            wandb.watch(KoopOmicsModel,log='all', log_freq=1) 
-
+            wandb.watch(KoopOmicsModel.embedding,log='all', log_freq=1) 
+            wandb.watch(KoopOmicsModel.operator,log='all', log_freq=1)
             if self.modular_fit:
                 
                 KoopOmicsModel.modular_fit(train_dl, test_dl, wandb_log=True,

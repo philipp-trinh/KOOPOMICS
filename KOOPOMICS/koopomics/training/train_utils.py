@@ -667,7 +667,7 @@ class Trainer(KoopmanMetricsMixin):
         run = wandb.init(
             project=runconfig.project,
             notes=f"{runconfig.dataset}",
-            tags=[runconfig.num_metabolites, f'interpolated:{ runconfig.interpolated}',f"feature_selected: {runconfig.feature_selected}", f"outlier_rem: {runconfig.outlier_rem}",f"robust_scaled: {runconfig.robust_scaled}",f"feature_selected: {runconfig.feature_selected}"]
+            tags=[runconfig.num_metabolites, f'interpolated:{ runconfig.interpolated}',f"feature_selected: {runconfig.feature_selected}", f"outlier_rem: {runconfig.outlier_rem}",f"robust_scaled: {runconfig.robust_scaled}",f"feature_selected: {runconfig.feature_selected}"],
 
             config={
                 "batch_size": runconfig.batch_size,

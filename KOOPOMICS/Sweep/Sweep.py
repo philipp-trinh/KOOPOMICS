@@ -18,4 +18,4 @@ test_set_df = pregnancy_df[pregnancy_df['Cohort'] == 'Validation (Test Set 1)'].
 
 hypmanager = ko.HypManager(train_set_df, test_set_df, condition_id, replicate_id, time_id, feature_list, mask_value=-1e-9) 
 
-wandb.agent("elementar1-university-of-vienna/PregnancyKoop/niy9htfz", function=hypmanager.hyptrain, count=10)
+wandb.agent("elementar1-university-of-vienna/PregnancyKoop/t0r8p5hc", function=hypmanager.hyptrain, count=10)

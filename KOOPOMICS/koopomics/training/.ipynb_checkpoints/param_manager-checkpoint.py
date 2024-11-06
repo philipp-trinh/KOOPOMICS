@@ -54,6 +54,10 @@ class HypManager():
         self.embedding_fit = kwargs.get('embedding_fit', False)
         self.fit = kwargs.get('fit', False)
 
+        self.em_param_path = kwargs.get('em_param_path', False)
+        self.shift_param_path = kwargs.get('em_param_path', False)
+
+
 
 
     def build_dataset(self, batch_size, dl_structure, max_Kstep):
@@ -72,7 +76,7 @@ class HypManager():
         embedding_act_fn = kwargs.get('em_act_fn', 'leaky_relu')
 
         linearizer_linE_layer_dims = kwargs.get('linE_layer_dims', [3, 100, 100, 3])  
-        linearizer_linD_layer_dims = kwargs.get('linD_layer_dims', [3, 100, 100, 3])  
+        linearizer_linD_layer_dims = kwargs.get('linD_layer_dims', linearizer_linE_layer_dims[::-1]])  
         linearizer_linE_dropout_rates = kwargs.get('linE_dropout_rates', [0] * len(linearizer_linE_layer_dims)) 
         linearizer_linD_dropout_rates = kwargs.get('linD_dropout_rates', [0] * len(linearizer_linE_dropout_rates)) 
         linearizer_act_fn = kwargs.get('lin_act_fn', 'leaky_relu')
@@ -116,7 +120,12 @@ class HypManager():
             KoopOmicsModel = KoopmanModel(embedding=embedding_module, operator=operator_module)
 
         return KoopOmicsModel
-
+        
+    def create_decay_epochs(self, num_epochs, num_decays=3):
+        # Generate `num_decays` decay points evenly spaced in the range [0, num_epochs]
+        decay_epochs = np.linspace(0, num_epochs, num_decays + 2, endpoint=False)[1:]
+        return decay_epochs.astype(int).tolist()
+        
     def hyptrain(self, config=None):
         # Initialize a new wandb run
         with wandb.init(config=config):
@@ -137,10 +146,14 @@ class HypManager():
             #latent_dim=getattr(config, 'latent_dim', 'latent_dim')
             linE_layer_dims=list(map(int, getattr(config, 'linE_layer_dims',
                                                                 "10,128,10").split(',')))
-            linE_dropout_rates=[getattr(config, 'linE_dropout_rate_1', 0),
-                               getattr(config, 'linE_dropout_rate_2', 0),
-                               0,0]     
+            #linE_dropout_rates=[getattr(config, 'linE_dropout_rate_1', 0),
+                               #getattr(config, 'linE_dropout_rate_2', 0),
+                               #0,0]     
             lin_act_fn=getattr(config, 'lin_act_fn', 'leaky_relu')
+
+            loss_weights = E_layer_dims = list(map(int, getattr(config, 'loss_weights',
+                                                                "1,1,1,1,1,1").split(',')))
+            decayEpochs = self.create_decay_epochs(config.num_epochs, config.num_decays)
 
             
             train_dl, test_dl = self.build_dataset(config.batch_size, 
@@ -163,14 +176,17 @@ class HypManager():
             wandb.watch(KoopOmicsModel,log='all', log_freq=1) 
 
             if self.modular_fit:
+                
                 KoopOmicsModel.modular_fit(train_dl, test_dl, wandb_log=True,
                                      runconfig = config, mask_value=self.mask_value,
-                                    baseline=baseline)
+                                    baseline=baseline, decayEpochs = decayEpochs, embedding_param_path=self.em_param_path,
+                                    model_param_path = self.shift_param_path, loss_weights=loss_weights)
             elif self.embedding_fit:
                 KoopOmicsModel.embedding_fit(train_dl, test_dl, wandb_log=True,
                                      runconfig = config, mask_value=self.mask_value,
-                                    baseline=baseline)
+                                    baseline=baseline, decayEpochs = decayEpochs, loss_weights=loss_weights)
             else:
                 KoopOmicsModel.fit(train_dl, test_dl, wandb_log=True,
                                      runconfig = config, mask_value=self.mask_value,
-                                    baseline=baseline)
+                                    baseline=baseline, decayEpochs = decayEpochs, loss_weights=loss_weights)
+    

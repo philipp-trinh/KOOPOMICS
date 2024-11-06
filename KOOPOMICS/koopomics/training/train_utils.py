@@ -44,33 +44,33 @@ class RunConfig:  # For WandB Model Training Run Logging
         self.outlier_rem = True # Outlier samples removed by dataset preprocessing
         self.robust_scaled = True # Robustscaled (Median centering and IQR scaling)
         self.min_max_scaled_0_1 = False # MinMax scaled to range [0, 1]
-        self.min_max_scaled_1_1 = True # MinMax scaled to range [-1, 1]
+        self.min_max_scaled_1_1 = False # MinMax scaled to range [-1, 1]
        
         # Dataloading Parameters
-        self.batch_size = 10
-        self.dl_structure = 'random'
+        #self.batch_size = 10
+        #self.dl_structure = 'random'
 
         # Embedding Parameters
-        self.embedding = None #"ff_ae" To be set in Trainer
-        self.embedding_dim = None #[264, 2000, 2000, 100] To be set in Trainer
-        self.embedding_num_hidden_layer = None # 2 To be set in Trainer
-        self.embedding_num_hidden_neurons = None #2000 To be set in Trainer
-        self.embedding_latent_dim = None #100 To be set in Trainer
-        self.embedding_input_dropout_rate = None #0 To be set in Trainer
-        self.embedding_activation_fn = None # 'leaky_relu' To be set in Trainer
+        #self.embedding = None #"ff_ae" To be set in Trainer
+        #self.embedding_dim = None #[264, 2000, 2000, 100] To be set in Trainer
+        #self.embedding_num_hidden_layer = None # 2 To be set in Trainer
+        #self.embedding_num_hidden_neurons = None #2000 To be set in Trainer
+        #self.embedding_latent_dim = None #100 To be set in Trainer
+        #self.embedding_input_dropout_rate = None #0 To be set in Trainer
+        #self.embedding_activation_fn = None # 'leaky_relu' To be set in Trainer
         
         # Model Parameters (Initialized with None)
-        self.operator = None #"invkoop"
-        self.Kmatrix_modification = None #"nondelay" To be set in Trainer
-        self.learning_rate = None  # 0.001 To be set in Trainer
-        self.epochs = None  # 600 To be set in Trainer
-        self.learning_rate_change = None  # 0.8 To be set in Trainer
-        self.loss_weights = None  # [1,1,1,1,1,1] To be set in Trainer
-        self.decayEpochs = None  # [40, 100, 200] To be set in Trainer
-        self.weight_decay = None  # 0.01 To be set in Trainer
-        self.grad_clip = None  # 1 To be set in Trainer
-        self.max_Kstep = None  # 1 To be set in Trainer
-        self.mask_value = None  # -2 To be set in Trainer
+        #self.operator = None #"invkoop"
+        #self.Kmatrix_modification = None #"nondelay" To be set in Trainer
+        #self.learning_rate = None  # 0.001 To be set in Trainer
+        #self.epochs = None  # 600 To be set in Trainer
+        #self.learning_rate_change = None  # 0.8 To be set in Trainer
+        #self.loss_weights = None  # [1,1,1,1,1,1] To be set in Trainer
+        #self.decayEpochs = None  # [40, 100, 200] To be set in Trainer
+        #self.weight_decay = None  # 0.01 To be set in Trainer
+        #self.grad_clip = None  # 1 To be set in Trainer
+        #self.max_Kstep = None  # 1 To be set in Trainer
+        #self.mask_value = None  # -2 To be set in Trainer
     
     def to_dict(self):
         return self.__dict__
@@ -366,6 +366,8 @@ class Trainer(KoopmanMetricsMixin):
         self.model_name = kwargs.get('model_name', 'Koop')
 
         self.use_wandb = kwargs.get('use_wandb', False)
+        self.wandb_log_df = kwargs.get('wandb_log_df', None)
+
     
         if self.use_wandb is True:
             self.wandb_init = self.use_wandb
@@ -662,18 +664,12 @@ class Trainer(KoopmanMetricsMixin):
             
     def wandb_initialize(self, runconfig):
 
-        wandb.init(
+        run = wandb.init(
             project=runconfig.project,
+            notes=f"{runconfig.dataset}",
+            tags=[runconfig.num_metabolites, f'interpolated:{ runconfig.interpolated}',f"feature_selected: {runconfig.feature_selected}", f"outlier_rem: {runconfig.outlier_rem}",f"robust_scaled: {runconfig.robust_scaled}",f"feature_selected: {runconfig.feature_selected}"]
+
             config={
-                "dataset": runconfig.dataset,
-                "num_metabolites": runconfig.num_metabolites,
-                "interpolated": runconfig.interpolated,
-                "feature_selected": runconfig.feature_selected,
-                "outlier_rem": runconfig.outlier_rem,
-                "robust_scaled": runconfig.robust_scaled,
-                "min_max_scaled_0_1": runconfig.min_max_scaled_0_1,
-                "min_max_scaled_-1_1": runconfig.min_max_scaled_1_1,
-                
                 "batch_size": runconfig.batch_size,
                 "dl_structure": runconfig.dl_structure,
 
@@ -687,7 +683,7 @@ class Trainer(KoopmanMetricsMixin):
                 "activation_fn": self.model.embedding.activation_fn,
                 
                 "operator": next((k for k, v in self.model.operator_info.items() if v), None),
-                "Kmatrix_modification": next((k for k, v in self.model.regularization_info.items() if v), None),
+                "op_reg": next((k for k, v in self.model.regularization_info.items() if v), None),
                 
                 "learning_rate": self.lr,
                 "epochs": self.num_epochs,
@@ -701,6 +697,28 @@ class Trainer(KoopmanMetricsMixin):
                 "optimizer": 'adam'
             }
         )
+        # Start with the base string
+        dataset_log_str = f"Pregnancy_M{runconfig.num_metabolites}_"
+        
+        # Conditionally add strings based on each flag
+        if runconfig.interpolated:
+            dataset_log_str += "interpolated_"
+        if runconfig.feature_selected:
+            dataset_log_str += "feature_selected_"
+        if runconfig.outlier_rem:
+            dataset_log_str += "outlier_rem_"
+        if runconfig.robust_scaled:
+            dataset_log_str += "robust_scaled_"
+        
+        # Remove any trailing underscore
+        dataset_log_str = dataset_log_str.rstrip("_")
+
+        if wandb_log_df is not None:
+            wandb_log_df_table = wandb.Table(dataframe=wandb_log_df)
+            wandb_log_df_artifact = wandb.Artifact(dataset_log_str, type="dataset")
+            wandb_log_df_artifact.add(wandb_log_df_table, dataset_log_str)
+            run.log({dataset_log_str: wandb_log_df})
+            run.log_artifact(wandb_log_df_artifact)
 
         wandb.watch(self.model.embedding, log='all', log_freq=1)
         wandb.watch(self.model.operator,log='all',log_freq=1)

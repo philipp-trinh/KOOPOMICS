@@ -35,7 +35,7 @@ runconfig.dl_structure = dl_structure
 
 
 # Load Model
-embedding_model = ko.FF_AE([264,150,150,150,150,150,150,150,100], [100,150,150,150,150,150,150,150,264],E_dropout_rates= [0,0,0,0,0,0,0,0,0],activation_fn='leaky_relu')
+embedding_model = ko.FF_AE([264,2000,100], [100,2000,264],E_dropout_rates= [0,0,0],activation_fn='leaky_relu')
 operator_model = ko.InvKoop(latent_dim=100, reg='skewsym', activation_fn='leaky_relu')
 
 TestingKoopnondelay = ko.KoopmanModel(embedding=embedding_model, operator=operator_model)
@@ -43,9 +43,9 @@ baseline = ko.NaiveMeanPredictor(train_set_df, feature_list, mask_value=mask_val
 
 # Run training loop
 TestingKoopnondelay.embedding_fit(train_dataloader, test_dataloader, runconfig=runconfig,
-                         num_epochs = 164, learning_rate=0.0002139288706079624, max_Kstep=max_Kstep,
+                         num_epochs = 164, learning_rate=0.00011, max_Kstep=max_Kstep,
                          loss_weights = [1,0.5,1,1,0.01,0], mask_value=mask_value,
                          model_name = 'TestingKoopNonDelay_lrelu_M264', use_wandb=True,
-                        learning_rate_change=0.5964962693362547, early_stop=False, patience=20,
+                        learning_rate_change=0.99, early_stop=False, patience=20,
                          decayEpochs=[40,100,200],
-                         baseline=baseline, grad_clip=0.11383412477331167, weight_decay=0.009149468955168997)
+                         baseline=baseline, grad_clip=0, weight_decay=0)

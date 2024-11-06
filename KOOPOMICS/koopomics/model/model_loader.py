@@ -98,22 +98,18 @@ class KoopmanModel(nn.Module):
             print('Model parameters loaded, with embedding parameters frozen.')
 
 
-        if In_Training:
-            wandb_init = False
-            wandb_log=True
-        else:
-            wandb_init=True
-            wandb_log=True
+        wandb_init = not In_Training
+        wandb_log=True
             
         train_max_Kstep = kwargs.pop('max_Kstep', None)  # Use pop to remove and optionally get its value
-        train_start_Kstep = kwargs.get('start_Kstep', 0)  # Use pop to remove and optionally get its value
+        train_start_Kstep = kwargs.pop('start_Kstep', 0)  # Use pop to remove and optionally get its value
 
         for step in range(train_start_Kstep, train_max_Kstep):
             print(f'========================KOOPMAN SHIFT {step} TRAINING===================')
             temp_start = step
             temp_max = step+1
  
-            trainer = Trainer(self, train_dl, test_dl, runconfig, start_Kstep=temp_start, max_Kstep=temp_max, wandb_init=wandb_init,wandb_log=wandb_log, early_stop=True, **kwargs)
+            trainer = Trainer(self, train_dl, test_dl, runconfig, start_Kstep=temp_start, max_Kstep=temp_max, wandb_init=wandb_init,wandb_log=wandb_log, **kwargs)
             trainer.train()
             
             wandb_init=False

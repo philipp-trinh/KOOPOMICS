@@ -657,7 +657,7 @@ class Trainer(KoopmanMetricsMixin):
         self.optimizer.zero_grad()
         if loss_total > 0:
             loss_total.backward
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)  # gradient clip
+            #torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)  # gradient clip
             self.optimizer.step()
             
     def wandb_initialize(self, runconfig):

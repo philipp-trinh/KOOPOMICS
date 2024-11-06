@@ -854,6 +854,7 @@ class Embedding_Trainer(KoopmanMetricsMixin):
         self.print_batch_info = kwargs.get('print_batch_info', False)
         self.comp_graph = kwargs.get('comp_graph', False)
         self.plot_train = kwargs.get('plot_train', False)
+        self.batch_verbose = kwargs.get('batch_verbose', False)
 
     
         self.use_wandb = kwargs.get('use_wandb', False)
@@ -877,6 +878,7 @@ class Embedding_Trainer(KoopmanMetricsMixin):
         self.early_stop = kwargs.get('early_stop', False)
         self.patience = kwargs.get('patience', 10)
 
+
         if self.early_stop:
             self.early_stopping = EarlyStopping(self.model_name, patience=self.patience, verbose=True, wandb_log=self.wandb_log)
 
@@ -888,10 +890,7 @@ class Embedding_Trainer(KoopmanMetricsMixin):
 
         self.baseline = kwargs.get('baseline', None)
 
-        self.Evaluator = Evaluator(self.model, self.test_dl, 
-                       mask_value = self.mask_value, max_Kstep=self.max_Kstep,
-                       baseline=self.baseline, model_name=self.model_name,
-                       criterion = self.criterion, loss_weights = self.loss_weights )
+
     
     
         # Initialize LogIns
@@ -1000,7 +999,7 @@ class Embedding_Trainer(KoopmanMetricsMixin):
                 # ===================Backward propagation==========================
                 self.optimize_model(loss_identity_batch)
     
-                train_loss_identity_epoch += loss_identity_batch.detach()
+                train_loss_identity_epoch += loss_identity_batch
                 
                 # Logging and printing batch info
                 self.log_batch_info(loss_identity_batch)
@@ -1012,7 +1011,9 @@ class Embedding_Trainer(KoopmanMetricsMixin):
         self.optimizer = self.lr_scheduler()
         
         train_loss_identity_epoch /= len(self.train_dl)
-        model_test_metrics, baseline_test_metrics = self.Evaluator.metrics_embedding()
+        
+
+        model_test_metrics, baseline_test_metrics = self.metrics_embedding()
         test_loss_identity_epoch = model_test_metrics["identity_loss"]
         
         baseline_identity_loss = 0
@@ -1025,13 +1026,99 @@ class Embedding_Trainer(KoopmanMetricsMixin):
         self.end_epoch(baseline_identity_loss)
 
         return (train_loss_identity_epoch, test_loss_identity_epoch, baseline_identity_loss)
-
+        
+    def metrics_embedding(self):
     
+        model_metrics = self.evaluate_embedding()
+    
+        baseline_metrics = {}
+        
+        if self.baseline:
+            baseline_metrics = self.compute_baseline_performance_embedding()
+    
+        return model_metrics, baseline_metrics         
+    
+
+    def evaluate_embedding(self):
+        """
+        Evaluate the embedding module on the test dataset and calculate loss components.
+    
+        Args:
+            test_loader (torch.utils.data.DataLoader): DataLoader for the test dataset.
+
+        Returns:
+            dict: Dictionary of average loss values for embedding.
+        """
+        self.model.eval()  # Set the model to evaluation mode
+        
+        test_identity_loss = torch.tensor(0.0, device=self.device)
+
+        with torch.no_grad():  # Disable gradient computation
+            for data_list in self.test_dl:
+
+                loss_identity_batch = torch.tensor(0.0, device=self.device)
+                for step in range(data_list.shape[0]):
+                    # Prepare forward and backward inputs
+                    input_identity = data_list[step].to(self.device)
+                    target_identity = data_list[step].to(self.device)
+                    loss_identity_step = self.compute_identity_loss(input_identity, None) 
+                    loss_identity_batch += loss_identity_step
+                
+                # Accumulate batch losses for the epoch
+                test_identity_loss += loss_identity_batch
+    
+        # Average loss for the test loader
+        avg_test_identity_loss = test_identity_loss / len(self.test_dl)
+
+        return {
+            'identity_loss': avg_test_identity_loss.detach(),
+        }
+
+  
+    def compute_baseline_performance_embedding(self):
+        """
+        Evaluate the model on the test dataset and calculate loss components.
+    
+        Args:
+            test_loader (torch.utils.data.DataLoader): DataLoader for the test dataset.
+
+        Returns:
+            dict: Dictionary of average loss values for each component and the total loss.
+        """
+        self.baseline.eval()  # Set the model to evaluation mode
+        
+        test_identity_loss = torch.tensor(0.0, device=self.device)
+
+        with torch.no_grad():  # Disable gradient computation
+            for data_list in self.test_dl:
+
+                loss_identity_batch = torch.tensor(0.0, device=self.device)
+
+                for step in range(data_list.shape[0]):
+                    # Prepare forward and backward inputs
+                    input_identity = data_list[step].to(self.device)
+                    target_identity = data_list[step].to(self.device)
+                    baseline_output = self.baseline(input_identity)
+
+                    
+                    loss_identity_step = self.criterion(baseline_output, target_identity)
+                    loss_identity_batch += loss_identity_step
+                
+                # Accumulate batch losses for the epoch
+                test_identity_loss += loss_identity_batch
+    
+        # Average loss for the test loader
+        avg_test_identity_loss = test_identity_loss / len(self.test_dl)
+
+        return {
+            'identity_loss': avg_test_identity_loss.detach(),
+        }
+
     def optimize_model(self, loss_total):
         self.optimizer.zero_grad()
         if loss_total > 0:
-            loss_total.backward
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)  # gradient clip
+            loss_total.backward()
+            #torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)  # gradient clip
             self.optimizer.step()
             
     def wandb_initialize(self, runconfig):
@@ -1105,12 +1192,12 @@ class Embedding_Trainer(KoopmanMetricsMixin):
                 return self.optimizer
 
     def end_batch(self):
-
-        current_batch_metrics = self.batch_metrics[-1]
-        print(f'----------Training Epoch {self.current_epoch} --------')
-        print(f'Batch Nr. {self.current_batch}')
-        print(f'Train Identity Loss: {current_batch_metrics["train_identity_loss"]}')
-        
+        if self.batch_verbose:
+            current_batch_metrics = self.batch_metrics[-1]
+            print(f'----------Training Epoch {self.current_epoch} --------')
+            print(f'Batch Nr. {self.current_batch}')
+            print(f'Train Identity Loss: {current_batch_metrics["train_identity_loss"]}')
+            
 
     def end_epoch(self, baseline_identity_loss):
 

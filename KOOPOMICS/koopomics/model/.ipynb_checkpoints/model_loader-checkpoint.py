@@ -161,14 +161,34 @@ class KoopmanModel(nn.Module):
         else:
             return predict_bwd, predict_fwd
 
-    def forward(self, input_vector, fwd=0, bwd=0):
+    def forward(self, input_vector):
         
+        e = self.embedding.encode(input_vector)
+        if bwd > 0:
+            e_temp = e
+            for step in range(bwd):
+                e_bwd = self.operator.bwd_step(e_temp)
+                outputs = self.embedding.decode(e_bwd)
+
+                predict_bwd.append(outputs)
+                
+                e_temp = e_bwd
+        
+        if fwd > 0:
+            e_temp = e
+            for step in range(fwd):
+                e_fwd = self.operator.fwd_step(e_temp)
+                outputs = self.embedding.decode(e_fwd)
+                
+                predict_fwd.append(outputs)
+                
+                e_temp = e_fwd
+
         if self.operator.bwd == False:
-            predict_fwd = self.predict(input_vector, fwd, bwd)
             return predict_fwd
         else:
-            predict_bwd, predict_fwd = self.predict(input_vector, fwd, bwd)
             return predict_bwd, predict_fwd
+
 
     
     def kmatrix(self):

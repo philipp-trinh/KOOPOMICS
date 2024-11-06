@@ -1,6 +1,27 @@
 
 import torch
 
+
+
+
+def masked_criterion(criterion, mask_value=-1):
+# Inner function that applies the mask and then computes the loss
+    def compute_loss(predictions, targets):
+        mask = targets != mask_value  
+        masked_targets = torch.where(mask, targets, torch.tensor(0.0, device=targets.device))
+        masked_predictions = torch.where(mask, predictions, torch.tensor(0.0, device=targets.device))
+        # If all values are masked, return 0 loss
+        if masked_targets.numel() == 0:
+            return torch.tensor(0.0, device=predictions.device)
+        
+        # Calculate the loss with the given criterion
+        return criterion(masked_predictions, masked_targets)
+
+    return compute_loss  
+ 
+
+
+
 class KoopmanMetricsMixin:
     
     def get_device(self):
@@ -10,16 +31,17 @@ class KoopmanMetricsMixin:
     # Inner function that applies the mask and then computes the loss
         def compute_loss(predictions, targets):
             mask = targets != mask_value  
-            masked_targets = targets[mask]  
-            masked_predictions = predictions[mask]  
-            # If all values are masked, return 0 loss
-            if masked_targets.numel() == 0:
+
+            if not mask.any():  # Check if all values are masked
                 return torch.tensor(0.0, device=predictions.device)
-            
+
+            masked_targets = torch.where(mask, targets, torch.tensor(0.0, device=targets.device))
+            masked_predictions = torch.where(mask, predictions, torch.tensor(0.0, device=targets.device))
+
             # Calculate the loss with the given criterion
             return criterion(masked_predictions, masked_targets)
-   
-        return compute_loss   
+    
+        return compute_loss  
     
     def compute_forward_loss(self, input_fwd, target_fwd, fwd=1):
         loss_fwd_step = torch.tensor(0.0, device=self.device)
@@ -79,12 +101,13 @@ class KoopmanMetricsMixin:
         
         latent_input = self.model.embedding.encode(input_tensor)
         autoencoded_input = self.model.embedding.decode(latent_input)
-
-        latent_target = self.model.embedding.encode(shift_target_tensor)
-        autoencoded_target = self.model.embedding.decode(latent_target)
-        
         loss_identity_step += self.criterion(input_tensor, autoencoded_input)
-        loss_identity_step += self.criterion(shift_target_tensor, autoencoded_target) 
+ 
+        if shift_target_tensor is not None:
+            latent_target = self.model.embedding.encode(shift_target_tensor)
+            autoencoded_target = self.model.embedding.decode(latent_target)
+        
+            loss_identity_step += self.criterion(shift_target_tensor, autoencoded_target) 
 
         return loss_identity_step
 

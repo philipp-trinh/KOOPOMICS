@@ -55,7 +55,7 @@ class NaiveMeanPredictor(nn.Module):
 
 
 class Evaluator(KoopmanMetricsMixin):
-    def __init__(self, model, test_loader, **kwargs):
+    def __init__(self, model, train_loader, test_loader, **kwargs):
         """
         Initialize the Evaluator class.
 
@@ -65,6 +65,7 @@ class Evaluator(KoopmanMetricsMixin):
         """
         self.model = model
         self.test_loader = test_loader
+        self.train_loader = train_loader
         self.mask_value = kwargs.get('mask_value', -2)
         self.max_Kstep = kwargs.get('max_Kstep', 2)
         self.baseline = kwargs.get('baseline', None)
@@ -84,14 +85,17 @@ class Evaluator(KoopmanMetricsMixin):
         
     def __call__(self):
         
-        model_metrics = self.evaluate()
+        #train_model_metrics = self.evaluate(self.train_loader)
+        train_model_metrics = {}
+        test_model_metrics = self.evaluate(self.test_loader)
+
 
         baseline_metrics = {}
         
         if self.baseline:
             baseline_metrics = self.compute_baseline_performance()
 
-        return model_metrics, baseline_metrics 
+        return train_model_metrics, test_model_metrics, baseline_metrics 
 
     def metrics_embedding(self):
 
@@ -105,7 +109,7 @@ class Evaluator(KoopmanMetricsMixin):
         return model_metrics, baseline_metrics         
 
     
-    def evaluate(self):
+    def evaluate(self, dl):
         """
         Evaluate the model on the test dataset and calculate loss components.
     
@@ -124,7 +128,7 @@ class Evaluator(KoopmanMetricsMixin):
         total_test_loss =  torch.tensor(0.0, device=self.device)
    
         with torch.no_grad():  # Disable gradient computation
-            for data_list in self.test_loader:
+            for data_list in dl:
                 # Initialize batch losses
                 loss_fwd_batch = torch.tensor(0.0, device=self.device)
                 loss_bwd_batch = torch.tensor(0.0, device=self.device)
@@ -146,7 +150,7 @@ class Evaluator(KoopmanMetricsMixin):
                     target_bwd = reverse_data_list[step].to(self.device)
     
                     # Temporal consistency storage if required
-                    if self.current_step > 1 and self.loss_weights[5] > 0:
+                    if self.max_Kstep > 1 and self.loss_weights[5] > 0:
                         self.temporal_cons_fwd_storage = torch.zeros(self.max_Kstep, *input_fwd.shape).to(self.device)
                         self.temporal_cons_bwd_storage = torch.zeros(self.max_Kstep, *input_bwd.shape).to(self.device)
     
@@ -174,7 +178,7 @@ class Evaluator(KoopmanMetricsMixin):
     
                     # Temporal consistency loss
                     if self.loss_weights[5] > 0 and self.current_step > 1:
-                        loss_temp_cons_step = (self.compute_temporal_consistency(temporal_cons_fwd_storage) + self.compute_temporal_consistency(temporal_cons_bwd_storage, bwd=True)) / 2
+                        loss_temp_cons_step = (self.compute_temporal_consistency(self.temporal_cons_fwd_storage) + self.compute_temporal_consistency(self.temporal_cons_bwd_storage, bwd=True)) / 2
                         loss_temp_cons_batch += loss_temp_cons_step
     
                 # Calculate total batch loss
@@ -188,9 +192,9 @@ class Evaluator(KoopmanMetricsMixin):
                 test_bwd_loss += loss_bwd_batch
                 total_test_loss += loss_total_batch
         # Average loss for the test loader
-        avg_test_fwd_loss = test_fwd_loss / len(self.test_loader)
-        avg_test_bwd_loss = test_bwd_loss / len(self.test_loader)
-        avg_total_test_loss = total_test_loss / len(self.test_loader)
+        avg_test_fwd_loss = test_fwd_loss / len(dl)
+        avg_test_bwd_loss = test_bwd_loss / len(dl)
+        avg_total_test_loss = total_test_loss / len(dl)
         return {
             'forward_loss': avg_test_fwd_loss.detach(),
             'backward_loss': avg_test_bwd_loss.detach(),
@@ -232,16 +236,15 @@ class Evaluator(KoopmanMetricsMixin):
                     if self.loss_weights[0] > 0:
                         baseline_output = self.baseline(input_fwd)
                         loss_fwd = self.criterion(baseline_output, target_fwd)
-
+                        loss_fwd_batch += loss_fwd
                         
                     # Backward loss computation
                     if self.loss_weights[1] > 0:
                         baseline_output = self.baseline(input_bwd)
                         loss_bwd = self.criterion(baseline_output, target_bwd)
+                        loss_bwd_batch += loss_bwd
 
-                    # Collect losses
-                    loss_fwd_batch += loss_fwd
-                    loss_bwd_batch += loss_bwd
+                    
 
                 # Accumulate batch losses for the epoch
                 test_fwd_loss += loss_fwd_batch

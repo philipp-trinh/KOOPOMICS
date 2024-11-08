@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from koopomics.model.embeddingANN import DiffeomMap, FF_AE, Conv_AE, Conv_E_FF_D
 from koopomics.model.koopmanANN import LinearizingKoop, InvKoop, Koop
-from koopomics.training.train_utils import Trainer, Embedding_Trainer
+from koopomics.training.train_utils import Koop_Step_Trainer,Koop_Full_Trainer, Embedding_Trainer
 
 class KoopmanModel(nn.Module):
   # x0 <-> g <-> g_lin <-> gnext_lin <-> gnext <-> x1
@@ -61,19 +61,19 @@ class KoopmanModel(nn.Module):
 
     
 
-    def fit(self, train_dl, test_dl, runconfig, **kwargs):
+    def fit(self, train_dl, test_dl, **kwargs):
         
-        trainer = Trainer(self, train_dl, test_dl, runconfig, **kwargs)
+        trainer = Koop_Full_Trainer(self, train_dl, test_dl, **kwargs)
         trainer.train()
         return
 
-    def embedding_fit(self, train_dl, test_dl, runconfig, **kwargs):
+    def embedding_fit(self, train_dl, test_dl, **kwargs):
     
-        trainer = Embedding_Trainer(self, train_dl, test_dl, runconfig, **kwargs)
+        trainer = Embedding_Trainer(self, train_dl, test_dl, **kwargs)
         trainer.train()
         return
 
-    def modular_fit(self, train_dl, test_dl, runconfig, embedding_param_path = None, model_param_path = None, **kwargs):
+    def modular_fit(self, train_dl, test_dl, embedding_param_path = None, model_param_path = None, **kwargs):
 
         In_Training = False
         
@@ -86,7 +86,7 @@ class KoopmanModel(nn.Module):
             print('Embedding parameters loaded and frozen.')
         else:
             print('========================EMBEDDING TRAINING===================')
-            embedding_trainer = Embedding_Trainer(self, train_dl, test_dl, runconfig, use_wandb=True, early_stop=True, **kwargs)
+            embedding_trainer = Embedding_Trainer(self, train_dl, test_dl, use_wandb=True, early_stop=True, **kwargs)
             In_Training = True
             embedding_trainer.train()
             print(f'========================EMBEDDING TRAINING FINISHED===================')
@@ -98,7 +98,7 @@ class KoopmanModel(nn.Module):
             print('Model parameters loaded, with embedding parameters frozen.')
 
 
-        wandb_init = not In_Training
+        #wandb_init = not In_Training
         wandb_log=True
             
         train_max_Kstep = kwargs.pop('max_Kstep', None)  # Use pop to remove and optionally get its value
@@ -109,7 +109,7 @@ class KoopmanModel(nn.Module):
             temp_start = step
             temp_max = step+1
  
-            trainer = Trainer(self, train_dl, test_dl, runconfig, start_Kstep=temp_start, max_Kstep=temp_max, wandb_init=wandb_init,wandb_log=wandb_log, **kwargs)
+            trainer = Trainer(self, train_dl, test_dl, start_Kstep=temp_start, max_Kstep=temp_max, **kwargs)
             trainer.train()
             
             wandb_init=False

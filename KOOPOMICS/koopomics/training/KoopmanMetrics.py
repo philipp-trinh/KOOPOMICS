@@ -79,7 +79,7 @@ class KoopmanMetricsMixin:
 
             if self.current_step > 1 and self.loss_weights[5] > 0:
                 shifted_bwd_storage = self.model.embedding.decode(latent_bwd)
-                self.temporal_cons_bwd_storage[b] = shifted_bwd_storage
+                self.temporal_cons_bwd_storage[b-1] = shifted_bwd_storage
         
         
         shifted_bwd = self.model.embedding.decode(latent_bwd)
@@ -123,13 +123,14 @@ class KoopmanMetricsMixin:
         inverted_fwd_bwd_input = self.model.embedding.decode(self.model.operator.fwd_step(self.model.operator.bwd_step(latent_input)))
         loss_inv_cons_step += self.criterion(inverted_fwd_bwd_input, input_tensor)
 
-        latent_target = self.model.embedding.encode(target_tensor)
+        if target_tensor is not None:
+            latent_target = self.model.embedding.encode(target_tensor)
         
-        inverted_bwd_fwd_target = self.model.embedding.decode(self.model.operator.bwd_step(self.model.operator.fwd_step(latent_target)))
-        loss_inv_cons_step += self.criterion(inverted_bwd_fwd_target, target_tensor)
-
-        inverted_fwd_bwd_target = self.model.embedding.decode(self.model.operator.fwd_step(self.model.operator.bwd_step(latent_target)))
-        loss_inv_cons_step += self.criterion(inverted_fwd_bwd_target, target_tensor)
+            inverted_bwd_fwd_target = self.model.embedding.decode(self.model.operator.bwd_step(self.model.operator.fwd_step(latent_target)))
+            loss_inv_cons_step += self.criterion(inverted_bwd_fwd_target, target_tensor)
+    
+            inverted_fwd_bwd_target = self.model.embedding.decode(self.model.operator.fwd_step(self.model.operator.bwd_step(latent_target)))
+            loss_inv_cons_step += self.criterion(inverted_fwd_bwd_target, target_tensor)
 
         return loss_inv_cons_step
 
@@ -140,15 +141,15 @@ class KoopmanMetricsMixin:
         if bwd:
             temporal_cons_storage = torch.flip(temporal_cons_storage, dims=[0])
 
-        diagonals = get_top_right_to_bottom_left_diagonals(temporal_cons_storage)
+        diagonals = self.get_top_right_to_bottom_left_diagonals(temporal_cons_storage)
 
-        
-        for temp_diag in diagonals:
-            diag_loss = torch.tensor(0.0, device=self.device)
-            for i in range(len(temp_diag) - 1):
-                diag_loss += self.criterion(temp_diag[i], temp_diag[i+1])
-            
-            loss_temp_cons_step += total_loss / (len(diagonal_tensors) - 1) if len(diagonal_tensors) > 1 else torch.tensor(0.0, device=self.device)    
+        for sample_tensor in diagonals:
+            for temp_diag in sample_tensor:
+                diag_loss = torch.tensor(0.0, device=self.device)
+                for i in range(len(temp_diag) - 1):
+                    diag_loss += self.criterion(temp_diag[i], temp_diag[i+1])
+                
+                loss_temp_cons_step += diag_loss / (len(diagonals) - 1) if len(diagonals) > 1 else torch.tensor(0.0, device=self.device)    
         
         return loss_temp_cons_step
         
@@ -195,28 +196,31 @@ class KoopmanMetricsMixin:
                                the input tensor, representing aligned time points across predictions 
                                for temporal consistency analysis.
         """
-        num_predictions, num_timepoints, num_features = tensor.shape
+        num_predictions, num_samples, num_timepoints, num_features = tensor.shape
+        reshaped_tensor = tensor.permute(1, 0, 2, 3)
+
         max_diag_len = min(num_predictions, num_timepoints)
 
-        diagonals = torch.full((num_predictions + num_timepoints - 1, max_diag_len, num_features),
+        diagonals = torch.full((num_samples, num_predictions + num_timepoints - 1, max_diag_len, num_features),
                                fill_value=self.mask_value, device=tensor.device, dtype=tensor.dtype)
 
-        # Get diagonals starting from the top row
-        diag_idx = 0
-        for start_col in range(num_timepoints):
-            diag_len = min(start_col + 1, num_predictions)
-            diag_values = torch.stack([tensor[i, start_col - i] for i in range(diag_len)])
-            diagonals[diag_idx, :diag_len] = diag_values
-            diag_idx += 1
+        for sample_idx in range(num_samples):
+            # Get diagonals starting from the top row
+            diag_idx = 0
+            for start_col in range(num_timepoints):
+                diag_len = min(start_col + 1, num_predictions)
+                diag_values = torch.stack([reshaped_tensor[sample_idx, i, start_col - i] for i in range(diag_len)])
+                diagonals[sample_idx, diag_idx, :diag_len] = diag_values
+                diag_idx += 1
+    
+        
+            # Get diagonals starting from the rightmost column (excluding the first row)
+            for start_row in range(1, num_predictions):
+                diag_len = min(num_timepoints, num_predictions - start_row)
+                diag_values = torch.stack([reshaped_tensor[sample_idx, start_row + i, num_timepoints - 1 - i] for i in range(diag_len)])
+                diagonals[sample_idx, diag_idx, :diag_len] = diag_values
+                diag_idx += 1
 
-    
-        # Get diagonals starting from the rightmost column (excluding the first row)
-        for start_row in range(1, num_predictions):
-            diag_len = min(num_timepoints, num_predictions - start_row)
-            diag_values = torch.stack([tensor[start_row + i, num_timepoints - 1 - i] for i in range(diag_len)])
-            diagonals[diag_idx, :diag_len] = diag_values
-            diag_idx += 1
-    
         return diagonals
 
                 

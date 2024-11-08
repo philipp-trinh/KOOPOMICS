@@ -7,7 +7,8 @@ from .training.KoopmanMetrics import (
 
 from .training.train_utils import (
     RunConfig,
-    Trainer,
+    Koop_Full_Trainer,
+    Koop_Step_Trainer
 )
 
 from .training.param_manager import (

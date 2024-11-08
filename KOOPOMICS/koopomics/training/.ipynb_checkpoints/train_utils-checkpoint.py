@@ -329,17 +329,109 @@ def train(model, train_dl, test_dl,
     
     torch.save(model.state_dict(), f'{model_name}.pth')
 
+# =========================================================================================
 
-class Trainer(KoopmanMetricsMixin):
+class BaseTrainer(KoopmanMetricsMixin):
+    """
+    Trainer class for handling the training and evaluation process of the model.
 
-    def __init__(self, model, train_dl, test_dl, runconfig: RunConfig, **kwargs):
+    Parameters:
+    -----------
+    model : nn.Module
+        The neural network model to be trained and evaluated.
+
+    train_dl : DataLoader
+        DataLoader for the training dataset, used to supply training batches.
+
+    test_dl : DataLoader
+        DataLoader for the test or validation dataset, used for evaluating model performance.
+
+    runconfig : RunConfig
+        Configuration object with general settings for the training process (optimizer settings, learning rates, etc.).
+
+    Optional Keyword Parameters (`**kwargs`):
+    ----------------------------------------
+    max_Kstep : int, default=2
+        Maximum number of K-steps for multi-step training, typically for time series or sequence models.
+
+    start_Kstep : int, default=0
+        Starting K-step for training; useful for resuming training from a specific step.
+
+    opt : str, default='adam'
+        Type of optimizer to use (e.g., 'adam', 'sgd').
+
+    learning_rate : float, default=0.001
+        Initial learning rate for the optimizer.
+
+    weight_decay : float, default=0.01
+        Weight decay rate for L2 regularization.
+
+    grad_clip : float, default=1
+        Maximum gradient norm for gradient clipping, helping prevent gradient explosion in RNNs and deep networks.
+
+    num_epochs : int, default=10
+        Total number of training epochs.
+
+    decayEpochs : list of int, default=[40, 80, 120, 160]
+        Epochs at which to decay the learning rate.
+
+    learning_rate_change : float, default=0.8
+        Scaling factor for learning rate decay; e.g., 0.8 reduces the rate by 20%.
+
+    loss_weights : list of float, default=[1, 1, 1, 1, 1, 1]
+        Weights for balancing different loss components in multi-task training.
+
+    epoch_temp_cons : int, default=3
+        Number of epochs to apply temporal consistency constraints.
+
+    mask_value : int or float, default=-2
+        Value in the target tensor to ignore during loss computation.
+
+    print_batch_info : bool, default=False
+        If True, prints information for each batch during training.
+
+    comp_graph : bool, default=False
+        If True, computes and visualizes the computational graph.
+
+    plot_train : bool, default=False
+        If True, generates plots of training metrics.
+
+    model_name : str, default='Koop'
+        Name of the model, useful for logging and saving.
+
+    use_wandb : bool, default=False
+        If True, enables Weights and Biases (wandb) logging.
+
+    wandb_log_df : DataFrame, optional
+        DataFrame to be logged to wandb.
+
+    early_stop : bool, default=False
+        If True, enables early stopping based on validation performance.
+
+    patience : int, default=10
+        Number of epochs to wait before stopping training if no improvement.
+
+    verbose : bool, default=False
+        If True, prints early stopping information.
+
+    eastop_delta : float, default=0
+        Minimum improvement in the monitored metric to qualify as an improvement.
+
+    criterion : nn.Module, default=nn.MSELoss()
+        Loss function for training, with optional masking.
+
+    baseline : any, optional
+        Baseline model or configuration for comparison purposes.
+    """
+
+    def __init__(self, model, train_dl, test_dl, **kwargs):
         self.model = model
         self.train_dl = train_dl
         self.test_dl = test_dl
 
-        self.runconfig = runconfig
+        self.runconfig = kwargs.get('runconfig', None)
         # Set training parameters with fallback to runconfig
-        self.max_Kstep = self.get_param('max_Kstep', 2, **kwargs)
+        self.max_Kstep = self.get_param('max_Kstep', 1, **kwargs)
         self.start_Kstep = self.get_param('start_Kstep', 0, **kwargs)
 
         # Optimizer specs
@@ -359,8 +451,8 @@ class Trainer(KoopmanMetricsMixin):
         self.epoch_temp_cons = self.get_param('epoch_temp_cons', 3, **kwargs)
         self.mask_value = self.get_param('mask_value', -2, **kwargs)
 
-            # LogIns and Visuals:
-        self.print_batch_info = kwargs.get('print_batch_info', False)
+        # LogIns and Visuals:
+        self.batch_verbose = kwargs.get('batch_verbose', False)
         self.comp_graph = kwargs.get('comp_graph', False)
         self.plot_train = kwargs.get('plot_train', False)
         self.model_name = kwargs.get('model_name', 'Koop')
@@ -398,7 +490,7 @@ class Trainer(KoopmanMetricsMixin):
 
         self.baseline = kwargs.get('baseline', None)
 
-        self.Evaluator = Evaluator(self.model, self.test_dl, 
+        self.Evaluator = Evaluator(self.model, self.train_dl, self.test_dl, 
                        mask_value = self.mask_value, max_Kstep=self.max_Kstep,
                        baseline=self.baseline, model_name=self.model_name,
                        criterion = self.criterion, loss_weights = self.loss_weights )
@@ -412,7 +504,7 @@ class Trainer(KoopmanMetricsMixin):
         self.temporal_cons_bwd_storage = []
     
         if self.wandb_log and self.wandb_init: # For single Run WandB Logs (For Sweeps: Use HypAgent)
-            self.wandb_initialize(runconfig)
+            self.wandb_initialize(self.runconfig)
 
         self.current_epoch = 0
         self.current_batch = 0
@@ -434,7 +526,93 @@ class Trainer(KoopmanMetricsMixin):
             self.optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, self.model.parameters()),
                                    lr=self.lr, weight_decay=self.weight_decay)
         return self.optimizer
+
+    def lr_scheduler(self):
+            """Decay learning rate by a factor of lr_decay_rate every lr_decay_epoch epochs"""
+            if self.current_epoch in self.decayEpochs:
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] *= self.learning_rate_change
+                return self.optimizer
+            else:
+                return self.optimizer
         
+
+    def optimize_model(self, loss_total):
+        self.optimizer.zero_grad()
+        if loss_total > 0:
+            loss_total.backward()
+            #torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)  # gradient clip
+            self.optimizer.step()
+            
+    def wandb_initialize(self, runconfig):
+
+        run = wandb.init(
+            project=runconfig.project,
+            notes=f"{runconfig.dataset}",
+            tags=[f'metabolites:{runconfig.num_metabolites}', f'interpolated:{ runconfig.interpolated}',f"feature_selected: {runconfig.feature_selected}", f"outlier_rem: {runconfig.outlier_rem}",f"robust_scaled: {runconfig.robust_scaled}",f"feature_selected: {runconfig.feature_selected}"],
+
+            config={
+                "batch_size": runconfig.batch_size,
+                "dl_structure": runconfig.dl_structure,
+
+                "embedding": next((k for k, v in self.model.embedding_info.items() if v), None),
+                "embedding_dim": self.model.embedding.E_layer_dims,
+                "embedding_num_hidden_layer": len(self.model.embedding.E_layer_dims)-2,
+                "embedding_num_hidden_neurons": self.model.embedding.E_layer_dims[1],
+                "embedding_latent_dim": self.model.embedding.E_layer_dims[-1],
+                "embedding_input_dropout_rate": self.model.embedding.E_dropout_rates[0],
+                
+                "activation_fn": self.model.embedding.activation_fn,
+                
+                "operator": next((k for k, v in self.model.operator_info.items() if v), None),
+                "op_reg": next((k for k, v in self.model.regularization_info.items() if v), None),
+                
+                "learning_rate": self.lr,
+                "epochs": self.num_epochs,
+                "learning_rate_change": self.learning_rate_change,
+                "loss_weights": self.loss_weights,
+                "decayEpochs": self.decayEpochs,
+                "weight_decay": self.weight_decay,
+                "grad_clip": self.grad_clip,
+                "max_Kstep": self.max_Kstep,
+                "mask_value": self.mask_value,
+                "optimizer": 'adam'
+            }
+        )
+        # Start with the base string
+        dataset_log_str = f"Pregnancy_M{runconfig.num_metabolites}_"
+        
+        # Conditionally add strings based on each flag
+        if runconfig.interpolated:
+            dataset_log_str += "interpolated_"
+        if runconfig.feature_selected:
+            dataset_log_str += "feature_selected_"
+        if runconfig.outlier_rem:
+            dataset_log_str += "outlier_rem_"
+        if runconfig.robust_scaled:
+            dataset_log_str += "robust_scaled_"
+        
+        # Remove any trailing underscore
+        dataset_log_str = dataset_log_str.rstrip("_")
+
+        if self.wandb_log_df is not None:
+            wandb_log_df_table = wandb.Table(dataframe=self.wandb_log_df)
+            wandb_log_df_artifact = wandb.Artifact(dataset_log_str, type="dataset")
+            wandb_log_df_artifact.add(wandb_log_df_table, dataset_log_str)
+            run.log({dataset_log_str: self.wandb_log_df})
+            run.log_artifact(wandb_log_df_artifact)
+
+        wandb.watch(self.model.embedding, log='all', log_freq=1)
+        wandb.watch(self.model.operator,log='all',log_freq=1)
+
+# =========================================================================================
+
+class Koop_Step_Trainer(BaseTrainer):
+
+
+    def __init__(self, model, train_dl, test_dl, **kwargs):
+        super().__init__(model, train_dl, test_dl, **kwargs)
+
     #==================================Training Function=======================
     
     def train(self):
@@ -470,10 +648,10 @@ class Trainer(KoopmanMetricsMixin):
                     self.early_stopping(test_fwd_loss_epoch, test_bwd_loss_epoch, self.current_epoch, self.model)
                     if self.early_stopping.early_stop:
                         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Early stopping triggered!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                        print(f'Best Score {self.early_stopping.best_score} at Best Epoch {self.early_stopping.best_epoch}.')
-                        self.load_state_dict(torch.load(self.early_stopping.model_path,  map_location=torch.device(self.device)))
+                        print(f'Best Test fwd loss: {self.early_stopping.best_score1:.6f}, Best Test bwd loss: {self.early_stopping.best_score2:.6f} at Best Epoch {self.early_stopping.best_epoch}.')
+                        self.model.load_state_dict(torch.load(self.early_stopping.model_path,  map_location=torch.device(self.device)))
                         print(f'Best Model Parameters of Shift {self.start_Kstep+1} Loaded.')
-                        for param in self.embedding.parameters():
+                        for param in self.model.embedding.parameters():
                             
                             param.requires_grad = False
                         break
@@ -654,78 +832,9 @@ class Trainer(KoopmanMetricsMixin):
                 train_bwd_loss_epoch, test_bwd_loss_epoch,
                 baseline_fwd_loss, baseline_bwd_loss)
 
-    
-    def optimize_model(self, loss_total):
-        self.optimizer.zero_grad()
-        if loss_total > 0:
-            loss_total.backward
-            #torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)  # gradient clip
-            self.optimizer.step()
-            
-    def wandb_initialize(self, runconfig):
-
-        run = wandb.init(
-            project=runconfig.project,
-            notes=f"{runconfig.dataset}",
-            tags=[runconfig.num_metabolites, f'interpolated:{ runconfig.interpolated}',f"feature_selected: {runconfig.feature_selected}", f"outlier_rem: {runconfig.outlier_rem}",f"robust_scaled: {runconfig.robust_scaled}",f"feature_selected: {runconfig.feature_selected}"]
-
-            config={
-                "batch_size": runconfig.batch_size,
-                "dl_structure": runconfig.dl_structure,
-
-                "embedding": next((k for k, v in self.model.embedding_info.items() if v), None),
-                "embedding_dim": self.model.embedding.E_layer_dims,
-                "embedding_num_hidden_layer": len(self.model.embedding.E_layer_dims)-2,
-                "embedding_num_hidden_neurons": self.model.embedding.E_layer_dims[1],
-                "embedding_latent_dim": self.model.embedding.E_layer_dims[-1],
-                "embedding_input_dropout_rate": self.model.embedding.E_dropout_rates[0],
-                
-                "activation_fn": self.model.embedding.activation_fn,
-                
-                "operator": next((k for k, v in self.model.operator_info.items() if v), None),
-                "op_reg": next((k for k, v in self.model.regularization_info.items() if v), None),
-                
-                "learning_rate": self.lr,
-                "epochs": self.num_epochs,
-                "learning_rate_change": self.learning_rate_change,
-                "loss_weights": self.loss_weights,
-                "decayEpochs": self.decayEpochs,
-                "weight_decay": self.weight_decay,
-                "grad_clip": self.grad_clip,
-                "max_Kstep": self.max_Kstep,
-                "mask_value": self.mask_value,
-                "optimizer": 'adam'
-            }
-        )
-        # Start with the base string
-        dataset_log_str = f"Pregnancy_M{runconfig.num_metabolites}_"
-        
-        # Conditionally add strings based on each flag
-        if runconfig.interpolated:
-            dataset_log_str += "interpolated_"
-        if runconfig.feature_selected:
-            dataset_log_str += "feature_selected_"
-        if runconfig.outlier_rem:
-            dataset_log_str += "outlier_rem_"
-        if runconfig.robust_scaled:
-            dataset_log_str += "robust_scaled_"
-        
-        # Remove any trailing underscore
-        dataset_log_str = dataset_log_str.rstrip("_")
-
-        if wandb_log_df is not None:
-            wandb_log_df_table = wandb.Table(dataframe=wandb_log_df)
-            wandb_log_df_artifact = wandb.Artifact(dataset_log_str, type="dataset")
-            wandb_log_df_artifact.add(wandb_log_df_table, dataset_log_str)
-            run.log({dataset_log_str: wandb_log_df})
-            run.log_artifact(wandb_log_df_artifact)
-
-        wandb.watch(self.model.embedding, log='all', log_freq=1)
-        wandb.watch(self.model.operator,log='all',log_freq=1)
-        
     def log_batch_info(self, loss_total_batch, loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch, 
                        loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch):
-        
+
         self.batch_metrics.append({
             'epoch': self.current_epoch,
             'step': self.current_step,
@@ -771,29 +880,23 @@ class Trainer(KoopmanMetricsMixin):
             'train_loss_temp_cons_epoch': train_loss_temp_cons_epoch.detach()
         })
 
-    def lr_scheduler(self):
-            """Decay learning rate by a factor of lr_decay_rate every lr_decay_epoch epochs"""
-            if self.current_epoch in self.decayEpochs:
-                for param_group in self.optimizer.param_groups:
-                    param_group['lr'] *= self.learning_rate_change
-                return self.optimizer
-            else:
-                return self.optimizer
 
     def end_batch(self):
-
-        current_batch_metrics = self.batch_metrics[-1]
-        print(f'----------Training Epoch {self.current_epoch} --------')
-        print(f'----------Training Step {self.current_step}--------')
-        print(f'Batch Nr. {self.current_batch}')
-        print(f'Total Loss: {current_batch_metrics["train_total_loss"]}')
-        print('')
-        print(f'Forward Loss: {current_batch_metrics["train_fwd_loss"]}')
-        print(f'Backward Loss: {current_batch_metrics["train_bwd_loss"]}')
-        print(f'Latent Loss: {current_batch_metrics["train_latent_loss"]}')
-        print(f'Identity Loss: {current_batch_metrics["train_identity_loss"]}')
-        print(f'Inverse Consistency Loss: {current_batch_metrics["train_inv_cons_loss"]}')
-        print(f'Temporal Consistency Loss: {current_batch_metrics["train_temp_cons_loss"]}')
+        
+        if self.batch_verbose:
+        
+            current_batch_metrics = self.batch_metrics[-1]
+            print(f'----------Training Epoch {self.current_epoch} --------')
+            print(f'----------Training Step {self.current_step}--------')
+            print(f'Batch Nr. {self.current_batch}')
+            print(f'Total Loss: {current_batch_metrics["train_total_loss"]}')
+            print('')
+            print(f'Forward Loss: {current_batch_metrics["train_fwd_loss"]}')
+            print(f'Backward Loss: {current_batch_metrics["train_bwd_loss"]}')
+            print(f'Latent Loss: {current_batch_metrics["train_latent_loss"]}')
+            print(f'Identity Loss: {current_batch_metrics["train_identity_loss"]}')
+            print(f'Inverse Consistency Loss: {current_batch_metrics["train_inv_cons_loss"]}')
+            print(f'Temporal Consistency Loss: {current_batch_metrics["train_temp_cons_loss"]}')
 
     def end_step(self):
         
@@ -820,7 +923,7 @@ class Trainer(KoopmanMetricsMixin):
         print(f'Test bwd Loss: {current_epoch_metrics["test_bwd_loss"]}')
 
         if self.baseline is not None:
-            print(f'Baseline Test bwd Loss: {baseline_fwd_loss}')
+            print(f'Baseline Test fwd Loss: {baseline_fwd_loss}')
             print(f'Baseline Test bwd Loss: {baseline_bwd_loss}')
 
         # Convert batch metrics to DataFrame at the end of an epoch
@@ -835,108 +938,13 @@ class Trainer(KoopmanMetricsMixin):
         epoch_df.to_csv(f'{self.model_name}_epoch_metrics.csv', index=False, mode='a', header=not self.current_epoch)
 
 
-
-class Embedding_Trainer(KoopmanMetricsMixin):
+# =========================================================================================
+class Embedding_Trainer(BaseTrainer):
 
     def __init__(self, model, train_dl, test_dl, runconfig: RunConfig, **kwargs):
-        self.model = model
-        self.train_dl = train_dl
-        self.test_dl = test_dl
-        
-        self.runconfig = runconfig
+        super().__init__(model, train_dl, test_dl, **kwargs)
 
-        # Set training parameters
-        self.max_Kstep = self.get_param('max_Kstep', 2, **kwargs)
         self.freeze_embedding = self.get_param('freeze', True, **kwargs)
-
-
-            # Optimizer specs:
-        self.opt = self.get_param('opt', 'adam', **kwargs)
-        self.lr = self.get_param('learning_rate', 0.001, **kwargs)
-        self.weight_decay = self.get_param('weight_decay', 0.01, **kwargs)
-
-        self.grad_clip = self.get_param('grad_clip', 1, **kwargs)
-
-        self.num_epochs = self.get_param('num_epochs', 10, **kwargs)
-        self.decayEpochs = self.get_param('decayEpochs', [40, 80, 120, 160], **kwargs)
-        self.learning_rate_change = self.get_param('learning_rate_change', 0.8, **kwargs)
-
-            # Loss and Loss Calculation Specs:
-        self.loss_weights = self.get_param('loss_weights', [1, 1, 1, 1, 1, 1], **kwargs) # placeholder
-        self.epoch_temp_cons = self.get_param('epoch_temp_cons', 3, **kwargs)
-        
-        
-        self.mask_value = kwargs.get('mask_value', -2)
-
-            # LogIns and Visuals:
-        self.print_batch_info = kwargs.get('print_batch_info', False)
-        self.comp_graph = kwargs.get('comp_graph', False)
-        self.plot_train = kwargs.get('plot_train', False)
-        self.batch_verbose = kwargs.get('batch_verbose', False)
-
-    
-        self.use_wandb = kwargs.get('use_wandb', False)
-    
-        if self.use_wandb is True:
-            self.wandb_init = self.use_wandb
-            self.wandb_log = self.use_wandb
-        else:
-            self.wandb_init = kwargs.get('wandb_init', False)
-            self.wandb_log = kwargs.get('wandb_log', False)
-
-        self.model_name = kwargs.get('model_name', 'Koop')
-
-        # Set the device
-        self.device = self.get_device()
-        self.model.to(self.device)
-
-        # Initialize optimizer, early stopping, loss function, baseline model and Evaluator:
-        self.optimizer = self.build_optimizer()
-
-        self.early_stop = kwargs.get('early_stop', False)
-        self.patience = kwargs.get('patience', 10)
-
-
-        if self.early_stop:
-            self.early_stopping = EarlyStopping(self.model_name, patience=self.patience, verbose=True, wandb_log=self.wandb_log)
-
-        
-        base_criterion = nn.MSELoss().to(self.device)
-        
-        self.criterion = kwargs.get('criterion', self.masked_criterion(
-                               base_criterion, self.mask_value))
-
-        self.baseline = kwargs.get('baseline', None)
-
-
-    
-    
-        # Initialize LogIns
-        self.epoch_metrics = []
-        self.batch_metrics = []
-
-        if self.wandb_log and self.wandb_init: # For single Run WandB Logs (For Sweeps: Use HypAgent)
-            self.wandb_initialize(runconfig)
-
-        self.current_epoch = 0
-        self.current_batch = 0
-        
-    def get_param(self, key, default=None, **kwargs):
-        return kwargs.get(key, getattr(self.runconfig, key, default))
-    
-    def build_optimizer(self):
-        if self.opt == "sgd":
-            self.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, self.model.parameters()),
-                                  lr=self.lr, weight_decay=self.weight_decay, momentum=0.9)
-        elif self.opt == "adam":
-            self.optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, self.model.parameters()),
-                                   lr=self.lr, weight_decay=self.weight_decay)
-        return self.optimizer
-        
-    def set_seed(seed=0):
-        """Set one seed for reproducibility."""
-        np.random.seed(seed)
-        torch.manual_seed(seed)
 
     #==================================Training Function=======================
     def train(self):
@@ -1031,7 +1039,7 @@ class Embedding_Trainer(KoopmanMetricsMixin):
         train_loss_identity_epoch /= len(self.train_dl)
         
 
-        model_test_metrics, baseline_test_metrics = self.metrics_embedding()
+        model_test_metrics, baseline_test_metrics = self.evaluator.metrics_embedding()
         test_loss_identity_epoch = model_test_metrics["identity_loss"]
         
         baseline_identity_loss = 0
@@ -1044,146 +1052,7 @@ class Embedding_Trainer(KoopmanMetricsMixin):
         self.end_epoch(baseline_identity_loss)
 
         return (train_loss_identity_epoch, test_loss_identity_epoch, baseline_identity_loss)
-        
-    def metrics_embedding(self):
-    
-        model_metrics = self.evaluate_embedding()
-    
-        baseline_metrics = {}
-        
-        if self.baseline:
-            baseline_metrics = self.compute_baseline_performance_embedding()
-    
-        return model_metrics, baseline_metrics         
-    
-
-    def evaluate_embedding(self):
-        """
-        Evaluate the embedding module on the test dataset and calculate loss components.
-    
-        Args:
-            test_loader (torch.utils.data.DataLoader): DataLoader for the test dataset.
-
-        Returns:
-            dict: Dictionary of average loss values for embedding.
-        """
-        self.model.eval()  # Set the model to evaluation mode
-        
-        test_identity_loss = torch.tensor(0.0, device=self.device)
-
-        with torch.no_grad():  # Disable gradient computation
-            for data_list in self.test_dl:
-
-                loss_identity_batch = torch.tensor(0.0, device=self.device)
-                for step in range(data_list.shape[0]):
-                    # Prepare forward and backward inputs
-                    input_identity = data_list[step].to(self.device)
-                    target_identity = data_list[step].to(self.device)
-                    loss_identity_step = self.compute_identity_loss(input_identity, None) 
-                    loss_identity_batch += loss_identity_step
                 
-                # Accumulate batch losses for the epoch
-                test_identity_loss += loss_identity_batch
-    
-        # Average loss for the test loader
-        avg_test_identity_loss = test_identity_loss / len(self.test_dl)
-
-        return {
-            'identity_loss': avg_test_identity_loss.detach(),
-        }
-
-  
-    def compute_baseline_performance_embedding(self):
-        """
-        Evaluate the model on the test dataset and calculate loss components.
-    
-        Args:
-            test_loader (torch.utils.data.DataLoader): DataLoader for the test dataset.
-
-        Returns:
-            dict: Dictionary of average loss values for each component and the total loss.
-        """
-        self.baseline.eval()  # Set the model to evaluation mode
-        
-        test_identity_loss = torch.tensor(0.0, device=self.device)
-
-        with torch.no_grad():  # Disable gradient computation
-            for data_list in self.test_dl:
-
-                loss_identity_batch = torch.tensor(0.0, device=self.device)
-
-                for step in range(data_list.shape[0]):
-                    # Prepare forward and backward inputs
-                    input_identity = data_list[step].to(self.device)
-                    target_identity = data_list[step].to(self.device)
-                    baseline_output = self.baseline(input_identity)
-
-                    
-                    loss_identity_step = self.criterion(baseline_output, target_identity)
-                    loss_identity_batch += loss_identity_step
-                
-                # Accumulate batch losses for the epoch
-                test_identity_loss += loss_identity_batch
-    
-        # Average loss for the test loader
-        avg_test_identity_loss = test_identity_loss / len(self.test_dl)
-
-        return {
-            'identity_loss': avg_test_identity_loss.detach(),
-        }
-
-    def optimize_model(self, loss_total):
-        self.optimizer.zero_grad()
-        if loss_total > 0:
-            loss_total.backward()
-            #torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)  # gradient clip
-            self.optimizer.step()
-            
-    def wandb_initialize(self, runconfig):
-
-        wandb.init(
-            project=runconfig.project,
-            config={
-                "dataset": runconfig.dataset,
-                "num_metabolites": runconfig.num_metabolites,
-                "interpolated": runconfig.interpolated,
-                "feature_selected": runconfig.feature_selected,
-                "outlier_rem": runconfig.outlier_rem,
-                "robust_scaled": runconfig.robust_scaled,
-                "min_max_scaled_0_1": runconfig.min_max_scaled_0_1,
-                "min_max_scaled_-1_1": runconfig.min_max_scaled_1_1,
-                
-                "batch_size": runconfig.batch_size,
-                "dl_structure": runconfig.dl_structure,
-
-                "embedding": next((k for k, v in self.model.embedding_info.items() if v), None),
-                "embedding_dim": self.model.embedding.E_layer_dims,
-                "embedding_num_hidden_layer": len(self.model.embedding.E_layer_dims)-2,
-                "embedding_num_hidden_neurons": self.model.embedding.E_layer_dims[1],
-                "embedding_latent_dim": self.model.embedding.E_layer_dims[-1],
-                "embedding_input_dropout_rate": self.model.embedding.E_dropout_rates[0],
-                
-                "activation_fn": self.model.embedding.activation_fn,
-                
-                "operator": next((k for k, v in self.model.operator_info.items() if v), None),
-                "Kmatrix_modification": next((k for k, v in self.model.regularization_info.items() if v), None),
-                
-                "learning_rate": self.lr,
-                "epochs": self.num_epochs,
-                "learning_rate_change": self.learning_rate_change,
-                "loss_weights": self.loss_weights,
-                "decayEpochs": self.decayEpochs,
-                "weight_decay": self.weight_decay,
-                "grad_clip": self.grad_clip,
-                "max_Kstep": self.max_Kstep,
-                "mask_value": self.mask_value,
-                "optimizer": 'adam'
-            }
-        )
-
-        wandb.watch(self.model.embedding, log='all', log_freq=1)
-        wandb.watch(self.model.operator, log='all', log_freq=1)
-        
     def log_batch_info(self, loss_identity_batch):
         
         self.batch_metrics.append({
@@ -1199,15 +1068,6 @@ class Embedding_Trainer(KoopmanMetricsMixin):
             'train_loss_identity_epoch': train_loss_identity_epoch.detach(),
             'test_loss_identity_epoch': test_loss_identity_epoch.detach(),
         })
-
-    def lr_scheduler(self):
-            """Decay learning rate by a factor of lr_decay_rate every lr_decay_epoch epochs"""
-            if self.current_epoch in self.decayEpochs:
-                for param_group in self.optimizer.param_groups:
-                    param_group['lr'] *= self.learning_rate_change
-                return self.optimizer
-            else:
-                return self.optimizer
 
     def end_batch(self):
         if self.batch_verbose:
@@ -1284,11 +1144,11 @@ class EarlyStopping2scores:
 
         if self.wandb_log:
             run_id = wandb.run.id
-            self.model_path = f'best_{model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters_run_{run_id}.pth'
+            self.model_path = f'best_{self.model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters_run_{run_id}.pth'
         else:
-            self.model_path = f'best_{model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters.pth'
+            self.model_path = f'best_{self.model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters.pth'
  
-        torch.save(model.embedding.state_dict(), self.model_path)
+        torch.save(model.state_dict(), self.model_path)
         if self.verbose:
             print(f'Model saved to {self.model_path}')
 
@@ -1332,6 +1192,334 @@ class EarlyStopping:
             print(f'Model saved to {self.model_path}')
 
 
+# =========================================================================================
+
+class Koop_Full_Trainer(BaseTrainer):
+
+
+    def __init__(self, model, train_dl, test_dl, **kwargs):
+        super().__init__(model, train_dl, test_dl, **kwargs)
+
+    #==================================Training Function=======================
+    
+    def train(self):
+
+        try:
+            for epoch in range(0, self.num_epochs + 1):
+                self.current_epoch += 1
+                print(f'----------Training epoch {self.current_epoch}--------')
+                
+                (train_fwd_loss_epoch, test_fwd_loss_epoch, 
+                train_bwd_loss_epoch, test_bwd_loss_epoch,
+                baseline_fwd_loss, baseline_bwd_loss) = self.train_epoch()
+                
+                
+                combined_test_loss = (test_fwd_loss_epoch + test_bwd_loss_epoch) / 2
+
+                baseline_ratio = 0
+                if self.baseline is not None:
+                    combined_baseline_loss = (baseline_fwd_loss + baseline_bwd_loss) / 2
+                    baseline_ratio = (combined_baseline_loss-combined_test_loss)/combined_baseline_loss
+
+                if self.wandb_log:
+                    wandb.log({'train_fwd_loss_epoch': train_fwd_loss_epoch,
+                              'test_fwd_loss_epoch': test_fwd_loss_epoch,
+                               'train_bwd_loss_epoch': train_bwd_loss_epoch,
+                               'test_bwd_loss_epoch': test_bwd_loss_epoch,
+                               'combined_test_loss': combined_test_loss,
+                               'baseline_fwd_loss': baseline_fwd_loss,
+                               'baseline_bwd_loss': baseline_bwd_loss,
+                               'baseline_ratio': baseline_ratio
+                              })
+                self.end_epoch(baseline_fwd_loss, baseline_bwd_loss,baseline_ratio)
+                if self.early_stop:
+                    self.early_stopping(test_fwd_loss_epoch, test_bwd_loss_epoch, self.current_epoch, self.model)
+                    if self.early_stopping.early_stop:
+                        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Early stopping triggered!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                        print(f'Best Test fwd loss: {self.early_stopping.best_score1:.6f}, Best Test bwd loss: {self.early_stopping.best_score2:.6f} at Best Epoch {self.early_stopping.best_epoch}.')
+                        self.model.load_state_dict(torch.load(self.early_stopping.model_path,  map_location=torch.device(self.device)))
+                        print(f'Best Model Parameters of Shift {self.start_Kstep+1} Loaded.')
+                        for param in self.model.embedding.parameters():
+                            
+                            param.requires_grad = False
+                        break
+        except KeyboardInterrupt:
+            print("Training interrupted. Saving model...")
+            torch.save(self.model.state_dict(), f"interrupted_{self.model_name}_parameters.pth")
+
+        if self.wandb_log:
+            run_id = wandb.run.id
+            self.model_path = f'{self.model_name}_parameters_run_{run_id}.pth'
+        else:
+            self.model_path = f'{self.model_name}_parameters.pth'
+            
+        torch.save(self.model.state_dict(), self.model_path)
+    #==================================Training Function=======================
+
+    def train_epoch(self):
+        
+        #-------------------------------------------------------------------------------------------------
+    
+        train_fwd_loss_epoch = torch.tensor(0.0, device=self.device)
+        train_bwd_loss_epoch = torch.tensor(0.0, device=self.device)
+        test_fwd_loss_epoch = torch.tensor(0.0, device=self.device)
+        test_bwd_loss_epoch = torch.tensor(0.0, device=self.device)
+
+        train_loss_latent_identity_epoch = torch.tensor(0.0, device=self.device)
+        train_loss_identity_epoch = torch.tensor(0.0, device=self.device)
+        train_loss_inv_cons_epoch = torch.tensor(0.0, device=self.device)
+        train_loss_temp_cons_epoch = torch.tensor(0.0, device=self.device)
+                
+        
+        #-------------------------------------------------------------------------------------------------
+        self.model.train()
+
+        for data_list in self.train_dl:
+            self.current_batch += 1
+            
+            #Prepare Batch Data and Loss Tensors:
+            #-------------------------------------------------------------------------------------------------
+    
+            loss_fwd_batch = torch.tensor(0.0, device=self.device)
+            loss_bwd_batch = torch.tensor(0.0, device=self.device)
+            
+            loss_latent_identity_batch = torch.tensor(0.0, device=self.device)
+            loss_identity_batch = torch.tensor(0.0, device=self.device)
+            loss_inv_cons_batch = torch.tensor(0.0, device=self.device)
+            loss_temp_cons_batch = torch.tensor(0.0, device=self.device)
+
+            loss_total_batch = torch.tensor(0.0, device=self.device)
+
+            loss_fwd_step = torch.tensor(0.0, device=self.device)
+            loss_bwd_step = torch.tensor(0.0, device=self.device)
+            
+            loss_latent_identity_step = torch.tensor(0.0, device=self.device)
+
+            #-------------------------------------------------------------------------------------------------
+            input_fwd = data_list[0].to(self.device)
+            input_bwd = data_list[-1].to(self.device)
+            
+            reverse_data_list = torch.flip(data_list, dims=[0])
+            #-------------------------------------------------------------------------------------------------
+            if self.max_Kstep > 1 and self.loss_weights[5] > 0:
+                self.temporal_cons_fwd_storage = torch.zeros(self.max_Kstep, *input_fwd.shape).to(self.device) 
+
+                self.temporal_cons_bwd_storage = torch.zeros(self.max_Kstep, *input_bwd.shape).to(self.device) 
+
+            # Store Prediction tensors for temporal consistency computation   
+            #-------------------------------------------------------------------------------------------------
+            # Backpropagation happens after all timeshifts (after batch size predictions)
+            #------------------------------------------------------------------------------------------------- 
+
+            if self.loss_weights[0] > 0:
+                for step in range(self.start_Kstep+1, self.max_Kstep+1):
+                    self.current_step = step
+                    target_fwd = data_list[step].to(self.device)
+
+                    
+                    (
+                        loss_fwd_step, 
+                        loss_latent_fwd_identity_step
+                    ) = self.compute_forward_loss(input_fwd, target_fwd, fwd=step)
+                    loss_fwd_batch += loss_fwd_step
+
+                    if self.loss_weights[2] > 0:
+                        loss_latent_identity_batch += loss_latent_fwd_identity_step
+
+            if self.loss_weights[1] > 0:
+                for step in range(self.start_Kstep+1, self.max_Kstep+1):
+                    self.current_step = step
+                    target_bwd = reverse_data_list[step].to(self.device)
+
+                
+                    (
+                        loss_bwd_step, 
+                        loss_latent_bwd_identity_step
+                    ) = self.compute_backward_loss(input_bwd, target_bwd, bwd=step)
+                    loss_bwd_batch += loss_bwd_step
+                    
+                    if self.loss_weights[2] > 0:
+                        loss_latent_identity_batch += loss_latent_bwd_identity_step 
+                        
+                loss_latent_identity_batch /= 2
+
+            if self.loss_weights[3] > 0:
+                for step in range(self.start_Kstep+1, self.max_Kstep+1):
+                    input_identity = data_list[step].to(self.device)
+                    loss_identity_batch += self.compute_identity_loss(input_identity, None)
+
+            if self.loss_weights[4] > 0:
+                for step in range(self.start_Kstep+1, self.max_Kstep+1):
+                    input_inv_cons_batch = data_list[step].to(self.device)
+                    loss_inv_cons_batch += self.compute_inverse_consistency(input_inv_cons_batch, None)
+
+            if (self.loss_weights[5] > 0  and self.max_Kstep > 1): #and self.current_epoch >= self.epoch_temp_cons
+                loss_temp_cons_batch = self.compute_temporal_consistency(self.temporal_cons_fwd_storage)
+                loss_temp_cons_batch += self.compute_temporal_consistency(self.temporal_cons_bwd_storage, bwd=True)
+                loss_temp_cons_batch /= 2
+
+            # Calculate total loss
+            loss_total_batch = self.calculate_total_loss(loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch,
+                                                        loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch)
+
+            # ===================Backward propagation==========================
+            self.optimize_model(loss_total_batch)
+
+            train_fwd_loss_epoch += loss_fwd_batch.detach() 
+            train_bwd_loss_epoch += loss_bwd_batch.detach()
+
+            train_loss_latent_identity_epoch += loss_latent_identity_batch.detach()
+            train_loss_identity_epoch += loss_identity_batch.detach()
+            train_loss_inv_cons_epoch += loss_inv_cons_batch.detach()
+            train_loss_temp_cons_epoch += loss_temp_cons_batch.detach()
+                                
+            
+            # Logging and printing batch info
+            self.log_batch_info(loss_total_batch, loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch, 
+               loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch)
+    
+            self.end_batch()
+
+        # Learning rate decay
+        self.optimizer = self.lr_scheduler()
+        
+        train_fwd_loss_epoch /= len(self.train_dl)
+        train_bwd_loss_epoch /= len(self.train_dl)
+
+
+        self.Evaluator = Evaluator(self.model, self.train_dl, self.test_dl, 
+                       mask_value = self.mask_value, max_Kstep=self.max_Kstep,
+                       baseline=self.baseline, model_name=self.model_name,
+                       criterion = self.criterion, loss_weights = self.loss_weights )
+    
+        train_model_metrics, test_model_metrics, baseline_test_metrics = self.Evaluator()
+
+        #train_fwd_loss_epoch = train_model_metrics["forward_loss"]
+        #train_bwd_loss_epoch = train_model_metrics["backward_loss"]
+        test_fwd_loss_epoch = test_model_metrics["forward_loss"]
+        test_bwd_loss_epoch = test_model_metrics["backward_loss"]
+        
+        baseline_fwd_loss = 0
+        baseline_bwd_loss = 0
+        if self.baseline is not None:
+            baseline_fwd_loss = baseline_test_metrics["forward_loss"]
+            baseline_bwd_loss = baseline_test_metrics["backward_loss"]
+            
+        # Log and plot epoch losses
+        self.log_epoch_losses(train_fwd_loss_epoch, test_fwd_loss_epoch, 
+                              train_bwd_loss_epoch, test_bwd_loss_epoch,
+                             train_loss_latent_identity_epoch, train_loss_identity_epoch,
+                             train_loss_inv_cons_epoch, train_loss_temp_cons_epoch)
+        
+        return (train_fwd_loss_epoch, test_fwd_loss_epoch, 
+                train_bwd_loss_epoch, test_bwd_loss_epoch,
+                baseline_fwd_loss, baseline_bwd_loss)
+
+    def log_batch_info(self, loss_total_batch, loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch, 
+                       loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch):
+
+        self.batch_metrics.append({
+            'epoch': self.current_epoch,
+            'step': self.current_step,
+            'batch': self.current_batch,
+            'train_total_loss': loss_total_batch.detach(),
+            'train_fwd_loss': loss_fwd_batch.detach(),
+            'train_bwd_loss': loss_bwd_batch.detach(),
+            'train_latent_loss': loss_latent_identity_batch.detach(),
+            'train_identity_loss': loss_identity_batch.detach(),
+            'train_inv_cons_loss': loss_inv_cons_batch.detach(),
+            'train_temp_cons_loss': loss_temp_cons_batch.detach(),
+        })
+
+    def log_step_info(self, loss_total_step, loss_fwd_step, loss_bwd_step, loss_latent_identity_step, 
+                       loss_identity_step, loss_inv_cons_step, loss_temp_cons_step):
+        
+        self.step_metrics.append({
+            'epoch': self.current_epoch,
+            'step': self.current_step,
+            'train_total_loss': loss_total_step.detach(),
+            'train_fwd_loss': loss_fwd_step.detach(),
+            'train_bwd_loss': loss_bwd_step.detach(),
+            'train_latent_loss': loss_latent_identity_step.detach(),
+            'train_identity_loss': loss_identity_step.detach(),
+            'train_inv_cons_loss': loss_inv_cons_step.detach(),
+            'train_temp_cons_loss': loss_temp_cons_step.detach(),
+        })
+
+    def log_epoch_losses(self, train_fwd_loss_epoch, test_fwd_loss_epoch, 
+                         train_bwd_loss_epoch, test_bwd_loss_epoch,
+                         train_loss_latent_identity_epoch, train_loss_identity_epoch,
+                         train_loss_inv_cons_epoch, train_loss_temp_cons_epoch):
+        
+        self.epoch_metrics.append({
+            'epoch': self.current_epoch,
+            'train_fwd_loss': train_fwd_loss_epoch.detach(),
+            'test_fwd_loss': test_fwd_loss_epoch.detach(),
+            'train_bwd_loss': train_bwd_loss_epoch.detach(),
+            'test_bwd_loss': test_bwd_loss_epoch.detach(),
+            'train_loss_latent_identity_epoch': train_loss_latent_identity_epoch.detach(),
+            'train_loss_identity_epoch': train_loss_identity_epoch.detach(),
+            'train_loss_inv_cons_epoch': train_loss_inv_cons_epoch.detach(),
+            'train_loss_temp_cons_epoch': train_loss_temp_cons_epoch.detach()
+        })
+
+
+    def end_batch(self):
+        
+        if self.batch_verbose:
+        
+            current_batch_metrics = self.batch_metrics[-1]
+            print(f'----------Training Epoch {self.current_epoch} --------')
+            print(f'----------Training Step {self.current_step}--------')
+            print(f'Batch Nr. {self.current_batch}')
+            print(f'Total Loss: {current_batch_metrics["train_total_loss"]}')
+            print('')
+            print(f'Forward Loss: {current_batch_metrics["train_fwd_loss"]}')
+            print(f'Backward Loss: {current_batch_metrics["train_bwd_loss"]}')
+            print(f'Latent Loss: {current_batch_metrics["train_latent_loss"]}')
+            print(f'Identity Loss: {current_batch_metrics["train_identity_loss"]}')
+            print(f'Inverse Consistency Loss: {current_batch_metrics["train_inv_cons_loss"]}')
+            print(f'Temporal Consistency Loss: {current_batch_metrics["train_temp_cons_loss"]}')
+
+    def end_step(self):
+        
+        current_step_metrics = self.step_metrics[-1]
+        print(f'----------Training Epoch {self.current_epoch}--------')
+        print(f'============================Finished Training Step {self.current_step}=======================')
+        print(f'Total Loss: {current_step_metrics["train_total_loss"]}')
+        print('')
+        print(f'Forward Loss: {current_step_metrics["train_fwd_loss"]}')
+        print(f'Backward Loss: {current_step_metrics["train_bwd_loss"]}')
+        print(f'Latent Loss: {current_step_metrics["train_latent_loss"]}')
+        print(f'Identity Loss: {current_step_metrics["train_identity_loss"]}')
+        print(f'Inverse Consistency Loss: {current_step_metrics["train_inv_cons_loss"]}')
+        print(f'Temporal Consistency Loss: {current_step_metrics["train_temp_cons_loss"]}')
+
+    def end_epoch(self, baseline_fwd_loss, baseline_bwd_loss, baseline_ratio):
+
+        current_epoch_metrics = self.epoch_metrics[-1]
+        print(f'============================Finished Training Epoch {self.current_epoch}=============================')
+        print(f'Train fwd Loss: {current_epoch_metrics["train_fwd_loss"]}')
+        print(f'Train bwd Loss: {current_epoch_metrics["train_bwd_loss"]}')
+        print('')
+        print(f'Test fwd Loss: {current_epoch_metrics["test_fwd_loss"]}')
+        print(f'Test bwd Loss: {current_epoch_metrics["test_bwd_loss"]}')
+
+        if self.baseline is not None:
+            print(f'Baseline Test fwd Loss: {baseline_fwd_loss}')
+            print(f'Baseline Test bwd Loss: {baseline_bwd_loss}')
+            print(f'Baseline Ratio: {baseline_ratio}')
+
+        # Convert batch metrics to DataFrame at the end of an epoch
+        batch_df = pd.DataFrame(self.batch_metrics)
+        self.batch_metrics.clear()  # Clear the list after logging
+        # Save to CSV or append to a file
+        batch_df.to_csv(f'{self.model_name}_batch_metrics_epoch.csv', index=False, mode='a', header=not self.current_epoch)
+
+        # Convert epoch metrics to DataFrame and save
+        epoch_df = pd.DataFrame(self.epoch_metrics)
+        self.epoch_metrics.clear()  # Clear the list after logging
+        epoch_df.to_csv(f'{self.model_name}_epoch_metrics.csv', index=False, mode='a', header=not self.current_epoch)
 
 
 def update_batch_loss_plot(epoch, fwd_loss_batch_values, bwd_loss_batch_values, inv_cons_loss_batch_values, temp_cons_loss_batch_values, total_loss_batch_values):

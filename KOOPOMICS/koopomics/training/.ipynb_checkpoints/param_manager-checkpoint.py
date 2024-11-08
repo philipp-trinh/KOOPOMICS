@@ -2,13 +2,13 @@ from .data_loader import OmicsDataloader
 from ..model.koopmanANN import FFLinearizer, Koop, InvKoop, LinearizingKoop
 from ..model.embeddingANN import FF_AE
 from ..model.model_loader import KoopmanModel
-from .train_utils import Trainer, Embedding_Trainer
+from .train_utils import Koop_Step_Trainer, Embedding_Trainer
 from ..test.test_utils import NaiveMeanPredictor
 
 import torch
 import pandas as pd
 import wandb
-
+import numpy as np
 
 
 
@@ -54,8 +54,8 @@ class HypManager():
         self.embedding_fit = kwargs.get('embedding_fit', False)
         self.fit = kwargs.get('fit', False)
 
-        self.em_param_path = kwargs.get('em_param_path', False)
-        self.shift_param_path = kwargs.get('em_param_path', False)
+        self.em_param_path = kwargs.get('em_param_path', None)
+        self.shift_param_path = kwargs.get('shift_param_path', None)
 
 
 
@@ -64,7 +64,7 @@ class HypManager():
         train_loader = OmicsDataloader(self.train_df, self.feature_list, self.replicate_id, 
                                       batch_size=batch_size, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value)
         test_loader = OmicsDataloader(self.test_df, self.feature_list, self.replicate_id, 
-                                     batch_size=batch_size, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value)
+                                     batch_size=600, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value)
         
         return train_loader, test_loader
     
@@ -76,7 +76,7 @@ class HypManager():
         embedding_act_fn = kwargs.get('em_act_fn', 'leaky_relu')
 
         linearizer_linE_layer_dims = kwargs.get('linE_layer_dims', [3, 100, 100, 3])  
-        linearizer_linD_layer_dims = kwargs.get('linD_layer_dims', linearizer_linE_layer_dims[::-1]])  
+        linearizer_linD_layer_dims = kwargs.get('linD_layer_dims', linearizer_linE_layer_dims[::-1])  
         linearizer_linE_dropout_rates = kwargs.get('linE_dropout_rates', [0] * len(linearizer_linE_layer_dims)) 
         linearizer_linD_dropout_rates = kwargs.get('linD_dropout_rates', [0] * len(linearizer_linE_dropout_rates)) 
         linearizer_act_fn = kwargs.get('lin_act_fn', 'leaky_relu')
@@ -95,6 +95,8 @@ class HypManager():
                                 )
 
         if operator == 'linkoop':
+            operator_latent_dim = kwargs.get('latent_dim', linearizer_linE_layer_dims[-1])
+
             linearizer_module = FFLinearizer(linE_layer_dims = linearizer_linE_layer_dims,
                                       linD_layer_dims = linearizer_linD_layer_dims,
                                       linE_dropout_rates = linearizer_linE_dropout_rates,
@@ -151,7 +153,7 @@ class HypManager():
                                #0,0]     
             lin_act_fn=getattr(config, 'lin_act_fn', 'leaky_relu')
 
-            loss_weights = E_layer_dims = list(map(int, getattr(config, 'loss_weights',
+            loss_weights =  list(map(float, getattr(config, 'loss_weights',
                                                                 "1,1,1,1,1,1").split(',')))
             decayEpochs = self.create_decay_epochs(config.num_epochs, config.num_decays)
 
@@ -168,19 +170,18 @@ class HypManager():
                                                     op_act_fn=op_act_fn,
                                                     op_bandwidth=op_bandwidth,
                                                     linE_layer_dims=linE_layer_dims,
-                                                    linE_dropout_rates=linE_dropout_rates,
                                                     lin_act_fn=lin_act_fn,
 
                                                 )
             baseline = NaiveMeanPredictor(self.train_df, self.feature_list, mask_value=self.mask_value)
-            wandb.watch(KoopOmicsModel,log='all', log_freq=1) 
-
+            wandb.watch(KoopOmicsModel.embedding,log='all', log_freq=1) 
+            wandb.watch(KoopOmicsModel.operator,log='all', log_freq=1)
             if self.modular_fit:
                 
                 KoopOmicsModel.modular_fit(train_dl, test_dl, wandb_log=True,
                                      runconfig = config, mask_value=self.mask_value,
                                     baseline=baseline, decayEpochs = decayEpochs, embedding_param_path=self.em_param_path,
-                                    model_param_path = self.shift_param_path, loss_weights=loss_weights)
+                                    model_param_path = self.shift_param_path, loss_weights=loss_weights, max_Kstep=config.max_Kstep)
             elif self.embedding_fit:
                 KoopOmicsModel.embedding_fit(train_dl, test_dl, wandb_log=True,
                                      runconfig = config, mask_value=self.mask_value,

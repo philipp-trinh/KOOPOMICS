@@ -16,8 +16,8 @@ mask_value = -1e-9
 train_set_df = pregnancy_df[pregnancy_df['Cohort'] == 'Discovery'].copy()
 test_set_df = pregnancy_df[pregnancy_df['Cohort'] == 'Validation (Test Set 1)'].copy()
 
-embedding_param_path = './bestparams/Koop_embedding_parameters_run_xhb2hi1k.pth'
+#embedding_param_path = '../LISC_training/bestparams/Koop_embedding_parameters_run_xhb2hi1k.pth'
+#em_param_path=embedding_param_path
+hypmanager = ko.HypManager(train_set_df, test_set_df, condition_id, replicate_id, time_id, feature_list, mask_value=-1e-9, fit=True) 
 
-hypmanager = ko.HypManager(train_set_df, test_set_df, condition_id, replicate_id, time_id, feature_list, mask_value=-1e-9, em_param_path=embedding_param_path) 
-
-wandb.agent("elementar1-university-of-vienna/PregnancyKoop/dxhjtlwg", function=hypmanager.hyptrain, count=10)
+wandb.agent("elementar1-university-of-vienna/PregnancyKoop/x5gg74gy", function=hypmanager.hyptrain, count=10)

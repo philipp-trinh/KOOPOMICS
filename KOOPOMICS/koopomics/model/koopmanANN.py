@@ -294,7 +294,7 @@ class InvKoop(nn.Module):
         self.reg = reg
         
         # ---------------- Define Koopman Matrices (with or without regularization) --------------
-        if reg is None:
+        if reg == "None" or reg == None:
             self.fwdkoop = nn.Linear(latent_dim, latent_dim, bias=False)
             self.bwdkoop = nn.Linear(latent_dim, latent_dim, bias=False)
         elif self.reg == 'banded':
@@ -334,8 +334,8 @@ class InvKoop(nn.Module):
         return matrix * mask
         
     def fwdkoopOperation(self, e):
-        if self.reg is None:
-            e_fwd = e @ self.fwdkoop
+        if self.reg == "None" or self.reg == None:
+            e_fwd = self.fwdkoop(e)
         
         elif self.reg == 'banded':
             self.fwdkoop = self.bandedkoop_fwd.kmatrix()
@@ -354,8 +354,8 @@ class InvKoop(nn.Module):
         return e_fwd
 
     def bwdkoopOperation(self, e):
-        if self.reg is None:
-            e_bwd = e @ self.bwdkoop
+        if self.reg == "None" or self.reg == None:
+            e_bwd = self.bwdkoop(e)
             
         elif self.reg == 'banded':
             self.bwdkoop = self.bandedkoop_bwd.kmatrix()

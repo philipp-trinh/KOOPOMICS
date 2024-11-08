@@ -4,7 +4,7 @@ import torch
 import wandb
 
 # Load Dataset
-pregnancy_df = pd.read_csv('../input_data/pregnancy/pregnancy_interpolated_264M_robust_minmax_scaled_outlrem_uniform.csv')
+pregnancy_df = pd.read_csv('../input_data/pregnancy/pregnancy_interpolated_264M_median_centered_uniform_mask(-1e-9).csv')
 
 condition_id = 'Condition'
 time_id = 'Gestational age (GA)/weeks'
@@ -16,6 +16,8 @@ mask_value = -1e-9
 train_set_df = pregnancy_df[pregnancy_df['Cohort'] == 'Discovery'].copy()
 test_set_df = pregnancy_df[pregnancy_df['Cohort'] == 'Validation (Test Set 1)'].copy()
 
-hypmanager = ko.HypManager(train_set_df, test_set_df, condition_id, replicate_id, time_id, feature_list, mask_value=-1e-9, modular_fit=True) 
+embedding_param_path = '../LISC_training/bestparams/Koop_embedding_parameters_run_xhb2hi1k.pth'
 
-wandb.agent("elementar1-university-of-vienna/PregnancyKoop/t5qclucm", function=hypmanager.hyptrain, count=5)
+hypmanager = ko.HypManager(train_set_df, test_set_df, condition_id, replicate_id, time_id, feature_list, mask_value=-1e-9, em_param_path=embedding_param_path, modular_fit=True) 
+
+wandb.agent("elementar1-university-of-vienna/PregnancyKoop/x5gg74gy", function=hypmanager.hyptrain, count=10)

@@ -367,7 +367,7 @@ class BaseTrainer(KoopmanMetricsMixin):
         Weight decay rate for L2 regularization.
 
     grad_clip : float, default=1
-        Maximum gradient norm for gradient clipping, helping prevent gradient explosion in RNNs and deep networks.
+        Maximum gradient norm for gradient clipping, helping prevent gradient explosion in deep networks.
 
     num_epochs : int, default=10
         Total number of training epochs.
@@ -605,591 +605,6 @@ class BaseTrainer(KoopmanMetricsMixin):
         wandb.watch(self.model.embedding, log='all', log_freq=1)
         wandb.watch(self.model.operator,log='all',log_freq=1)
 
-# =========================================================================================
-
-class Koop_Step_Trainer(BaseTrainer):
-
-
-    def __init__(self, model, train_dl, test_dl, **kwargs):
-        super().__init__(model, train_dl, test_dl, **kwargs)
-
-    #==================================Training Function=======================
-    
-    def train(self):
-
-        try:
-            for epoch in range(0, self.num_epochs + 1):
-                self.current_epoch += 1
-                print(f'----------Training epoch {self.current_epoch}--------')
-                
-                (train_fwd_loss_epoch, test_fwd_loss_epoch, 
-                train_bwd_loss_epoch, test_bwd_loss_epoch,
-                baseline_fwd_loss, baseline_bwd_loss) = self.train_epoch()
-                
-                
-                combined_test_loss = (test_fwd_loss_epoch + test_bwd_loss_epoch) / 2
-
-                baseline_ratio = 0
-                if self.baseline is not None:
-                    combined_baseline_loss = (baseline_fwd_loss + baseline_bwd_loss) / 2
-                    baseline_ratio = (combined_baseline_loss-combined_test_loss)/combined_baseline_loss
-
-                if self.wandb_log:
-                    wandb.log({'train_fwd_loss_epoch': train_fwd_loss_epoch,
-                              'test_fwd_loss_epoch': test_fwd_loss_epoch,
-                               'train_bwd_loss_epoch': train_bwd_loss_epoch,
-                               'test_bwd_loss_epoch': test_bwd_loss_epoch,
-                               'combined_test_loss': combined_test_loss,
-                               'baseline_fwd_loss': baseline_fwd_loss,
-                               'baseline_bwd_loss': baseline_bwd_loss,
-                               'baseline_ratio': baseline_ratio
-                              })
-                if self.early_stop:
-                    self.early_stopping(test_fwd_loss_epoch, test_bwd_loss_epoch, self.current_epoch, self.model)
-                    if self.early_stopping.early_stop:
-                        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Early stopping triggered!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                        print(f'Best Test fwd loss: {self.early_stopping.best_score1:.6f}, Best Test bwd loss: {self.early_stopping.best_score2:.6f} at Best Epoch {self.early_stopping.best_epoch}.')
-                        self.model.load_state_dict(torch.load(self.early_stopping.model_path,  map_location=torch.device(self.device)))
-                        print(f'Best Model Parameters of Shift {self.start_Kstep+1} Loaded.')
-                        for param in self.model.embedding.parameters():
-                            
-                            param.requires_grad = False
-                        break
-        except KeyboardInterrupt:
-            print("Training interrupted. Saving model...")
-            torch.save(self.model.state_dict(), f"interrupted_{self.model_name}_parameters.pth")
-
-        if self.wandb_log:
-            run_id = wandb.run.id
-            self.model_path = f'{self.model_name}_parameters_run_{run_id}.pth'
-        else:
-            self.model_path = f'{self.model_name}_parameters.pth'
-            
-        torch.save(self.model.state_dict(), self.model_path)
-    #==================================Training Function=======================
-
-    def train_epoch(self):
-        #-------------------------------------------------------------------------------------------------
-    
-        train_fwd_loss_epoch = torch.tensor(0.0, device=self.device)
-        train_bwd_loss_epoch = torch.tensor(0.0, device=self.device)
-        test_fwd_loss_epoch = torch.tensor(0.0, device=self.device)
-        test_bwd_loss_epoch = torch.tensor(0.0, device=self.device)
-
-        train_loss_latent_identity_epoch = torch.tensor(0.0, device=self.device)
-        train_loss_identity_epoch = torch.tensor(0.0, device=self.device)
-        train_loss_inv_cons_epoch = torch.tensor(0.0, device=self.device)
-        train_loss_temp_cons_epoch = torch.tensor(0.0, device=self.device)
-                
-        
-        #-------------------------------------------------------------------------------------------------
-        self.model.train()
-
-        for step in range(self.start_Kstep+1, self.max_Kstep+1):
-            self.current_step = step
-
-            loss_fwd_step = torch.tensor(0.0, device=self.device)
-            loss_bwd_step = torch.tensor(0.0, device=self.device)
-            
-            loss_latent_identity_step = torch.tensor(0.0, device=self.device)
-            loss_identity_step = torch.tensor(0.0, device=self.device)
-            loss_inv_cons_step = torch.tensor(0.0, device=self.device)
-            loss_temp_cons_step = torch.tensor(0.0, device=self.device)
-
-            loss_total_step = torch.tensor(0.0, device=self.device)
-        
-            
-            for data_list in self.train_dl:
-                self.current_batch += 1
-                
-                #Prepare Batch Data and Loss Tensors:
-                #-------------------------------------------------------------------------------------------------
-        
-                loss_fwd_batch = torch.tensor(0.0, device=self.device)
-                loss_bwd_batch = torch.tensor(0.0, device=self.device)
-                
-                loss_latent_identity_batch = torch.tensor(0.0, device=self.device)
-                loss_identity_batch = torch.tensor(0.0, device=self.device)
-                loss_inv_cons_batch = torch.tensor(0.0, device=self.device)
-                loss_temp_cons_batch = torch.tensor(0.0, device=self.device)
-
-                loss_total_batch = torch.tensor(0.0, device=self.device)
-                #-------------------------------------------------------------------------------------------------
-                input_fwd = data_list[0].to(self.device)
-                input_bwd = data_list[-1].to(self.device)
-                
-                reverse_data_list = torch.flip(data_list, dims=[0])
-                #-------------------------------------------------------------------------------------------------
-                if self.current_step > 1 and self.loss_weights[5] > 0:
-                    self.temporal_cons_fwd_storage = torch.zeros(self.max_Kstep, *input_fwd.shape).to(self.device) 
-                    self.temporal_cons_bwd_storage = torch.zeros(self.max_Kstep, *input_bwd.shape).to(self.device) 
-        
-                # Store Prediction tensors for temporal consistency computation   
-                #-------------------------------------------------------------------------------------------------
-                # Iteratively predict shifted timepoints for input timepoint(s)
-                # Backpropagation happens for each timeshift (after batch size predictions)
-                target_fwd = data_list[step].to(self.device)
-                target_bwd = reverse_data_list[step].to(self.device)
-                #------------------------------------------------------------------------------------------------- 
-
-                loss_fwd_batch = torch.tensor(0.0, device=self.device) 
-                if self.loss_weights[0] > 0:
-                    (
-                        loss_fwd_batch, 
-                        loss_latent_fwd_identity_batch
-                    ) = self.compute_forward_loss(input_fwd, target_fwd, fwd=step)
-                    
-                loss_bwd_batch = torch.tensor(0.0, device=self.device)             
-                if self.loss_weights[1] > 0:
-                    (
-                        loss_bwd_batch, 
-                        loss_latent_bwd_identity_batch
-                    ) = self.compute_backward_loss(input_bwd, target_bwd, bwd=step)
-
-                loss_latent_identity_batch = torch.tensor(0.0, device=self.device)
-                if self.loss_weights[2] > 0:
-                    loss_latent_identity_batch = loss_latent_fwd_identity_batch
-                    loss_latent_identity_batch += loss_latent_bwd_identity_batch
-                    loss_latent_identity_batch /= 2
-
-                loss_identity_batch = torch.tensor(0.0, device=self.device)
-                if self.loss_weights[3] > 0:
-                    loss_identity_batch = self.compute_identity_loss(input_fwd, target_fwd)
-                    loss_identity_batch += self.compute_identity_loss(input_bwd, target_bwd)
-                    loss_identity_batch /= 2
-
-                loss_inv_cons_batch = torch.tensor(0.0, device=self.device)
-                if self.loss_weights[4] > 0:
-                    loss_inv_cons_batch = self.compute_inverse_consistency(input_fwd, target_fwd)
-                    loss_inv_cons_batch += self.compute_inverse_consistency(input_bwd, target_bwd)
-                    loss_inv_cons_batch /= 2
-    
-                loss_temp_cons_batch = torch.tensor(0.0, device=self.device)
-                if (self.loss_weights[5] > 0 and self.current_epoch >= self.epoch_temp_cons and self.current_step > 1):
-                    loss_temp_cons_batch = self.compute_temporal_consistency(temporal_cons_fwd_storage)
-                    loss_temp_cons_batch += self.compute_temporal_consistency(temporal_cons_bwd_storage, bwd=True)
-                    loss_temp_cons_batch /= 2
-    
-                # Calculate total loss
-                loss_total_batch = self.calculate_total_loss(loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch,
-                                                            loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch)
-    
-                # ===================Backward propagation==========================
-                self.optimize_model(loss_total_batch)
-    
-                loss_fwd_step += loss_fwd_batch.detach()
-                loss_bwd_step += loss_bwd_batch.detach()
-                loss_latent_identity_step += loss_latent_identity_batch.detach()
-                loss_identity_step += loss_identity_batch.detach()
-                loss_inv_cons_step += loss_inv_cons_batch.detach()
-                loss_temp_cons_step += loss_temp_cons_batch.detach()
-
-                loss_total_step += loss_total_batch
-
-                train_fwd_loss_epoch += loss_fwd_batch.detach() 
-                train_bwd_loss_epoch += loss_bwd_batch.detach()
-    
-                train_loss_latent_identity_epoch += loss_latent_identity_batch.detach()
-                train_loss_identity_epoch += loss_identity_batch.detach()
-                train_loss_inv_cons_epoch += loss_inv_cons_batch.detach()
-                train_loss_temp_cons_epoch += loss_temp_cons_batch.detach()
-                                    
-                
-                # Logging and printing batch info
-                self.log_batch_info(loss_total_batch, loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch, 
-                   loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch)
-        
-                self.end_batch()
-
-            self.log_step_info(loss_total_step, loss_fwd_step, loss_bwd_step, loss_latent_identity_step, loss_identity_step, loss_inv_cons_step, loss_temp_cons_step)
-            
-            self.end_step()
-            
-        # Learning rate decay
-        self.optimizer = self.lr_scheduler()
-        
-        train_fwd_loss_epoch /= len(self.train_dl)
-        train_bwd_loss_epoch /= len(self.train_dl)
-        model_test_metrics, baseline_test_metrics = self.Evaluator()
-        test_fwd_loss_epoch = model_test_metrics["forward_loss"]
-        test_bwd_loss_epoch = model_test_metrics["backward_loss"]
-        
-        baseline_fwd_loss = 0
-        baseline_bwd_loss = 0
-        if self.baseline is not None:
-            baseline_fwd_loss = baseline_test_metrics["forward_loss"]
-            baseline_bwd_loss = baseline_test_metrics["backward_loss"]
-            
-        # Log and plot epoch losses
-        self.log_epoch_losses(train_fwd_loss_epoch, test_fwd_loss_epoch, 
-                              train_bwd_loss_epoch, test_bwd_loss_epoch,
-                             train_loss_latent_identity_epoch, train_loss_identity_epoch,
-                             train_loss_inv_cons_epoch, train_loss_temp_cons_epoch)
-        
-        self.end_epoch(baseline_fwd_loss, baseline_bwd_loss)
-
-        return (train_fwd_loss_epoch, test_fwd_loss_epoch, 
-                train_bwd_loss_epoch, test_bwd_loss_epoch,
-                baseline_fwd_loss, baseline_bwd_loss)
-
-    def log_batch_info(self, loss_total_batch, loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch, 
-                       loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch):
-
-        self.batch_metrics.append({
-            'epoch': self.current_epoch,
-            'step': self.current_step,
-            'batch': self.current_batch,
-            'train_total_loss': loss_total_batch.detach(),
-            'train_fwd_loss': loss_fwd_batch.detach(),
-            'train_bwd_loss': loss_bwd_batch.detach(),
-            'train_latent_loss': loss_latent_identity_batch.detach(),
-            'train_identity_loss': loss_identity_batch.detach(),
-            'train_inv_cons_loss': loss_inv_cons_batch.detach(),
-            'train_temp_cons_loss': loss_temp_cons_batch.detach(),
-        })
-
-    def log_step_info(self, loss_total_step, loss_fwd_step, loss_bwd_step, loss_latent_identity_step, 
-                       loss_identity_step, loss_inv_cons_step, loss_temp_cons_step):
-        
-        self.step_metrics.append({
-            'epoch': self.current_epoch,
-            'step': self.current_step,
-            'train_total_loss': loss_total_step.detach(),
-            'train_fwd_loss': loss_fwd_step.detach(),
-            'train_bwd_loss': loss_bwd_step.detach(),
-            'train_latent_loss': loss_latent_identity_step.detach(),
-            'train_identity_loss': loss_identity_step.detach(),
-            'train_inv_cons_loss': loss_inv_cons_step.detach(),
-            'train_temp_cons_loss': loss_temp_cons_step.detach(),
-        })
-
-    def log_epoch_losses(self, train_fwd_loss_epoch, test_fwd_loss_epoch, 
-                         train_bwd_loss_epoch, test_bwd_loss_epoch,
-                         train_loss_latent_identity_epoch, train_loss_identity_epoch,
-                         train_loss_inv_cons_epoch, train_loss_temp_cons_epoch):
-        
-        self.epoch_metrics.append({
-            'epoch': self.current_epoch,
-            'train_fwd_loss': train_fwd_loss_epoch.detach(),
-            'test_fwd_loss': test_fwd_loss_epoch.detach(),
-            'train_bwd_loss': train_bwd_loss_epoch.detach(),
-            'test_bwd_loss': test_bwd_loss_epoch.detach(),
-            'train_loss_latent_identity_epoch': train_loss_latent_identity_epoch.detach(),
-            'train_loss_identity_epoch': train_loss_identity_epoch.detach(),
-            'train_loss_inv_cons_epoch': train_loss_inv_cons_epoch.detach(),
-            'train_loss_temp_cons_epoch': train_loss_temp_cons_epoch.detach()
-        })
-
-
-    def end_batch(self):
-        
-        if self.batch_verbose:
-        
-            current_batch_metrics = self.batch_metrics[-1]
-            print(f'----------Training Epoch {self.current_epoch} --------')
-            print(f'----------Training Step {self.current_step}--------')
-            print(f'Batch Nr. {self.current_batch}')
-            print(f'Total Loss: {current_batch_metrics["train_total_loss"]}')
-            print('')
-            print(f'Forward Loss: {current_batch_metrics["train_fwd_loss"]}')
-            print(f'Backward Loss: {current_batch_metrics["train_bwd_loss"]}')
-            print(f'Latent Loss: {current_batch_metrics["train_latent_loss"]}')
-            print(f'Identity Loss: {current_batch_metrics["train_identity_loss"]}')
-            print(f'Inverse Consistency Loss: {current_batch_metrics["train_inv_cons_loss"]}')
-            print(f'Temporal Consistency Loss: {current_batch_metrics["train_temp_cons_loss"]}')
-
-    def end_step(self):
-        
-        current_step_metrics = self.step_metrics[-1]
-        print(f'----------Training Epoch {self.current_epoch}--------')
-        print(f'============================Finished Training Step {self.current_step}=======================')
-        print(f'Total Loss: {current_step_metrics["train_total_loss"]}')
-        print('')
-        print(f'Forward Loss: {current_step_metrics["train_fwd_loss"]}')
-        print(f'Backward Loss: {current_step_metrics["train_bwd_loss"]}')
-        print(f'Latent Loss: {current_step_metrics["train_latent_loss"]}')
-        print(f'Identity Loss: {current_step_metrics["train_identity_loss"]}')
-        print(f'Inverse Consistency Loss: {current_step_metrics["train_inv_cons_loss"]}')
-        print(f'Temporal Consistency Loss: {current_step_metrics["train_temp_cons_loss"]}')
-
-    def end_epoch(self, baseline_fwd_loss, baseline_bwd_loss):
-
-        current_epoch_metrics = self.epoch_metrics[-1]
-        print(f'============================Finished Training Epoch {self.current_epoch}=============================')
-        print(f'Train fwd Loss: {current_epoch_metrics["train_fwd_loss"]}')
-        print(f'Train bwd Loss: {current_epoch_metrics["train_bwd_loss"]}')
-        print('')
-        print(f'Test fwd Loss: {current_epoch_metrics["test_fwd_loss"]}')
-        print(f'Test bwd Loss: {current_epoch_metrics["test_bwd_loss"]}')
-
-        if self.baseline is not None:
-            print(f'Baseline Test fwd Loss: {baseline_fwd_loss}')
-            print(f'Baseline Test bwd Loss: {baseline_bwd_loss}')
-
-        # Convert batch metrics to DataFrame at the end of an epoch
-        batch_df = pd.DataFrame(self.batch_metrics)
-        self.batch_metrics.clear()  # Clear the list after logging
-        # Save to CSV or append to a file
-        batch_df.to_csv(f'{self.model_name}_batch_metrics_epoch.csv', index=False, mode='a', header=not self.current_epoch)
-
-        # Convert epoch metrics to DataFrame and save
-        epoch_df = pd.DataFrame(self.epoch_metrics)
-        self.epoch_metrics.clear()  # Clear the list after logging
-        epoch_df.to_csv(f'{self.model_name}_epoch_metrics.csv', index=False, mode='a', header=not self.current_epoch)
-
-
-# =========================================================================================
-class Embedding_Trainer(BaseTrainer):
-
-    def __init__(self, model, train_dl, test_dl, runconfig: RunConfig, **kwargs):
-        super().__init__(model, train_dl, test_dl, **kwargs)
-
-        self.freeze_embedding = self.get_param('freeze', True, **kwargs)
-
-    #==================================Training Function=======================
-    def train(self):
-
-        try:
-            for epoch in range(0, self.num_epochs + 1):
-                self.current_epoch += 1
-                print(f'----------Training epoch {self.current_epoch}--------')
-                
-                (train_loss_identity_epoch, test_loss_identity_epoch,
-                baseline_identity_loss) = self.train_epoch_embedding()
-
-                baseline_ratio = 0
-                if self.baseline is not None:
-                    baseline_ratio = (baseline_identity_loss-test_loss_identity_epoch)/baseline_identity_loss
-
-                if self.wandb_log:
-                    wandb.log({'train_loss_identity_epoch': train_loss_identity_epoch,
-                              'test_loss_identity_epoch': test_loss_identity_epoch,
-                               'baseline_identity_loss': baseline_identity_loss,
-                               'baseline_ratio': baseline_ratio
-                              })
-                if self.early_stop:    
-                    self.early_stopping(self.current_epoch, test_loss_identity_epoch, self.model)
-                
-                    if self.early_stopping.early_stop:
-                        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Early stopping triggered!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                        print(f"Best Score: {self.early_stopping.best_score} at epoch {self.early_stopping.best_epoch}")
-                        self.model.embedding.load_state_dict(torch.load(self.early_stopping.model_path,  map_location=torch.device(self.device)))
-                        for param in self.model.embedding.parameters():
-                            param.requires_grad = False
-                        print(f"!!Best Model Embedding Params Loaded and Frozen!!")
-                        break
-        except KeyboardInterrupt:
-            print("Training interrupted. Saving model...")
-            torch.save(self.model.embedding.state_dict(), f"interrupted_{self.model_name}_embedding_parameters.pth")
-
-        if self.freeze_embedding:
-            for param in self.model.embedding.parameters():
-                param.requires_grad = False
-                
-        if self.wandb_log:
-            run_id = wandb.run.id
-            self.model_path = f'{self.model_name}_embedding_parameters_run_{run_id}.pth'
-        else:
-            self.model_path = f'{self.model_name}_embedding_parameters.pth'
-            
-        torch.save(self.model.embedding.state_dict(), self.model_path)
-    #==================================Training Function=======================
-
-
-    def train_epoch_embedding(self):
-        #-------------------------------------------------------------------------------------------------
-
-        train_loss_identity_epoch = torch.tensor(0.0, device=self.device)
-        
-        #-------------------------------------------------------------------------------------------------
-        self.model.train()
-
-        for step in range(self.max_Kstep+1):
-            
-            for data_list in self.train_dl:
-                self.current_batch += 1
-                
-                #Prepare Batch Data and Loss Tensors:
-                #-------------------------------------------------------------------------------------------------
-    
-                loss_identity_batch = torch.tensor(0.0, device=self.device)
-    
-                #-------------------------------------------------------------------------------------------------
-                input_identity = data_list[step].to(self.device)
-                target_identity = data_list[step].to(self.device)
-                #------------------------------------------------------------------------------------------------- 
-    
-                loss_identity_step = self.compute_identity_loss(input_identity, None)
-                loss_identity_batch += loss_identity_step
-    
-                # ===================Backward propagation==========================
-                self.optimize_model(loss_identity_batch)
-    
-                train_loss_identity_epoch += loss_identity_batch
-                
-                # Logging and printing batch info
-                self.log_batch_info(loss_identity_batch)
-        
-                self.end_batch()
-
-            
-        # Learning rate decay
-        self.optimizer = self.lr_scheduler()
-        
-        train_loss_identity_epoch /= len(self.train_dl)
-        
-
-        model_test_metrics, baseline_test_metrics = self.evaluator.metrics_embedding()
-        test_loss_identity_epoch = model_test_metrics["identity_loss"]
-        
-        baseline_identity_loss = 0
-        if self.baseline is not None:
-            baseline_identity_loss = baseline_test_metrics["identity_loss"]
-            
-        # Log and plot epoch losses
-        self.log_epoch_losses(train_loss_identity_epoch, test_loss_identity_epoch)
-        
-        self.end_epoch(baseline_identity_loss)
-
-        return (train_loss_identity_epoch, test_loss_identity_epoch, baseline_identity_loss)
-                
-    def log_batch_info(self, loss_identity_batch):
-        
-        self.batch_metrics.append({
-            'epoch': self.current_epoch,
-            'batch': self.current_batch,
-            'train_identity_loss': loss_identity_batch.detach()
-        })
-
-    def log_epoch_losses(self, train_loss_identity_epoch, test_loss_identity_epoch):
-        
-        self.epoch_metrics.append({
-            'epoch': self.current_epoch,
-            'train_loss_identity_epoch': train_loss_identity_epoch.detach(),
-            'test_loss_identity_epoch': test_loss_identity_epoch.detach(),
-        })
-
-    def end_batch(self):
-        if self.batch_verbose:
-            current_batch_metrics = self.batch_metrics[-1]
-            print(f'----------Training Epoch {self.current_epoch} --------')
-            print(f'Batch Nr. {self.current_batch}')
-            print(f'Train Identity Loss: {current_batch_metrics["train_identity_loss"]}')
-            
-
-    def end_epoch(self, baseline_identity_loss):
-
-        current_epoch_metrics = self.epoch_metrics[-1]
-        print(f'==============================Finished Training Epoch {self.current_epoch}==================================')
-        print(f'Train Identity Loss: {current_epoch_metrics["train_loss_identity_epoch"]}')
-        print(f'Test Identity Loss: {current_epoch_metrics["test_loss_identity_epoch"]}')
-
-        if self.baseline is not None:
-            print(f'Baseline Test bwd Loss: {baseline_identity_loss}')
-
-        # Convert batch metrics to DataFrame at the end of an epoch
-        batch_df = pd.DataFrame(self.batch_metrics)
-        self.batch_metrics.clear()  # Clear the list after logging
-        # Save to CSV or append to a file
-        batch_df.to_csv(f'{self.model_name}_embedding_batch_metrics_epoch.csv', index=False, mode='a', header=not self.current_epoch)
-
-        # Convert epoch metrics to DataFrame and save
-        epoch_df = pd.DataFrame(self.epoch_metrics)
-        self.epoch_metrics.clear()  # Clear the list after logging
-        epoch_df.to_csv(f'{self.model_name}_embedding_epoch_metrics.csv', index=False, mode='a', header=not self.current_epoch)
-
-class EarlyStopping2scores:
-    def __init__(self, model_name, patience=5, verbose=False, delta=0, wandb_log=False, start_Kstep=0, max_Kstep=1):
-        self.patience = patience
-        self.verbose = verbose
-        self.delta= delta
-        self.counter = 0
-        self.best_score1 = None
-        self.best_score2 = None
-        self.best_epoch = 0
-        self.early_stop = False
-        self.wandb_log = wandb_log
-        self.start_Kstep = start_Kstep
-        self.max_Kstep = max_Kstep
-        self.model_name = model_name
-           
-    def __call__(self, score1, score2, current_epoch, model):
-        if self.best_score1 is None:
-            self.best_score1 = score1
-            self.best_score2 = score2
-            self.best_epoch = current_epoch
-            self.save_model(model)
-            return
-        if (score1 >= self.best_score1 + self.delta) and (score2 >= self.best_score2 + self.delta):
-            self.counter += 1
-            if self.verbose:
-                print(f'EarlyStopping counter: {self.counter} out of {self.patience}.')
-            if self.counter >= self.patience:
-                self.early_stop = True
-        else:
-            if score1 < self.best_score1 + self.delta:
-                self.best_score1 = score1
-            if score2 < self.best_score2 + self.delta:
-                self.best_score2 = score2
-            self.counter = 0
-            self.best_epoch = current_epoch
-            self.best_score1 = score1
-            self.best_score2 = score2
-            self.save_model(model)
-            if self.verbose:
-                print(f'Validation improved - Test fwd loss: {score1:.6f}, Test bwd loss: {score2:.6f}')
-
-    def save_model(self, model):
-        
-
-        if self.wandb_log:
-            run_id = wandb.run.id
-            self.model_path = f'best_{self.model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters_run_{run_id}.pth'
-        else:
-            self.model_path = f'best_{self.model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters.pth'
- 
-        torch.save(model.state_dict(), self.model_path)
-        if self.verbose:
-            print(f'Model saved to {self.model_path}')
-
-
-
-class EarlyStopping:
-    def __init__(self, model_name, patience=5, verbose=False, wandb_log=False):
-        self.patience = patience
-        self.verbose = verbose
-        self.counter = 0
-        self.best_score = None
-        self.best_epoch = 0
-        self.early_stop = False
-        self.wandb_log = wandb_log
-        self.model_name = model_name 
-    def __call__(self, current_epoch, validation_loss, model):
-        if self.best_score is None:
-            self.best_epoch = current_epoch
-            self.best_score = validation_loss
-            self.save_model(model)
-        elif validation_loss < self.best_score:
-            self.best_epoch = current_epoch
-            self.best_score = validation_loss
-            self.save_model(model)
-            self.counter = 0
-        else:
-            self.counter += 1
-            if self.counter >= self.patience:
-                self.early_stop = True
-
-    def save_model(self, model):
-        
-        if self.wandb_log:
-            run_id = wandb.run.id
-            self.model_path = f'best_{self.model_name}_embedding_parameters_run_{run_id}.pth'
-        else:
-            self.model_path = f'best_{self.model_name}_embedding_parameters.pth'
-            
-        torch.save(model.embedding.state_dict(), self.model_path)
-        if self.verbose:
-            print(f'Model saved to {self.model_path}')
 
 
 # =========================================================================================
@@ -1245,13 +660,13 @@ class Koop_Full_Trainer(BaseTrainer):
                         break
         except KeyboardInterrupt:
             print("Training interrupted. Saving model...")
-            torch.save(self.model.state_dict(), f"interrupted_{self.model_name}_parameters.pth")
+            torch.save(self.model.state_dict(), f"interrupted_{self.model_name}_shift{self.start_Kstep}-{self.max_Kstep}_parameters.pth")
 
         if self.wandb_log:
             run_id = wandb.run.id
-            self.model_path = f'{self.model_name}_parameters_run_{run_id}.pth'
+            self.model_path = f'{self.model_name}_shift{self.start_Kstep}-{self.max_Kstep}_parameters_run_{run_id}.pth'
         else:
-            self.model_path = f'{self.model_name}_parameters.pth'
+            self.model_path = f'{self.model_name}_shift{self.start_Kstep}-{self.max_Kstep}_parameters.pth'
             
         torch.save(self.model.state_dict(), self.model_path)
     #==================================Training Function=======================
@@ -1520,6 +935,602 @@ class Koop_Full_Trainer(BaseTrainer):
         epoch_df = pd.DataFrame(self.epoch_metrics)
         self.epoch_metrics.clear()  # Clear the list after logging
         epoch_df.to_csv(f'{self.model_name}_epoch_metrics.csv', index=False, mode='a', header=not self.current_epoch)
+
+
+
+# =========================================================================================
+
+class Koop_Step_Trainer(BaseTrainer):
+
+
+    def __init__(self, model, train_dl, test_dl, **kwargs):
+        super().__init__(model, train_dl, test_dl, **kwargs)
+
+    #==================================Training Function=======================
+    
+    def train(self):
+
+        try:
+            for epoch in range(0, self.num_epochs + 1):
+                self.current_epoch += 1
+                print(f'----------Training epoch {self.current_epoch}--------')
+                
+                (train_fwd_loss_epoch, test_fwd_loss_epoch, 
+                train_bwd_loss_epoch, test_bwd_loss_epoch,
+                baseline_fwd_loss, baseline_bwd_loss) = self.train_epoch()
+                
+                
+                combined_test_loss = (test_fwd_loss_epoch + test_bwd_loss_epoch) / 2
+
+                baseline_ratio = 0
+                if self.baseline is not None:
+                    combined_baseline_loss = (baseline_fwd_loss + baseline_bwd_loss) / 2
+                    baseline_ratio = (combined_baseline_loss-combined_test_loss)/combined_baseline_loss
+
+                self.end_epoch(baseline_fwd_loss, baseline_bwd_loss, baseline_ratio)
+
+
+                if self.wandb_log:
+                    wandb.log({'train_fwd_loss_epoch': train_fwd_loss_epoch,
+                              'test_fwd_loss_epoch': test_fwd_loss_epoch,
+                               'train_bwd_loss_epoch': train_bwd_loss_epoch,
+                               'test_bwd_loss_epoch': test_bwd_loss_epoch,
+                               'combined_test_loss': combined_test_loss,
+                               'baseline_fwd_loss': baseline_fwd_loss,
+                               'baseline_bwd_loss': baseline_bwd_loss,
+                               'baseline_ratio': baseline_ratio
+                               
+                              })
+                if self.early_stop:
+                    self.early_stopping(test_fwd_loss_epoch, test_bwd_loss_epoch, self.current_epoch, self.model)
+                    if self.early_stopping.early_stop:
+                        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Early stopping triggered!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                        print(f'Best Test fwd loss: {self.early_stopping.best_score1:.6f}, Best Test bwd loss: {self.early_stopping.best_score2:.6f} at Best Epoch {self.early_stopping.best_epoch}.')
+                        self.model.load_state_dict(torch.load(self.early_stopping.model_path,  map_location=torch.device(self.device)))
+                        print(f'Best Model Parameters of Shift {self.start_Kstep+1} Loaded.')
+                        for param in self.model.embedding.parameters():
+                            
+                            param.requires_grad = False
+                        break
+        except KeyboardInterrupt:
+            print("Training interrupted. Saving model...")
+            torch.save(self.model.state_dict(), f"interrupted_{self.model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters.pth")
+
+        if self.wandb_log:
+            run_id = wandb.run.id
+            self.model_path = f'{self.model_name}_shift{self.start_Kstep}-{self.max_Kstep}_parameters_run_{run_id}.pth'
+        else:
+            self.model_path = f'{self.model_name}_shift{self.start_Kstep}-{self.max_Kstep}_parameters.pth'
+            
+        torch.save(self.model.state_dict(), self.model_path)
+    #==================================Training Function=======================
+
+    def train_epoch(self):
+        #-------------------------------------------------------------------------------------------------
+    
+        train_fwd_loss_epoch = torch.tensor(0.0, device=self.device)
+        train_bwd_loss_epoch = torch.tensor(0.0, device=self.device)
+        test_fwd_loss_epoch = torch.tensor(0.0, device=self.device)
+        test_bwd_loss_epoch = torch.tensor(0.0, device=self.device)
+
+        train_loss_latent_identity_epoch = torch.tensor(0.0, device=self.device)
+        train_loss_identity_epoch = torch.tensor(0.0, device=self.device)
+        train_loss_inv_cons_epoch = torch.tensor(0.0, device=self.device)
+        train_loss_temp_cons_epoch = torch.tensor(0.0, device=self.device)
+                
+        
+        #-------------------------------------------------------------------------------------------------
+        self.model.train()
+
+        for step in range(self.start_Kstep+1, self.max_Kstep+1):
+            self.current_step = step
+
+            loss_fwd_step = torch.tensor(0.0, device=self.device)
+            loss_bwd_step = torch.tensor(0.0, device=self.device)
+            
+            loss_latent_identity_step = torch.tensor(0.0, device=self.device)
+            loss_identity_step = torch.tensor(0.0, device=self.device)
+            loss_inv_cons_step = torch.tensor(0.0, device=self.device)
+            loss_temp_cons_step = torch.tensor(0.0, device=self.device)
+
+            loss_total_step = torch.tensor(0.0, device=self.device)
+        
+            
+            for data_list in self.train_dl:
+                self.current_batch += 1
+                
+                #Prepare Batch Data and Loss Tensors:
+                #-------------------------------------------------------------------------------------------------
+        
+                loss_fwd_batch = torch.tensor(0.0, device=self.device)
+                loss_bwd_batch = torch.tensor(0.0, device=self.device)
+                
+                loss_latent_identity_batch = torch.tensor(0.0, device=self.device)
+                loss_identity_batch = torch.tensor(0.0, device=self.device)
+                loss_inv_cons_batch = torch.tensor(0.0, device=self.device)
+                loss_temp_cons_batch = torch.tensor(0.0, device=self.device)
+
+                loss_total_batch = torch.tensor(0.0, device=self.device)
+                #-------------------------------------------------------------------------------------------------
+                input_fwd = data_list[0].to(self.device)
+                input_bwd = data_list[-1].to(self.device)
+                
+                reverse_data_list = torch.flip(data_list, dims=[0])
+                #-------------------------------------------------------------------------------------------------
+                if self.current_step > 1 and self.loss_weights[5] > 0:
+                    self.temporal_cons_fwd_storage = torch.zeros(self.max_Kstep, *input_fwd.shape).to(self.device) 
+                    self.temporal_cons_bwd_storage = torch.zeros(self.max_Kstep, *input_bwd.shape).to(self.device) 
+        
+                # Store Prediction tensors for temporal consistency computation   
+                #-------------------------------------------------------------------------------------------------
+                # Iteratively predict shifted timepoints for input timepoint(s)
+                # Backpropagation happens for each timeshift (after batch size predictions)
+                target_fwd = data_list[step].to(self.device)
+                target_bwd = reverse_data_list[step].to(self.device)
+                #------------------------------------------------------------------------------------------------- 
+
+                loss_fwd_batch = torch.tensor(0.0, device=self.device) 
+                if self.loss_weights[0] > 0:
+                    (
+                        loss_fwd_batch, 
+                        loss_latent_fwd_identity_batch
+                    ) = self.compute_forward_loss(input_fwd, target_fwd, fwd=step)
+                    
+                loss_bwd_batch = torch.tensor(0.0, device=self.device)             
+                if self.loss_weights[1] > 0:
+                    (
+                        loss_bwd_batch, 
+                        loss_latent_bwd_identity_batch
+                    ) = self.compute_backward_loss(input_bwd, target_bwd, bwd=step)
+
+                loss_latent_identity_batch = torch.tensor(0.0, device=self.device)
+                if self.loss_weights[2] > 0:
+                    loss_latent_identity_batch = loss_latent_fwd_identity_batch
+                    loss_latent_identity_batch += loss_latent_bwd_identity_batch
+                    loss_latent_identity_batch /= 2
+
+                loss_identity_batch = torch.tensor(0.0, device=self.device)
+                if self.loss_weights[3] > 0:
+                    loss_identity_batch = self.compute_identity_loss(input_fwd, target_fwd)
+                    loss_identity_batch += self.compute_identity_loss(input_bwd, target_bwd)
+                    loss_identity_batch /= 2
+
+                loss_inv_cons_batch = torch.tensor(0.0, device=self.device)
+                if self.loss_weights[4] > 0:
+                    loss_inv_cons_batch = self.compute_inverse_consistency(input_fwd, target_fwd)
+                    loss_inv_cons_batch += self.compute_inverse_consistency(input_bwd, target_bwd)
+                    loss_inv_cons_batch /= 2
+    
+                loss_temp_cons_batch = torch.tensor(0.0, device=self.device)
+                if (self.loss_weights[5] > 0 and self.current_epoch >= self.epoch_temp_cons and self.current_step > 1):
+                    loss_temp_cons_batch = self.compute_temporal_consistency(self.temporal_cons_fwd_storage)
+                    loss_temp_cons_batch += self.compute_temporal_consistency(self.temporal_cons_bwd_storage, bwd=True)
+                    loss_temp_cons_batch /= 2
+    
+                # Calculate total loss
+                loss_total_batch = self.calculate_total_loss(loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch,
+                                                            loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch)
+    
+                # ===================Backward propagation==========================
+                self.optimize_model(loss_total_batch)
+    
+                loss_fwd_step += loss_fwd_batch.detach()
+                loss_bwd_step += loss_bwd_batch.detach()
+                loss_latent_identity_step += loss_latent_identity_batch.detach()
+                loss_identity_step += loss_identity_batch.detach()
+                loss_inv_cons_step += loss_inv_cons_batch.detach()
+                loss_temp_cons_step += loss_temp_cons_batch.detach()
+
+                loss_total_step += loss_total_batch
+
+                train_fwd_loss_epoch += loss_fwd_batch.detach() 
+                train_bwd_loss_epoch += loss_bwd_batch.detach()
+    
+                train_loss_latent_identity_epoch += loss_latent_identity_batch.detach()
+                train_loss_identity_epoch += loss_identity_batch.detach()
+                train_loss_inv_cons_epoch += loss_inv_cons_batch.detach()
+                train_loss_temp_cons_epoch += loss_temp_cons_batch.detach()
+                                    
+                
+                # Logging and printing batch info
+                self.log_batch_info(loss_total_batch, loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch, 
+                   loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch)
+        
+                self.end_batch()
+
+            self.log_step_info(loss_total_step, loss_fwd_step, loss_bwd_step, loss_latent_identity_step, loss_identity_step, loss_inv_cons_step, loss_temp_cons_step)
+            
+            self.end_step()
+            
+        # Learning rate decay
+        self.optimizer = self.lr_scheduler()
+        
+        train_fwd_loss_epoch /= len(self.train_dl)
+        train_bwd_loss_epoch /= len(self.train_dl)
+        _, test_metrics, baseline_test_metrics = self.Evaluator()
+        test_fwd_loss_epoch = test_metrics["forward_loss"]
+        test_bwd_loss_epoch = test_metrics["backward_loss"]
+        
+        baseline_fwd_loss = 0
+        baseline_bwd_loss = 0
+        if self.baseline is not None:
+            baseline_fwd_loss = baseline_test_metrics["forward_loss"]
+            baseline_bwd_loss = baseline_test_metrics["backward_loss"]
+            
+        # Log and plot epoch losses
+        self.log_epoch_losses(train_fwd_loss_epoch, test_fwd_loss_epoch, 
+                              train_bwd_loss_epoch, test_bwd_loss_epoch,
+                             train_loss_latent_identity_epoch, train_loss_identity_epoch,
+                             train_loss_inv_cons_epoch, train_loss_temp_cons_epoch)
+        
+
+        return (train_fwd_loss_epoch, test_fwd_loss_epoch, 
+                train_bwd_loss_epoch, test_bwd_loss_epoch,
+                baseline_fwd_loss, baseline_bwd_loss)
+
+    def log_batch_info(self, loss_total_batch, loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch, 
+                       loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch):
+
+        self.batch_metrics.append({
+            'epoch': self.current_epoch,
+            'step': self.current_step,
+            'batch': self.current_batch,
+            'train_total_loss': loss_total_batch.detach(),
+            'train_fwd_loss': loss_fwd_batch.detach(),
+            'train_bwd_loss': loss_bwd_batch.detach(),
+            'train_latent_loss': loss_latent_identity_batch.detach(),
+            'train_identity_loss': loss_identity_batch.detach(),
+            'train_inv_cons_loss': loss_inv_cons_batch.detach(),
+            'train_temp_cons_loss': loss_temp_cons_batch.detach(),
+        })
+
+    def log_step_info(self, loss_total_step, loss_fwd_step, loss_bwd_step, loss_latent_identity_step, 
+                       loss_identity_step, loss_inv_cons_step, loss_temp_cons_step):
+        
+        self.step_metrics.append({
+            'epoch': self.current_epoch,
+            'step': self.current_step,
+            'train_total_loss': loss_total_step.detach(),
+            'train_fwd_loss': loss_fwd_step.detach(),
+            'train_bwd_loss': loss_bwd_step.detach(),
+            'train_latent_loss': loss_latent_identity_step.detach(),
+            'train_identity_loss': loss_identity_step.detach(),
+            'train_inv_cons_loss': loss_inv_cons_step.detach(),
+            'train_temp_cons_loss': loss_temp_cons_step.detach(),
+        })
+
+    def log_epoch_losses(self, train_fwd_loss_epoch, test_fwd_loss_epoch, 
+                         train_bwd_loss_epoch, test_bwd_loss_epoch,
+                         train_loss_latent_identity_epoch, train_loss_identity_epoch,
+                         train_loss_inv_cons_epoch, train_loss_temp_cons_epoch):
+        
+        self.epoch_metrics.append({
+            'epoch': self.current_epoch,
+            'train_fwd_loss': train_fwd_loss_epoch.detach(),
+            'test_fwd_loss': test_fwd_loss_epoch.detach(),
+            'train_bwd_loss': train_bwd_loss_epoch.detach(),
+            'test_bwd_loss': test_bwd_loss_epoch.detach(),
+            'train_loss_latent_identity_epoch': train_loss_latent_identity_epoch.detach(),
+            'train_loss_identity_epoch': train_loss_identity_epoch.detach(),
+            'train_loss_inv_cons_epoch': train_loss_inv_cons_epoch.detach(),
+            'train_loss_temp_cons_epoch': train_loss_temp_cons_epoch.detach()
+        })
+
+
+    def end_batch(self):
+        
+        if self.batch_verbose:
+        
+            current_batch_metrics = self.batch_metrics[-1]
+            print(f'----------Training Epoch {self.current_epoch} --------')
+            print(f'----------Training Step {self.current_step}--------')
+            print(f'Batch Nr. {self.current_batch}')
+            print(f'Total Loss: {current_batch_metrics["train_total_loss"]}')
+            print('')
+            print(f'Forward Loss: {current_batch_metrics["train_fwd_loss"]}')
+            print(f'Backward Loss: {current_batch_metrics["train_bwd_loss"]}')
+            print(f'Latent Loss: {current_batch_metrics["train_latent_loss"]}')
+            print(f'Identity Loss: {current_batch_metrics["train_identity_loss"]}')
+            print(f'Inverse Consistency Loss: {current_batch_metrics["train_inv_cons_loss"]}')
+            print(f'Temporal Consistency Loss: {current_batch_metrics["train_temp_cons_loss"]}')
+
+    def end_step(self):
+        
+        current_step_metrics = self.step_metrics[-1]
+        print(f'----------Training Epoch {self.current_epoch}--------')
+        print(f'============================Finished Training Step {self.current_step}=======================')
+        print(f'Total Loss: {current_step_metrics["train_total_loss"]}')
+        print('')
+        print(f'Forward Loss: {current_step_metrics["train_fwd_loss"]}')
+        print(f'Backward Loss: {current_step_metrics["train_bwd_loss"]}')
+        print(f'Latent Loss: {current_step_metrics["train_latent_loss"]}')
+        print(f'Identity Loss: {current_step_metrics["train_identity_loss"]}')
+        print(f'Inverse Consistency Loss: {current_step_metrics["train_inv_cons_loss"]}')
+        print(f'Temporal Consistency Loss: {current_step_metrics["train_temp_cons_loss"]}')
+
+    def end_epoch(self, baseline_fwd_loss, baseline_bwd_loss, baseline_ratio):
+
+        current_epoch_metrics = self.epoch_metrics[-1]
+        print(f'============================Finished Training Epoch {self.current_epoch}=============================')
+        print(f'Train fwd Loss: {current_epoch_metrics["train_fwd_loss"]}')
+        print(f'Train bwd Loss: {current_epoch_metrics["train_bwd_loss"]}')
+        print('')
+        print(f'Test fwd Loss: {current_epoch_metrics["test_fwd_loss"]}')
+        print(f'Test bwd Loss: {current_epoch_metrics["test_bwd_loss"]}')
+
+        if self.baseline is not None:
+            print(f'Baseline Test fwd Loss: {baseline_fwd_loss}')
+            print(f'Baseline Test bwd Loss: {baseline_bwd_loss}')
+            print(f'Baseline Ratio: {baseline_ratio}')
+
+
+        # Convert batch metrics to DataFrame at the end of an epoch
+        batch_df = pd.DataFrame(self.batch_metrics)
+        self.batch_metrics.clear()  # Clear the list after logging
+        # Save to CSV or append to a file
+        batch_df.to_csv(f'{self.model_name}_batch_metrics_epoch.csv', index=False, mode='a', header=not self.current_epoch)
+
+        # Convert epoch metrics to DataFrame and save
+        epoch_df = pd.DataFrame(self.epoch_metrics)
+        self.epoch_metrics.clear()  # Clear the list after logging
+        epoch_df.to_csv(f'{self.model_name}_epoch_metrics.csv', index=False, mode='a', header=not self.current_epoch)
+
+
+# =========================================================================================
+class Embedding_Trainer(BaseTrainer):
+
+    def __init__(self, model, train_dl, test_dl, runconfig: RunConfig, **kwargs):
+        super().__init__(model, train_dl, test_dl, **kwargs)
+
+        self.freeze_embedding = self.get_param('freeze', True, **kwargs)
+
+    #==================================Training Function=======================
+    def train(self):
+
+        try:
+            for epoch in range(0, self.num_epochs + 1):
+                self.current_epoch += 1
+                print(f'----------Training epoch {self.current_epoch}--------')
+                
+                (train_loss_identity_epoch, test_loss_identity_epoch,
+                baseline_identity_loss) = self.train_epoch_embedding()
+
+                baseline_ratio = 0
+                if self.baseline is not None:
+                    baseline_ratio = (baseline_identity_loss-test_loss_identity_epoch)/baseline_identity_loss
+
+                if self.wandb_log:
+                    wandb.log({'train_loss_identity_epoch': train_loss_identity_epoch,
+                              'test_loss_identity_epoch': test_loss_identity_epoch,
+                               'baseline_identity_loss': baseline_identity_loss,
+                               'baseline_ratio': baseline_ratio
+                              })
+                if self.early_stop:    
+                    self.early_stopping(self.current_epoch, test_loss_identity_epoch, self.model)
+                
+                    if self.early_stopping.early_stop:
+                        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Early stopping triggered!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                        print(f"Best Score: {self.early_stopping.best_score} at epoch {self.early_stopping.best_epoch}")
+                        self.model.embedding.load_state_dict(torch.load(self.early_stopping.model_path,  map_location=torch.device(self.device)))
+                        for param in self.model.embedding.parameters():
+                            param.requires_grad = False
+                        print(f"!!Best Model Embedding Params Loaded and Frozen!!")
+                        break
+        except KeyboardInterrupt:
+            print("Training interrupted. Saving model...")
+            torch.save(self.model.embedding.state_dict(), f"interrupted_{self.model_name}_embedding_parameters.pth")
+
+        if self.freeze_embedding:
+            for param in self.model.embedding.parameters():
+                param.requires_grad = False
+                
+        if self.wandb_log:
+            run_id = wandb.run.id
+            self.model_path = f'{self.model_name}_embedding_parameters_run_{run_id}.pth'
+        else:
+            self.model_path = f'{self.model_name}_embedding_parameters.pth'
+            
+        torch.save(self.model.embedding.state_dict(), self.model_path)
+    #==================================Training Function=======================
+
+
+    def train_epoch_embedding(self):
+        #-------------------------------------------------------------------------------------------------
+
+        train_loss_identity_epoch = torch.tensor(0.0, device=self.device)
+        
+        #-------------------------------------------------------------------------------------------------
+        self.model.train()
+
+        for step in range(self.max_Kstep+1):
+            
+            for data_list in self.train_dl:
+                self.current_batch += 1
+                
+                #Prepare Batch Data and Loss Tensors:
+                #-------------------------------------------------------------------------------------------------
+    
+                loss_identity_batch = torch.tensor(0.0, device=self.device)
+    
+                #-------------------------------------------------------------------------------------------------
+                input_identity = data_list[step].to(self.device)
+                target_identity = data_list[step].to(self.device)
+                #------------------------------------------------------------------------------------------------- 
+    
+                loss_identity_step = self.compute_identity_loss(input_identity, None)
+                loss_identity_batch += loss_identity_step
+    
+                # ===================Backward propagation==========================
+                self.optimize_model(loss_identity_batch)
+    
+                train_loss_identity_epoch += loss_identity_batch
+                
+                # Logging and printing batch info
+                self.log_batch_info(loss_identity_batch)
+        
+                self.end_batch()
+
+            
+        # Learning rate decay
+        self.optimizer = self.lr_scheduler()
+        
+        train_loss_identity_epoch /= len(self.train_dl)
+        
+
+        model_test_metrics, baseline_test_metrics = self.evaluator.metrics_embedding()
+        test_loss_identity_epoch = model_test_metrics["identity_loss"]
+        
+        baseline_identity_loss = 0
+        if self.baseline is not None:
+            baseline_identity_loss = baseline_test_metrics["identity_loss"]
+            
+        # Log and plot epoch losses
+        self.log_epoch_losses(train_loss_identity_epoch, test_loss_identity_epoch)
+        
+        self.end_epoch(baseline_identity_loss)
+
+        return (train_loss_identity_epoch, test_loss_identity_epoch, baseline_identity_loss)
+                
+    def log_batch_info(self, loss_identity_batch):
+        
+        self.batch_metrics.append({
+            'epoch': self.current_epoch,
+            'batch': self.current_batch,
+            'train_identity_loss': loss_identity_batch.detach()
+        })
+
+    def log_epoch_losses(self, train_loss_identity_epoch, test_loss_identity_epoch):
+        
+        self.epoch_metrics.append({
+            'epoch': self.current_epoch,
+            'train_loss_identity_epoch': train_loss_identity_epoch.detach(),
+            'test_loss_identity_epoch': test_loss_identity_epoch.detach(),
+        })
+
+    def end_batch(self):
+        if self.batch_verbose:
+            current_batch_metrics = self.batch_metrics[-1]
+            print(f'----------Training Epoch {self.current_epoch} --------')
+            print(f'Batch Nr. {self.current_batch}')
+            print(f'Train Identity Loss: {current_batch_metrics["train_identity_loss"]}')
+            
+
+    def end_epoch(self, baseline_identity_loss):
+
+        current_epoch_metrics = self.epoch_metrics[-1]
+        print(f'==============================Finished Training Epoch {self.current_epoch}==================================')
+        print(f'Train Identity Loss: {current_epoch_metrics["train_loss_identity_epoch"]}')
+        print(f'Test Identity Loss: {current_epoch_metrics["test_loss_identity_epoch"]}')
+
+        if self.baseline is not None:
+            print(f'Baseline Test bwd Loss: {baseline_identity_loss}')
+
+        # Convert batch metrics to DataFrame at the end of an epoch
+        batch_df = pd.DataFrame(self.batch_metrics)
+        self.batch_metrics.clear()  # Clear the list after logging
+        # Save to CSV or append to a file
+        batch_df.to_csv(f'{self.model_name}_embedding_batch_metrics_epoch.csv', index=False, mode='a', header=not self.current_epoch)
+
+        # Convert epoch metrics to DataFrame and save
+        epoch_df = pd.DataFrame(self.epoch_metrics)
+        self.epoch_metrics.clear()  # Clear the list after logging
+        epoch_df.to_csv(f'{self.model_name}_embedding_epoch_metrics.csv', index=False, mode='a', header=not self.current_epoch)
+
+
+
+# ======================== EARLY STOPPING FUNCTIONS ======================================
+class EarlyStopping2scores:
+    def __init__(self, model_name, patience=5, verbose=False, delta=0, wandb_log=False, start_Kstep=0, max_Kstep=1):
+        self.patience = patience
+        self.verbose = verbose
+        self.delta= delta
+        self.counter = 0
+        self.best_score1 = None
+        self.best_score2 = None
+        self.best_epoch = 0
+        self.early_stop = False
+        self.wandb_log = wandb_log
+        self.start_Kstep = start_Kstep
+        self.max_Kstep = max_Kstep
+        self.model_name = model_name
+           
+    def __call__(self, score1, score2, current_epoch, model):
+        if self.best_score1 is None:
+            self.best_score1 = score1
+            self.best_score2 = score2
+            self.best_epoch = current_epoch
+            self.save_model(model)
+            return
+        if (score1 >= self.best_score1 + self.delta) and (score2 >= self.best_score2 + self.delta):
+            self.counter += 1
+            if self.verbose:
+                print(f'EarlyStopping counter: {self.counter} out of {self.patience}.')
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            if score1 < self.best_score1 + self.delta:
+                self.best_score1 = score1
+            if score2 < self.best_score2 + self.delta:
+                self.best_score2 = score2
+            self.counter = 0
+            self.best_epoch = current_epoch
+            self.best_score1 = score1
+            self.best_score2 = score2
+            self.save_model(model)
+            if self.verbose:
+                print(f'Validation improved - Test fwd loss: {score1:.6f}, Test bwd loss: {score2:.6f}')
+
+    def save_model(self, model):
+        
+
+        if self.wandb_log:
+            run_id = wandb.run.id
+            self.model_path = f'best_{self.model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters_run_{run_id}.pth'
+        else:
+            self.model_path = f'best_{self.model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters.pth'
+ 
+        torch.save(model.state_dict(), self.model_path)
+        if self.verbose:
+            print(f'Model saved to {self.model_path}')
+
+
+
+class EarlyStopping:
+    def __init__(self, model_name, patience=5, verbose=False, wandb_log=False):
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.best_epoch = 0
+        self.early_stop = False
+        self.wandb_log = wandb_log
+        self.model_name = model_name 
+    def __call__(self, current_epoch, validation_loss, model):
+        if self.best_score is None:
+            self.best_epoch = current_epoch
+            self.best_score = validation_loss
+            self.save_model(model)
+        elif validation_loss < self.best_score:
+            self.best_epoch = current_epoch
+            self.best_score = validation_loss
+            self.save_model(model)
+            self.counter = 0
+        else:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+
+    def save_model(self, model):
+        
+        if self.wandb_log:
+            run_id = wandb.run.id
+            self.model_path = f'best_{self.model_name}_embedding_parameters_run_{run_id}.pth'
+        else:
+            self.model_path = f'best_{self.model_name}_embedding_parameters.pth'
+            
+        torch.save(model.embedding.state_dict(), self.model_path)
+        if self.verbose:
+            print(f'Model saved to {self.model_path}')
 
 
 def update_batch_loss_plot(epoch, fwd_loss_batch_values, bwd_loss_batch_values, inv_cons_loss_batch_values, temp_cons_loss_batch_values, total_loss_batch_values):

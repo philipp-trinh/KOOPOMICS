@@ -20,6 +20,10 @@ from .test.test_utils import (
     NaiveMeanPredictor
 )
 
+from .test.interpret import (
+    KoopmanDynamics
+)
+
 from .model.build_nn_functions import _build_nn_layers_with_dropout, _build_nn_layers_with_dropout, get_activation_fn
 
 from .model.embeddingANN import FF_AE, Conv_AE

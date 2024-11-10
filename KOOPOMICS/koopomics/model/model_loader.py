@@ -3,10 +3,15 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.autograd import Variable
 import torch.nn.functional as F
+import numpy as np
+
 
 from koopomics.model.embeddingANN import DiffeomMap, FF_AE, Conv_AE, Conv_E_FF_D
 from koopomics.model.koopmanANN import LinearizingKoop, InvKoop, Koop
 from koopomics.training.train_utils import Koop_Step_Trainer,Koop_Full_Trainer, Embedding_Trainer
+
+import matplotlib.pyplot as plt
+
 
 class KoopmanModel(nn.Module):
   # x0 <-> g <-> g_lin <-> gnext_lin <-> gnext <-> x1
@@ -62,8 +67,16 @@ class KoopmanModel(nn.Module):
     
 
     def fit(self, train_dl, test_dl, **kwargs):
+
+        self.stepwise_train = kwargs.get('stepwise', False)
+
+        if self.stepwise_train:
+            trainer = Koop_Step_Trainer(self, train_dl, test_dl, **kwargs)
+            # Backpropagation after each shift one by one (fwd and bwd)
+        else:
+            trainer = Koop_Full_Trainer(self, train_dl, test_dl, **kwargs)
+            # Backpropagation after looping through every shift (fwd and bwd)
         
-        trainer = Koop_Full_Trainer(self, train_dl, test_dl, **kwargs)
         trainer.train()
         return
 
@@ -74,6 +87,10 @@ class KoopmanModel(nn.Module):
         return
 
     def modular_fit(self, train_dl, test_dl, embedding_param_path = None, model_param_path = None, **kwargs):
+
+
+        self.stepwise_train = kwargs.get('stepwise', False)
+
 
         In_Training = False
         
@@ -108,8 +125,15 @@ class KoopmanModel(nn.Module):
             print(f'========================KOOPMAN SHIFT {step} TRAINING===================')
             temp_start = step
             temp_max = step+1
- 
-            trainer = Trainer(self, train_dl, test_dl, start_Kstep=temp_start, max_Kstep=temp_max, **kwargs)
+
+
+            if self.stepwise_train:
+                trainer = Koop_Step_Trainer(self, train_dl, test_dl, start_Kstep=temp_start, max_Kstep=temp_max, **kwargs)
+                # Backpropagation after each shift one by one (fwd and bwd)
+            else:
+                trainer = Koop_Full_Trainer(self, train_dl, test_dl, start_Kstep=temp_start, max_Kstep=temp_max, **kwargs)
+                # Backpropagation after looping through every shift (fwd and bwd)
+        
             trainer.train()
             
             wandb_init=False
@@ -157,7 +181,7 @@ class KoopmanModel(nn.Module):
         else:
             return predict_bwd, predict_fwd
 
-    def forward(self, input_vector):
+    def forward(self, input_vector, bwd=0, fwd=0):
         
         e = self.embedding.encode(input_vector)
         if bwd > 0:
@@ -187,18 +211,80 @@ class KoopmanModel(nn.Module):
 
 
     
-    def kmatrix(self):
+    def kmatrix(self, detach=True):
         
         if self.operator.bwd == False:
+            fwdM = self.operator.fwdkoop
 
-            return self.operator.koop.kmatrix#.numpy()
+            return fwdM
+            
         elif self.operator.bwd:
-            if self.linkoop:
-                return self.operator.koop.bwdkoop, self.operator.koop.fwdkoop
-            elif self.invkoop:
-                return self.operator.bwdkoop, self.operator.fwdkoop
-        elif self.operator.koop.reg == 'nondelay':
-            return self.operator.bwdkoop, self.operator.fwdkoop
+            if self.operator_info['linkoop'] == True:
+                fwdM = self.operator.koop.fwdkoop
+                bwdM = self.operator.koop.bwdkoop
+                                
+            elif self.operator_info['invkoop'] == True:
+                fwdM = self.operator.fwdkoop
+                bwdM = self.operator.bwdkoop
+                
+            elif self.operator.koop.reg == 'nondelay':
+                fwdM = self.operator.nondelay_fwd.dynamics.weight.cpu().data.numpy()
+                bwdM = self.operator.nondelay_bwd.dynamics.weight.cpu().data.numpy()
+
+            if detach:
+                return  fwdM.detach(), bwdM.detach()
+            else:
+                return  fwdM, bwdM
+
+
+    def eigen(self):
+
+        if self.operator.bwd == False:
+            fwdM = self.kmatrix()
+            w, v = np.linalg.eig(fwdM)
+
+            return w, v
+            
+        elif self.operator.bwd:
+            fwdM, bwdM = self.kmatrix()
         
+            w_fwd, v_fwd = np.linalg.eig(fwdM.numpy())
+            w_bwd, v_bwd = np.linalg.eig(bwdM.numpy())
+
+            self.plot_eigen(w_fwd, title='Forward Matrix - Eigenvalues')
+            self.plot_eigen(w_bwd, title='Backward Matrix - Eigenvalues')
+
+            
+            return w_fwd, v_fwd, w_bwd, v_bwd
+        
+    def plot_eigen(self, w, title='Forward Matrix - Eigenvalues'):
+
+        fig = plt.figure(figsize=(6.1, 6.1), facecolor="white",  edgecolor='k', dpi=150)
+        plt.scatter(w.real, w.imag, c = '#dd1c77', marker = 'o', s=15*6, zorder=2, label='Eigenvalues')
+        
+        maxeig = 1.4
+        plt.xlim([-maxeig, maxeig])
+        plt.ylim([-maxeig, maxeig])
+        plt.locator_params(axis='x',nbins=4)
+        plt.locator_params(axis='y',nbins=4)
+        
+        plt.xlabel('Real', fontsize=22)
+        plt.ylabel('Imaginary', fontsize=22)
+        plt.tick_params(axis='y', labelsize=22)
+        plt.tick_params(axis='x', labelsize=22)
+        plt.axhline(y=0,color='#636363',ls='-', lw=3, zorder=1 )
+        plt.axvline(x=0,color='#636363',ls='-', lw=3, zorder=1 )
+        
+        #plt.legend(loc="upper left", fontsize=16)
+        t = np.linspace(0,np.pi*2,100)
+        plt.plot(np.cos(t), np.sin(t), ls='-', lw=3, c = '#636363', zorder=1 )
+        plt.tight_layout()
+        plt.title(title)
+
+        plt.show()
+
+
+    
+
 
 

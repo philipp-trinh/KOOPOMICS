@@ -229,12 +229,13 @@ class Koop(nn.Module):
                  reg=None, bandwidth=None):
         super(Koop, self).__init__()
 
+        self.bwd = False
         self.latent_dim = latent_dim
         self.reg = reg
 
         # ---------------- Define Koopman Matrix (with or without regularization) --------------
         
-        if self.reg is None:
+        if reg == "None" or reg == None:
             self.kmatrix = nn.Parameter(torch.rand(latent_dim, latent_dim))
             
         elif self.reg == 'banded':
@@ -247,20 +248,31 @@ class Koop(nn.Module):
             self.skewsym = SkewSymmetricMatrix(self.latent_dim)
             self.skewsym_params = self.skewsym.skewsym_params
             self.kmatrix = self.skewsym.kmatrix()
-
-    def koopOperation(self, e):
-
-        if self.reg == 'banded':
-            self.kmatrix = self.bandedkoop.kmatrix()
-            e_fwd = e @ self.kmatrix
             
-        elif self.reg is None:
-            e_fwd = e @ self.kmatrix
+        elif self.reg == 'nondelay':
+            self.nondelay_fwd = dynamicsC(latent_dim = self.latent_dim, act_fn = self.activation_fn)
+            self.fwdkoop = self.nondelay_fwd.kmatrix()
+
+    def fwdkoopOperation(self, e):
+        if self.reg == "None" or self.reg == None:
+            e_fwd = self.fwdkoop(e)
+        
+        elif self.reg == 'banded':
+            self.fwdkoop = self.bandedkoop_fwd.kmatrix()
+            e_fwd = e @ self.fwdkoop
+            
+        elif self.reg == 'skewsym':
+            self.fwdkoop = self.skewsym_fwd.kmatrix()
+
+            e_fwd = e @ self.fwdkoop 
+
+        elif self.reg == 'nondelay':
+            e_fwd = self.nondelay_fwd(e) 
 
         return e_fwd
 
     def fwd_step(self, e):
-        return self.koopOperation(e)
+        return self.fwdkoopOperation(e)
 
 class InvKoop(nn.Module): 
     """

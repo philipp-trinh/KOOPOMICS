@@ -83,10 +83,11 @@ class Evaluator(KoopmanMetricsMixin):
         self.current_step = 0
         self.metrics = {} 
         
-    def __call__(self):
+    def __call__(self, train_metrics = False):
         
-        #train_model_metrics = self.evaluate(self.train_loader)
         train_model_metrics = {}
+        if train_metrics:
+            train_model_metrics = self.evaluate(self.train_loader)
         test_model_metrics = self.evaluate(self.test_loader)
 
 

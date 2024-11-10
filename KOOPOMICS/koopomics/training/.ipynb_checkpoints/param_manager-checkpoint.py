@@ -34,10 +34,6 @@ class HypManager():
 
         feature_list : list
             List of features or variables whose dynamics are to be learned.
-
-        sweepconfig : sweepconfig
-            Configuration for hyperparameter tuning, detailing parameters to vary and the strategy for identifying 
-            the optimal model for the dataset.
         '''
         
         self.train_df = train_df
@@ -60,11 +56,11 @@ class HypManager():
 
 
 
-    def build_dataset(self, batch_size, dl_structure, max_Kstep):
+    def build_dataset(self, batch_size, dl_structure, max_Kstep, delay_size):
         train_loader = OmicsDataloader(self.train_df, self.feature_list, self.replicate_id, 
-                                      batch_size=batch_size, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value)
+                                      batch_size=batch_size, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value, delay_size = delay_size)
         test_loader = OmicsDataloader(self.test_df, self.feature_list, self.replicate_id, 
-                                     batch_size=600, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value)
+                                     batch_size=600, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value, delay_size = delay_size)
         
         return train_loader, test_loader
     
@@ -159,7 +155,7 @@ class HypManager():
 
             
             train_dl, test_dl = self.build_dataset(config.batch_size, 
-                                              config.dl_structure, config.max_Kstep)
+                                              config.dl_structure, config.max_Kstep, config.delay_size)
 
        
             
@@ -189,5 +185,5 @@ class HypManager():
             else:
                 KoopOmicsModel.fit(train_dl, test_dl, wandb_log=True,
                                      runconfig = config, mask_value=self.mask_value,
-                                    baseline=baseline, decayEpochs = decayEpochs, loss_weights=loss_weights)
+                                    baseline=baseline, decayEpochs = decayEpochs, loss_weights=loss_weights,max_Kstep=config.max_Kstep)
     

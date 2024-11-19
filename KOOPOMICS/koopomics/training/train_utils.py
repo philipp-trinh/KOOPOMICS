@@ -488,7 +488,8 @@ class BaseTrainer(KoopmanMetricsMixin):
         self.criterion = kwargs.get('criterion', self.masked_criterion(
                                base_criterion, self.mask_value))
 
-        self.baseline = kwargs.get('baseline', None)
+        self.baseline = kwargs.get('baseline', NaiveMeanPredictor(self.train_dl, mask_value=self.mask_value)
+)
 
         self.Evaluator = Evaluator(self.model, self.train_dl, self.test_dl, 
                        mask_value = self.mask_value, max_Kstep=self.max_Kstep,
@@ -798,8 +799,8 @@ class Koop_Full_Trainer(BaseTrainer):
         # Learning rate decay
         self.optimizer = self.lr_scheduler()
         
-        train_fwd_loss_epoch /= len(self.train_dl)
-        train_bwd_loss_epoch /= len(self.train_dl)
+        train_fwd_loss_epoch /= (len(self.train_dl) * self.max_Kstep)
+        train_bwd_loss_epoch /= (len(self.train_dl) * self.max_Kstep)
 
 
         self.Evaluator = Evaluator(self.model, self.train_dl, self.test_dl, 
@@ -1283,6 +1284,8 @@ class Embedding_Trainer(BaseTrainer):
         super().__init__(model, train_dl, test_dl, **kwargs)
 
         self.freeze_embedding = self.get_param('freeze', True, **kwargs)
+        if self.early_stop:
+            self.early_stopping = EarlyStopping(self.model_name, patience=self.patience, verbose=self.early_stop_verbose, wandb_log=self.wandb_log)
 
     #==================================Training Function=======================
     def train(self):
@@ -1377,7 +1380,7 @@ class Embedding_Trainer(BaseTrainer):
         train_loss_identity_epoch /= len(self.train_dl)
         
 
-        model_test_metrics, baseline_test_metrics = self.evaluator.metrics_embedding()
+        model_test_metrics, baseline_test_metrics = self.Evaluator.metrics_embedding()
         test_loss_identity_epoch = model_test_metrics["identity_loss"]
         
         baseline_identity_loss = 0

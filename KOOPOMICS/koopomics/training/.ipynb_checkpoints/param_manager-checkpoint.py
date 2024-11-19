@@ -14,7 +14,7 @@ import numpy as np
 
 
 class HypManager():
-    def __init__(self, train_df, test_df, condition_id, replicate_id, time_id, feature_list, **kwargs):
+    def __init__(self, df, train_df, test_df, condition_id, replicate_id, time_id, feature_list, **kwargs):
         '''
         Parameters:
         ----------
@@ -38,6 +38,8 @@ class HypManager():
         
         self.train_df = train_df
         self.test_df = test_df
+
+        self.df = df
         self.condition_id = condition_id
         self.replicate_id = replicate_id
         self.time_id = time_id
@@ -57,11 +59,21 @@ class HypManager():
 
 
     def build_dataset(self, batch_size, dl_structure, max_Kstep, delay_size):
-        train_loader = OmicsDataloader(self.train_df, self.feature_list, self.replicate_id, 
+        dataloader = OmicsDataloader(self.train_df, self.feature_list, self.replicate_id, 
                                       batch_size=batch_size, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value, delay_size = delay_size)
-        test_loader = OmicsDataloader(self.test_df, self.feature_list, self.replicate_id, 
-                                     batch_size=600, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value, delay_size = delay_size)
         
+        train_loader = dataloader.get_dataloaders()
+
+        dataloader = OmicsDataloader(self.test_df, self.feature_list, self.replicate_id, 
+                                     batch_size=600, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value, delay_size = delay_size)
+
+        test_loader = dataloader.get_dataloaders()
+
+        
+        #train_loader, test_loader = OmicsDataloader(self.df, self.feature_list, self.replicate_id, 
+         #                                     batch_size=batch_size, dl_structure=dl_structure,
+          #                                    max_Kstep = max_Kstep, mask_value=self.mask_value, train_ratio=0.7, delay_size = delay_size)
+                
         return train_loader, test_loader
     
     def build_koopmodel(self, **kwargs):
@@ -130,12 +142,14 @@ class HypManager():
             # this config will be set by Sweep Controller
             config = wandb.config
 
-            E_layer_dims = E_layer_dims = list(map(int, getattr(config, 'E_layer_dims',
+            E_layer_dims = list(map(int, getattr(config, 'E_layer_dims',
                                                                 "264,128,10").split(',')))
 
-            #E_dropout_rates = [getattr(config, 'E_dropout_rate_1', 0),
-            #                   getattr(config, 'E_dropout_rate_2', 0),
-            #                   0,0]     
+
+            E_dropout_rates = [0] * len(E_layer_dims)
+
+            E_dropout_rates[0] = getattr(config, 'E_dropout_rate_1', 0)
+            E_dropout_rates[1] = getattr(config, 'E_dropout_rate_2', 0)
             E_layer_dims=E_layer_dims
             operator=getattr(config, 'operator', 'invkoop')
             op_reg=getattr(config, 'op_reg', 'skewsym')
@@ -161,6 +175,7 @@ class HypManager():
             
             KoopOmicsModel = self.build_koopmodel(
                                                     E_layer_dims=E_layer_dims,
+                                                    E_dropout_rates=E_dropout_rates,
                                                     operator=operator,
                                                     op_reg=op_reg,
                                                     op_act_fn=op_act_fn,

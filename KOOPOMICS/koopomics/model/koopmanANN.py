@@ -29,7 +29,7 @@ class SkewSymmetricMatrix(nn.Module):
         self.device = device
         # Initialize the upper triangle of the matrix as trainable parameters
         num_skewsym_params = (latent_dim * (latent_dim -1) //2)
-        self.skewsym_params = nn.Linear(num_skewsym_params, 1, bias=False).to(self.device)
+        self.skewsym_params = nn.Linear(num_skewsym_params, 1, bias=False, dtype=torch.complex64).to(self.device)
 
         print(f'Skew-Symmetric Matrix initialized with {num_skewsym_params} trainable parameters.')
 
@@ -64,7 +64,7 @@ class BandedKoopmanMatrix(nn.Module):
         num_banded_params = sum(latent_dim - abs(i) for i in list(range(-bandwidth, bandwidth + 1)))
         
         # Initialize only the banded parameters as trainable
-        self.banded_params = nn.Linear(num_banded_params,1 ,bias=False).to(device)
+        self.banded_params = nn.Linear(num_banded_params,1 ,bias=False, dtype=torch.complex64).to(device)
 
         max_params = len(torch.zeros(self.latent_dim, self.latent_dim).flatten())
         print(f'Banded Matrix initialized, with {num_banded_params} of {max_params} matrix elements trainable')
@@ -89,14 +89,14 @@ class NondelayMatrix(nn.Module):
     Liu S, You Y, Tong Z, Zhang L. Developing an Embedding, Koopman and Autoencoder Technologies-Based Multi-Omics Time Series Predictive Model (EKATP) for Systems Biology research. Front Genet. 2021 Oct 26;12:761629. doi: 10.3389/fgene.2021.761629. PMID: 34764986; PMCID: PMC8576451.'''
     def __init__(self, latent_dim):
         super(NondelayMatrix, self).__init__()
-        self.dynamics = nn.Linear(latent_dim, latent_dim, bias=False)
-        self.fixed = nn.Linear(latent_dim, latent_dim - 1, bias=False)
+        self.dynamics = nn.Linear(latent_dim, latent_dim, bias=False, dtype=torch.complex64)
+        self.fixed = nn.Linear(latent_dim, latent_dim - 1, bias=False, dtype=torch.complex64)
 
         # Disable gradients for fixed parameters in dynamics and fixed
         for p in self.parameters():
             p.requires_grad = False
 
-        self.flexi = nn.Linear(latent_dim, 1, bias=False)
+        self.flexi = nn.Linear(latent_dim, 1, bias=False, dtype=torch.complex64)
 
 class dynamicsC(NondelayMatrix):
     '''Nondelay forward Koopman matrix.'''
@@ -120,11 +120,12 @@ class dynamicsC(NondelayMatrix):
         self.koop_act_fn = get_activation_fn(act_fn)
 
     def forward(self, x):
+        x = x.to(torch.complex64)
         up = self.fixed(x)
         down = self.flexi(x)
         x = torch.cat((up, down), dim=-1)
         self.dynamics.weight.data = torch.cat((self.fixed.weight.data, self.flexi.weight.data), 0)
-        return x
+        return x.real
     def kmatrix(self):
         kmatrix = torch.cat((self.fixed.weight.data,self.flexi.weight.data),0)
 
@@ -152,11 +153,12 @@ class dynamics_backD(NondelayMatrix):
                     self.fixed.weight.data[i-1][j] = 0
 
     def forward(self, x):
+        x = x.to(torch.complex64)
         up = self.flexi(x)
         down = self.fixed(x)
         x = torch.cat((up, down), dim=-1)
         self.dynamics.weight.data = torch.cat((self.flexi.weight.data, self.fixed.weight.data), 0)
-        return x
+        return x.real
 
     def kmatrix(self):
         kmatrix = torch.cat(( self.flexi.weight.data,self.fixed.weight.data),0)
@@ -259,12 +261,12 @@ class Koop(nn.Module):
         
         elif self.reg == 'banded':
             self.fwdkoop = self.bandedkoop_fwd.kmatrix()
-            e_fwd = e @ self.fwdkoop
+            e_fwd = torch.matmul(e, self.fwdkoop)
             
         elif self.reg == 'skewsym':
             self.fwdkoop = self.skewsym_fwd.kmatrix()
 
-            e_fwd = e @ self.fwdkoop 
+            e_fwd = torch.matmul(e, self.fwdkoop)
 
         elif self.reg == 'nondelay':
             e_fwd = self.nondelay_fwd(e) 
@@ -307,8 +309,8 @@ class InvKoop(nn.Module):
         
         # ---------------- Define Koopman Matrices (with or without regularization) --------------
         if reg == "None" or reg == None:
-            self.fwdkoop = nn.Linear(latent_dim, latent_dim, bias=False)
-            self.bwdkoop = nn.Linear(latent_dim, latent_dim, bias=False)
+            self.fwdkoop = nn.Linear(latent_dim, latent_dim, bias=False, dtype=torch.complex64)
+            self.bwdkoop = nn.Linear(latent_dim, latent_dim, bias=False, dtype=torch.complex64)
         elif self.reg == 'banded':
             self.bandwidth = bandwidth
 
@@ -346,44 +348,44 @@ class InvKoop(nn.Module):
         return matrix * mask
         
     def fwdkoopOperation(self, e):
+        e = e.to(torch.complex64)
         if self.reg == "None" or self.reg == None:
             e_fwd = self.fwdkoop(e)
         
         elif self.reg == 'banded':
             self.fwdkoop = self.bandedkoop_fwd.kmatrix()
-            e_fwd = e @ self.fwdkoop
+            e_fwd = torch.matmul(e, self.fwdkoop)
             
         elif self.reg == 'skewsym':
             self.fwdkoop = self.skewsym_fwd.kmatrix()
             if self.dropout != None:
                 self.fwdkoop = self.apply_dropout_to_matrix(self.fwdkoop)
 
-            e_fwd = e @ self.fwdkoop 
+            e_fwd = torch.matmul(e, self.fwdkoop)
 
         elif self.reg == 'nondelay':
             e_fwd = self.nondelay_fwd(e) 
 
-        return e_fwd
+        return e_fwd.real
 
     def bwdkoopOperation(self, e):
+        e = e.to(torch.complex64)
         if self.reg == "None" or self.reg == None:
             e_bwd = self.bwdkoop(e)
             
         elif self.reg == 'banded':
             self.bwdkoop = self.bandedkoop_bwd.kmatrix()
-            e_bwd = e @ self.bwdkoop
+            e_bwd = torch.matmul(e, self.bwdkoop)
             
         elif self.reg == 'skewsym':
             self.bwdkoop = self.skewsym_bwd.kmatrix()
-            if self.dropout != None:
-                self.fwdkoop = self.apply_dropout_to_matrix(self.fwdkoop)
 
-            e_bwd = e @ self.bwdkoop
+            e_bwd = torch.matmul(e, self.bwdkoop)
 
         elif self.reg == 'nondelay':
             e_bwd = self.nondelay_bwd(e)
             
-        return e_bwd
+        return e_bwd.real
 
     def fwd_step(self, e):
         

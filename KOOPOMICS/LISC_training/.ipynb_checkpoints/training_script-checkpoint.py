@@ -29,19 +29,23 @@ test_timepoints = unique_timepoints[split_index:]
 
 batch_size = 700
 max_Kstep=5
-dl_structure = 'temp_delay'
+dl_structure = 'temporal'
 mask_value=-1e-9
 
-train_dataloader = ko.OmicsDataloader(train_set_df, feature_list, replicate_id, 
+train_dl = ko.OmicsDataloader(train_set_df, feature_list, replicate_id, 
                                       batch_size=batch_size, dl_structure=dl_structure,
                                       max_Kstep = max_Kstep, mask_value=mask_value, delay_size=3)
-test_dataloader = ko.OmicsDataloader(test_set_df, feature_list, replicate_id,
+train_dataloader = train_dl.get_dataloaders()
+
+test_dl = ko.OmicsDataloader(test_set_df, feature_list, replicate_id,
                                      batch_size=600, dl_structure=dl_structure,
                                      max_Kstep = max_Kstep, mask_value=mask_value, delay_size=3)
+test_dataloader = test_dl.get_dataloaders()
 
-train_dataloader, test_dataloader = ko.OmicsDataloader(pregnancy_df, feature_list, replicate_id,
-                                     batch_size=batch_size, dl_structure=dl_structure,
-                                     max_Kstep = max_Kstep, mask_value=mask_value, train_ratio=0.7)
+
+#train_dataloader, test_dataloader = ko.OmicsDataloader(pregnancy_df, feature_list, replicate_id,
+                                     #batch_size=batch_size, dl_structure=dl_structure,
+                                     #max_Kstep = max_Kstep, mask_value=mask_value, train_ratio=0.7)
 
 runconfig = ko.RunConfig()
 runconfig.num_metabolites = 264
@@ -51,19 +55,19 @@ runconfig.dl_structure = dl_structure
 
 
 # Load Model
-embedding_model = ko.FF_AE([264,1000,50], [50,1000,264],E_dropout_rates= [0.5,0,0],activation_fn='leaky_relu')
-#operator_model = ko.LinearizingKoop(linearizer=ko.FFLinearizer([100,2000,100], [100,2000,100], activation_fn='leaky_relu'), koop=ko.InvKoop(latent_dim=100, reg='skewsym', activation_fn='leaky_relu'))
-operator_model = ko.InvKoop(latent_dim=50, reg='nondelay', activation_fn='leaky_relu')
+embedding_model = ko.FF_AE([264,2000,150], [150,2000,264],E_dropout_rates= [0,0,0],activation_fn='leaky_relu')
+operator_model = ko.LinearizingKoop(linearizer=ko.FFLinearizer([150,2000,150], [150,2000,150], activation_fn='leaky_relu'), koop=ko.InvKoop(latent_dim=150, reg='nondelay', activation_fn='leaky_relu'))
+#operator_model = ko.InvKoop(latent_dim=150, reg='nondelay', activation_fn='leaky_relu')
 
 TestingKoopnondelay = ko.KoopmanModel(embedding=embedding_model, operator=operator_model)
 baseline = ko.NaiveMeanPredictor(train_set_df, feature_list, mask_value=mask_value)
 
 embedding_param_path = './bestparams/Koop_embedding_parameters_run_xhb2hi1k.pth'
 # Run training loop
-TestingKoopnondelay.fit(train_dataloader, test_dataloader, runconfig=runconfig,
+TestingKoopnondelay.modular_fit(train_dataloader, test_dataloader, runconfig=runconfig,
                          num_epochs = 3000, learning_rate=0.0001, start_Kstep=0, max_Kstep=max_Kstep,
-                         loss_weights = [1,0.5,1,1,1e-1,1], mask_value=mask_value,
+                         loss_weights = [1,0,1,1,0,0], mask_value=mask_value,
                          model_name = 'TestingKoopNonDelay_lrelu_M264', use_wandb=False,
-                        embedding_param_path=embedding_param_path, batch_verbose=False,
-                        learning_rate_change=0.8, early_stop=True, patience=100,
+                        batch_verbose=False,
+                        learning_rate_change=0.8, early_stop=True, patience=20,
                          baseline=baseline, grad_clip=0, weight_decay=1e-4)

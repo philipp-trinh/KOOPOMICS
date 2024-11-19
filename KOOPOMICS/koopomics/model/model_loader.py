@@ -90,6 +90,9 @@ class KoopmanModel(nn.Module):
 
 
         self.stepwise_train = kwargs.get('stepwise', False)
+        use_wandb = kwargs.pop('use_wandb', False)
+        early_stop = kwargs.pop('early_stop', True)
+
 
 
         In_Training = False
@@ -103,7 +106,8 @@ class KoopmanModel(nn.Module):
             print('Embedding parameters loaded and frozen.')
         else:
             print('========================EMBEDDING TRAINING===================')
-            embedding_trainer = Embedding_Trainer(self, train_dl, test_dl, use_wandb=True, early_stop=True, **kwargs)
+
+            embedding_trainer = Embedding_Trainer(self, train_dl, test_dl, use_wandb=use_wandb, early_stop=True, **kwargs)
             In_Training = True
             embedding_trainer.train()
             print(f'========================EMBEDDING TRAINING FINISHED===================')
@@ -117,6 +121,7 @@ class KoopmanModel(nn.Module):
 
         #wandb_init = not In_Training
         wandb_log=True
+
             
         train_max_Kstep = kwargs.pop('max_Kstep', None)  # Use pop to remove and optionally get its value
         train_start_Kstep = kwargs.pop('start_Kstep', 0)  # Use pop to remove and optionally get its value
@@ -128,10 +133,10 @@ class KoopmanModel(nn.Module):
 
 
             if self.stepwise_train:
-                trainer = Koop_Step_Trainer(self, train_dl, test_dl, start_Kstep=temp_start, max_Kstep=temp_max, **kwargs)
+                trainer = Koop_Step_Trainer(self, train_dl, test_dl, start_Kstep=temp_start, max_Kstep=temp_max, early_stop=early_stop, **kwargs)
                 # Backpropagation after each shift one by one (fwd and bwd)
             else:
-                trainer = Koop_Full_Trainer(self, train_dl, test_dl, start_Kstep=temp_start, max_Kstep=temp_max, **kwargs)
+                trainer = Koop_Full_Trainer(self, train_dl, test_dl, start_Kstep=temp_start, max_Kstep=temp_max, early_stop=early_stop, **kwargs)
                 # Backpropagation after looping through every shift (fwd and bwd)
         
             trainer.train()
@@ -190,9 +195,12 @@ class KoopmanModel(nn.Module):
                 e_bwd = self.operator.bwd_step(e_temp)
                 outputs = self.embedding.decode(e_bwd)
 
-                predict_bwd.append(outputs)
+                #predict_bwd.append(outputs)
                 
                 e_temp = e_bwd
+            
+            predicted = outputs
+
         
         if fwd > 0:
             e_temp = e
@@ -200,14 +208,16 @@ class KoopmanModel(nn.Module):
                 e_fwd = self.operator.fwd_step(e_temp)
                 outputs = self.embedding.decode(e_fwd)
                 
-                predict_fwd.append(outputs)
+                #predict_fwd.append(outputs)
                 
                 e_temp = e_fwd
+
+            predicted = outputs
 
         if self.operator.bwd == False:
             return predict_fwd
         else:
-            return predict_bwd, predict_fwd
+            return predicted
 
 
     
@@ -220,39 +230,40 @@ class KoopmanModel(nn.Module):
             
         elif self.operator.bwd:
             if self.operator_info['linkoop'] == True:
-                fwdM = self.operator.koop.fwdkoop
-                bwdM = self.operator.koop.bwdkoop
+                fwdM = self.operator.koop.fwdkoop.weight.cpu().data.numpy()
+                bwdM = self.operator.koop.bwdkoop.weight.cpu().data.numpy()
                                 
             elif self.operator_info['invkoop'] == True:
-                fwdM = self.operator.fwdkoop
-                bwdM = self.operator.bwdkoop
-                
-            elif self.operator.koop.reg == 'nondelay':
-                fwdM = self.operator.nondelay_fwd.dynamics.weight.cpu().data.numpy()
-                bwdM = self.operator.nondelay_bwd.dynamics.weight.cpu().data.numpy()
 
+                if self.regularization_info['no']:
+                    fwdM = self.operator.fwdkoop.weight.cpu().data.numpy()
+                    bwdM = self.operator.bwdkoop.weight.cpu().data.numpy()
+                    
+                if self.regularization_info['nondelay']:
+                    fwdM = self.operator.nondelay_fwd.dynamics.weight.cpu().data.numpy()
+                    bwdM = self.operator.nondelay_bwd.dynamics.weight.cpu().data.numpy()
             if detach:
-                return  fwdM.detach(), bwdM.detach()
+                return  fwdM, bwdM
             else:
                 return  fwdM, bwdM
 
 
-    def eigen(self):
+    def eigen(self, plot=True):
 
         if self.operator.bwd == False:
-            fwdM = self.kmatrix()
-            w, v = np.linalg.eig(fwdM)
+            fwdM = self.kmatrix(detach=True)
+            w_fwd, v_fwd = np.linalg.eig(fwdM)
 
-            return w, v
+            return w_fwd, v_fwd, [], []
             
         elif self.operator.bwd:
-            fwdM, bwdM = self.kmatrix()
-        
-            w_fwd, v_fwd = np.linalg.eig(fwdM.numpy())
-            w_bwd, v_bwd = np.linalg.eig(bwdM.numpy())
+            fwdM, bwdM = self.kmatrix(detach=True)
+            w_fwd, v_fwd = np.linalg.eig(fwdM)
+            w_bwd, v_bwd = np.linalg.eig(bwdM)
 
-            self.plot_eigen(w_fwd, title='Forward Matrix - Eigenvalues')
-            self.plot_eigen(w_bwd, title='Backward Matrix - Eigenvalues')
+            if plot:
+                self.plot_eigen(w_fwd, title='Forward Matrix - Eigenvalues')
+                self.plot_eigen(w_bwd, title='Backward Matrix - Eigenvalues')
 
             
             return w_fwd, v_fwd, w_bwd, v_bwd

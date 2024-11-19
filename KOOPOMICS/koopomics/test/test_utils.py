@@ -10,22 +10,64 @@ from ..training.KoopmanMetrics import KoopmanMetricsMixin
 
 # Naive model class that predicts the average of the target for reference
 class NaiveMeanPredictor(nn.Module):
-    def __init__(self, train_set_df, feature_list, mask_value=None):
+    def __init__(self, train_data, mask_value=None):
         # Call the parent class (nn.Module) constructor
         super(NaiveMeanPredictor, self).__init__()
         self.means = None
+        self.mask_value = mask_value
         
-        # Create a mask to filter out rows that contain the mask_value
-        if mask_value is not None:
-            mask = (train_set_df[feature_list] != mask_value).all(axis=1)  # True for rows without mask_value
-            filtered_df = train_set_df[mask]  # Filtered DataFrame
+        if isinstance(train_data, torch.utils.data.DataLoader):  # Check if it's a DataLoader
+            self.get_means_dl(train_data)
+        elif isinstance(train_data, pd.DataFrame):  # Check if it's a DataFrame
+            self.get_means_df(train_data)
         else:
-            filtered_df = train_set_df  # No masking applied
+            raise ValueError("train_data must be either a DataLoader or a DataFrame")
+        
+
+    def get_means_dl(self, dl):
+        for data in dl:
+            input_data = data[0]
+            
+        # Initialize variables to store the sum and count for mean calculation
+        sum_values = torch.zeros(input_data.shape[-1], dtype=torch.float32)
+        count_values = torch.zeros(input_data.shape[-1], dtype=torch.float32)
+        
+        # Loop through the train_loader to calculate the mean
+        with torch.no_grad():
+            for data in dl:
+                input_data = data[0]
+                
+                
+                # If a mask_value is provided, apply masking
+                if self.mask_value is not None:
+                    mask = (input_data != self.mask_value) 
+                    masked_input_data = torch.where(mask, input_data, torch.tensor(0.0))
+
+                if masked_input_data.shape[1] == 1:
+                    sum_values += masked_input_data.sum(dim=0).squeeze()
+                    count_values += (masked_input_data != self.mask_value).sum(dim=0).squeeze() 
+                    
+                else:
+                    sum_values += masked_input_data.sum(dim=(0,1))
+                    count_values += (masked_input_data != self.mask_value).sum(dim=(0,1))
+                    
+        self.means_values = sum_values / count_values
+        self.means = nn.Parameter(self.means_values.clone().detach(), requires_grad=False)
+
+
+
+    def get_means_df(self, df):
+        # Create a mask to filter out rows that contain the mask_value
+        if self.mask_value is not None:
+            mask = (df[self.feature_list] != self.mask_value).all(axis=1)  # True for rows without mask_value
+            filtered_df = df[mask]  # Filtered DataFrame
+        else:
+            filtered_df = df  # No masking applied
 
         # Calculate means only for the rows that are not masked
-        means_values = filtered_df[feature_list].mean().values
-        self.means = nn.Parameter(torch.tensor(means_values, dtype=torch.float32), requires_grad=False)
-
+        self.means_values = filtered_df[self.feature_list].mean().values
+        self.means = nn.Parameter(torch.tensor(self.means_values, dtype=torch.float32))
+        
     def kmatrix(self):
         return torch.zeros(4,4), torch.zeros(4,4)
         
@@ -67,7 +109,7 @@ class Evaluator(KoopmanMetricsMixin):
         self.test_loader = test_loader
         self.train_loader = train_loader
         self.mask_value = kwargs.get('mask_value', -2)
-        self.max_Kstep = kwargs.get('max_Kstep', 2)
+        self.max_Kstep = kwargs.get('max_Kstep', 1)
         self.baseline = kwargs.get('baseline', None)
         self.model_name = kwargs.get('model_name', 'Koop')
 
@@ -193,9 +235,9 @@ class Evaluator(KoopmanMetricsMixin):
                 test_bwd_loss += loss_bwd_batch
                 total_test_loss += loss_total_batch
         # Average loss for the test loader
-        avg_test_fwd_loss = test_fwd_loss / len(dl)
-        avg_test_bwd_loss = test_bwd_loss / len(dl)
-        avg_total_test_loss = total_test_loss / len(dl)
+        avg_test_fwd_loss = test_fwd_loss / (len(dl) * self.max_Kstep)
+        avg_test_bwd_loss = test_bwd_loss / (len(dl) * self.max_Kstep)
+        avg_total_test_loss = total_test_loss / (len(dl) * self.max_Kstep)
         return {
             'forward_loss': avg_test_fwd_loss.detach(),
             'backward_loss': avg_test_bwd_loss.detach(),
@@ -252,8 +294,8 @@ class Evaluator(KoopmanMetricsMixin):
                 test_bwd_loss += loss_bwd_batch
     
         # Average loss for the test loader
-        avg_test_fwd_loss = test_fwd_loss / len(self.test_loader)
-        avg_test_bwd_loss = test_bwd_loss / len(self.test_loader)
+        avg_test_fwd_loss = test_fwd_loss / (len(self.test_loader) * self.max_Kstep)
+        avg_test_bwd_loss = test_bwd_loss / (len(self.test_loader) * self.max_Kstep)
     
         return {
             'forward_loss': avg_test_fwd_loss.detach(),
@@ -335,6 +377,93 @@ class Evaluator(KoopmanMetricsMixin):
 
         return {
             'identity_loss': avg_test_identity_loss.detach(),
+        }
+    def compute_prediction_errors(self, dataloader,featurewise=True):
+        """
+        Compute prediction error for both forward and backward predictions, optionally featurewise.
+    
+        Args:
+            model (nn.Module): The trained model to validate.
+            dataloader (DataLoader): DataLoader for the validation set.
+            max_Kstep (int): Maximum number of forward and backward prediction steps.
+    
+        Returns:
+            dict: A dictionary with forward and backward per-feature errors.
+                  Keys are 'fwd_feature_errors' and 'bwd_feature_errors', with values being dicts
+                  where each key is the feature index, and the value is the cumulative error for that feature.
+        """
+        self.model.eval()  # Set the model to evaluation mode
+        base_criterion = nn.MSELoss(reduction='none')  # 'none' so we can compute per-feature loss
+        criterion = self.masked_criterion(base_criterion, mask_value=self.mask_value)
+    
+        fwd_feature_loss_dict = {}
+        bwd_feature_loss_dict = {}
+        total_fwd_loss = 0
+        total_bwd_loss = 0
+    
+        num_batches = 0
+    
+        with torch.no_grad():  # No gradients needed during validation
+            for data_list in dataloader:
+                num_batches += 1
+                # Prepare forward and backward inputs
+                input_fwd = data_list[0].to(self.device)
+                input_bwd = data_list[-1].to(self.device)
+                reverse_data_list = torch.flip(data_list, dims=[0])
+    
+    
+                # Loop through each step in max_Kstep
+                for step in range(1,self.max_Kstep+1):
+                    self.current_step = step
+                    target_fwd = data_list[step].to(self.device)
+                    target_bwd = reverse_data_list[step].to(self.device)
+    
+
+                    bwd_output, fwd_output = self.model.predict(input_fwd, fwd=step)
+    
+                    # Compute loss per feature for forward
+                    per_feature_loss_fwd = criterion(fwd_output[-1], target_fwd)  # Shape: (batch_size, num_features)
+                    if featurewise:
+                        # Accumulate per-feature loss
+                        for feature_idx in range(per_feature_loss_fwd.shape[-1]):
+                            feature_loss = per_feature_loss_fwd[:,:,feature_idx].mean().item()  # Mean over batch for each feature
+                            if feature_idx not in fwd_feature_loss_dict:
+                                fwd_feature_loss_dict[feature_idx] = feature_loss
+                            else:
+                                fwd_feature_loss_dict[feature_idx] += feature_loss
+                            
+                    total_fwd_loss += per_feature_loss_fwd.mean()
+                # ------------------- Backward prediction ------------------
+
+                    bwd_output, fwd_output = self.model.predict(input_bwd, bwd=step)
+    
+                    # Compute loss per feature for backward
+                    per_feature_loss_bwd = criterion(bwd_output[-1], target_bwd)  # Shape: (batch_size, num_features)
+    
+                    if featurewise:
+                        # Accumulate per-feature loss
+                        for feature_idx in range(per_feature_loss_bwd.shape[-1]):
+                            feature_loss = per_feature_loss_bwd[:, :, feature_idx].mean().item()  # Mean over batch for each feature
+                            if feature_idx not in bwd_feature_loss_dict:
+                                bwd_feature_loss_dict[feature_idx] = feature_loss
+                            else:
+                                bwd_feature_loss_dict[feature_idx] += feature_loss
+                    
+                    total_bwd_loss += per_feature_loss_bwd.mean()
+                    
+        # Normalize by the number of batches
+        for feature_idx in fwd_feature_loss_dict:
+            fwd_feature_loss_dict[feature_idx] /= (num_batches * self.max_Kstep)
+        for feature_idx in bwd_feature_loss_dict:
+            bwd_feature_loss_dict[feature_idx] /= (num_batches * self.max_Kstep)
+        total_fwd_loss /= (num_batches * self.max_Kstep)
+        total_bwd_loss /= (num_batches * self.max_Kstep)
+    
+        return {
+            'fwd_feature_errors': fwd_feature_loss_dict,
+            'bwd_feature_errors': bwd_feature_loss_dict,
+            'total_fwd_loss': total_fwd_loss,
+            'total_bwd_loss': total_bwd_loss
         }
 
 

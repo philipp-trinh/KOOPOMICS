@@ -107,7 +107,7 @@ class FF_AE(nn.Module):
     def forward(self, x):
         e_ae = self.encode(x)
         x_ae = self.decode(e_ae)
-        return e_ae, x_ae
+        return x_ae
 
 class Conv_AE(nn.Module):
     """

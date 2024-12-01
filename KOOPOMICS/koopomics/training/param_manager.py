@@ -14,7 +14,7 @@ import numpy as np
 
 
 class HypManager():
-    def __init__(self, df, train_df, test_df, condition_id, replicate_id, time_id, feature_list, **kwargs):
+    def __init__(self, df, condition_id, replicate_id, time_id, feature_list, **kwargs):
         '''
         Parameters:
         ----------
@@ -36,8 +36,8 @@ class HypManager():
             List of features or variables whose dynamics are to be learned.
         '''
         
-        self.train_df = train_df
-        self.test_df = test_df
+        self.train_df = kwargs.get('train_df', None)
+        self.test_df = kwargs.get('test_df', None)
 
         self.df = df
         self.condition_id = condition_id
@@ -59,21 +59,21 @@ class HypManager():
 
 
     def build_dataset(self, batch_size, dl_structure, max_Kstep, delay_size):
-        dataloader = OmicsDataloader(self.train_df, self.feature_list, self.replicate_id, 
-                                      batch_size=batch_size, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value, delay_size = delay_size)
+        #dataloader = OmicsDataloader(self.train_df, self.feature_list, self.replicate_id, 
+                                      #batch_size=batch_size, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value, delay_size = delay_size)
         
-        train_loader = dataloader.get_dataloaders()
+        #train_loader = dataloader.get_dataloaders()
 
-        dataloader = OmicsDataloader(self.test_df, self.feature_list, self.replicate_id, 
-                                     batch_size=600, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value, delay_size = delay_size)
+        #dataloader = OmicsDataloader(self.test_df, self.feature_list, self.replicate_id, 
+                                    # batch_size=600, dl_structure=dl_structure, max_Kstep = max_Kstep, mask_value = self.mask_value, delay_size = delay_size)
 
-        test_loader = dataloader.get_dataloaders()
+        #test_loader = dataloader.get_dataloaders()
 
         
-        #train_loader, test_loader = OmicsDataloader(self.df, self.feature_list, self.replicate_id, 
-         #                                     batch_size=batch_size, dl_structure=dl_structure,
-          #                                    max_Kstep = max_Kstep, mask_value=self.mask_value, train_ratio=0.7, delay_size = delay_size)
-                
+        omicsloader = OmicsDataloader(self.df, self.feature_list, self.replicate_id, 
+                                             batch_size=batch_size, dl_structure=dl_structure,
+                                            max_Kstep = max_Kstep, mask_value=self.mask_value, train_ratio=0.7, delay_size = delay_size)
+        train_loader, test_loader = omicsloader.get_dataloaders()
         return train_loader, test_loader
     
     def build_koopmodel(self, **kwargs):
@@ -184,7 +184,7 @@ class HypManager():
                                                     lin_act_fn=lin_act_fn,
 
                                                 )
-            baseline = NaiveMeanPredictor(self.train_df, self.feature_list, mask_value=self.mask_value)
+            baseline = NaiveMeanPredictor(train_dl, mask_value=self.mask_value)
             wandb.watch(KoopOmicsModel.embedding,log='all', log_freq=1) 
             wandb.watch(KoopOmicsModel.operator,log='all', log_freq=1)
             if self.modular_fit:

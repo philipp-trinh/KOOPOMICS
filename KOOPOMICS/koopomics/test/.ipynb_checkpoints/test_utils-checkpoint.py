@@ -10,11 +10,10 @@ from ..training.KoopmanMetrics import KoopmanMetricsMixin
 
 # Naive model class that predicts the average of the target for reference
 class NaiveMeanPredictor(nn.Module):
-    def __init__(self, train_data, feature_list, mask_value=None):
+    def __init__(self, train_data, mask_value=None):
         # Call the parent class (nn.Module) constructor
         super(NaiveMeanPredictor, self).__init__()
         self.means = None
-        self.feature_list = feature_list
         self.mask_value = mask_value
         
         if isinstance(train_data, torch.utils.data.DataLoader):  # Check if it's a DataLoader
@@ -26,9 +25,12 @@ class NaiveMeanPredictor(nn.Module):
         
 
     def get_means_dl(self, dl):
+        for data in dl:
+            input_data = data[0]
+            
         # Initialize variables to store the sum and count for mean calculation
-        sum_values = torch.zeros(len(self.feature_list), dtype=torch.float32)
-        count_values = torch.zeros(len(self.feature_list), dtype=torch.float32)
+        sum_values = torch.zeros(input_data.shape[-1], dtype=torch.float32)
+        count_values = torch.zeros(input_data.shape[-1], dtype=torch.float32)
         
         # Loop through the train_loader to calculate the mean
         with torch.no_grad():

@@ -487,9 +487,9 @@ class BaseTrainer(KoopmanMetricsMixin):
         
         self.criterion = kwargs.get('criterion', self.masked_criterion(
                                base_criterion, self.mask_value))
-
-        self.baseline = kwargs.get('baseline', NaiveMeanPredictor(self.train_dl, mask_value=self.mask_value)
-)
+        
+        #baseline = NaiveMeanPredictor(self.train_dl, mask_value=self.mask_value)
+        self.baseline = kwargs.get('baseline', None)
 
         self.Evaluator = Evaluator(self.model, self.train_dl, self.test_dl, 
                        mask_value = self.mask_value, max_Kstep=self.max_Kstep,

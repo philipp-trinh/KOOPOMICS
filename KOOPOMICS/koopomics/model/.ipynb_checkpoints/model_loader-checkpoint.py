@@ -242,6 +242,10 @@ class KoopmanModel(nn.Module):
                 if self.regularization_info['nondelay']:
                     fwdM = self.operator.nondelay_fwd.dynamics.weight.cpu().data.numpy()
                     bwdM = self.operator.nondelay_bwd.dynamics.weight.cpu().data.numpy()
+
+                if self.regularization_info['skewsym']:
+                    fwdM = self.operator.skewsym_fwd.kmatrix().detach().numpy()
+                    bwdM = self.operator.skewsym_bwd.kmatrix().detach().numpy()
             if detach:
                 return  fwdM, bwdM
             else:

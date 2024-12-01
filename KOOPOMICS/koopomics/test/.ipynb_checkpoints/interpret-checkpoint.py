@@ -18,6 +18,178 @@ from captum.attr import IntegratedGradients
 
 from koopomics.training.data_loader import OmicsDataloader
 
+
+import ipywidgets as widgets
+from IPython.display import display
+import json
+from pathlib import Path
+
+def save_interactive_plot(widget, filename, title="Interactive Plot"):
+    """
+    Save an ipywidget plot with MultiSelect dropdowns and RangeSlider as a standalone HTML file
+    
+    Parameters:
+    widget: ipywidget object
+        The interactive plot to save
+    filename: str
+        Output filename (will append .html if not included)
+    title: str
+        Title for the HTML page
+    """
+    if not filename.endswith('.html'):
+        filename = filename + '.html'
+    
+    state = json.dumps(widget.get_state())
+    
+    html_template = f"""
+    <html>
+        <head>
+            <title>{title}</title>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js"></script>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+            
+            <style>
+                /* Container styling */
+                .widget-container {{
+                    padding: 20px;
+                    max-width: 1200px;
+                    margin: 0 auto;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+                }}
+                
+                /* Multi-select styling */
+                .widget-select-multiple {{
+                    min-width: 200px;
+                    max-width: 100%;
+                    margin: 10px 0;
+                }}
+                
+                .widget-select-multiple select {{
+                    width: 100%;
+                    min-height: 120px;
+                    padding: 8px;
+                    border: 1px solid #ccc;
+                    border-radius: 4px;
+                    background-color: white;
+                    font-size: 14px;
+                }}
+                
+                .widget-select-multiple select option {{
+                    padding: 4px 8px;
+                }}
+                
+                .widget-select-multiple select option:checked {{
+                    background-color: #007bff;
+                    color: white;
+                }}
+                
+                /* Range slider styling */
+                .widget-int-range-slider {{
+                    width: 100%;
+                    padding: 15px 0;
+                }}
+                
+                .jupyter-widgets-scale {{
+                    width: 100%;
+                }}
+                
+                /* Description label styling */
+                .widget-label {{
+                    font-weight: bold;
+                    margin-bottom: 5px;
+                    color: #333;
+                }}
+                
+                /* Slider track and thumb styling */
+                input[type="range"] {{
+                    -webkit-appearance: none;
+                    width: 100%;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: #ddd;
+                    outline: none;
+                }}
+                
+                input[type="range"]::-webkit-slider-thumb {{
+                    -webkit-appearance: none;
+                    appearance: none;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 50%;
+                    background: #007bff;
+                    cursor: pointer;
+                }}
+                
+                /* Layout for controls */
+                .widget-controls {{
+                    display: flex;
+                    flex-direction: column;
+                    gap: 15px;
+                    margin-bottom: 20px;
+                }}
+                
+                /* Plot container */
+                .plot-container {{
+                    margin-top: 20px;
+                    border: 1px solid #eee;
+                    border-radius: 4px;
+                    padding: 15px;
+                }}
+            </style>
+        </head>
+        <body>
+            <div id="widget-container" class="widget-container"></div>
+            <script>
+                require.config({{
+                    paths: {{
+                        "jupyter-js-widgets": "https://unpkg.com/@jupyter-widgets/html-manager@^0.20.0/dist/embed-amd",
+                        "@jupyter-widgets/base": "https://unpkg.com/@jupyter-widgets/base@^4.0.0/dist/index",
+                        "@jupyter-widgets/controls": "https://unpkg.com/@jupyter-widgets/controls@^3.0.0/dist/index",
+                    }},
+                    map: {{
+                        "*": {{
+                            "@jupyter-widgets/base": "jupyter-js-widgets"
+                        }}
+                    }}
+                }});
+                
+                require(["jupyter-js-widgets"], function(widgets) {{
+                    var widgetState = {state};
+                    var manager = new widgets.HTMLManager();
+                    
+                    manager.set_state(widgetState).then(function() {{
+                        return manager.display_model(
+                            undefined, 
+                            widgetState.state[Object.keys(widgetState.state)[0]].model_id,
+                            {{'el': document.getElementById('widget-container')}}
+                        );
+                    }}).then(function(view) {{
+                        // Initialize any multi-select dropdowns
+                        document.querySelectorAll('.widget-select-multiple select').forEach(function(select) {{
+                            select.multiple = true;
+                        }});
+                        
+                        // Add keyboard support for multi-select
+                        document.addEventListener('keydown', function(e) {{
+                            if (e.ctrlKey || e.metaKey) {{
+                                // Allow multi-select with Ctrl/Cmd key
+                                return true;
+                            }}
+                        }});
+                    }}).catch(function(err) {{
+                        console.error('Error displaying the widget:', err);
+                    }});
+                }});
+            </script>
+        </body>
+    </html>
+    """
+    
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(html_template)
+    
+    print(f"Plot saved to {filename}")
+
 class KoopmanDynamics():
     def __init__(self, model, 
                  dataset_df, feature_list, mask_value=-1e-9, condition_id='', time_id='', replicate_id='', 
@@ -203,12 +375,12 @@ class Latent_Explorer():
         return self.latent_data
 
     def get_latent_plot_df(self, fwd=False, bwd=False):
-        K_steps = 1000
+        #K_steps = 1000
         # Step 1: Filter the DataFrame for relevant columns: replicate_id, time_id, and feature_list
-        if fwd:
-            predicted_plot_df = self.first_non_masked_timepoints_df[[self.replicate_id, self.time_id] + self.features.tolist()]
-        elif bwd:
-            predicted_plot_df = self.last_non_masked_timepoints_df[[self.replicate_id, self.time_id] + self.features.tolist()]
+        #if fwd:
+        #    predicted_plot_df = self.first_non_masked_timepoints_df[[self.replicate_id, self.time_id] + self.features.tolist()]
+        #elif bwd:
+        #    predicted_plot_df = self.last_non_masked_timepoints_df[[self.replicate_id, self.time_id] + self.features.tolist()]
 
         true_plot_df = self.no_mask_df[[self.replicate_id, self.time_id] + self.features.tolist()]
         
@@ -221,23 +393,22 @@ class Latent_Explorer():
         replicate_idx_collection = []
         source = []
         
-        for idx, row in predicted_plot_df.iterrows():
+        for idx, row in true_plot_df.iterrows():
             input_tensor_koop = self.input_tensor[idx:idx+1]  # Get the input tensor for the current row
             latent_representation = self.model.embedding.encode(input_tensor_koop)
             
-            # Collect latent representations over forward steps
-            for step in range(K_steps):
-                if fwd:
-                    latent_representation = self.model.operator.fwd_step(latent_representation)
-                    time_steps_collection.append(row[self.time_id]+step)  # Store time_id + step
 
-                elif bwd:
-                    latent_representation = self.model.operator.bwd_step(latent_representation)
-                    time_steps_collection.append(row[self.time_id]-step)  # Store time_id + step
+            if fwd:
+                latent_representation = self.model.operator.fwd_step(latent_representation)
+                time_steps_collection.append(row[self.time_id]+1)  # Store time_id + step
 
-                latent_collection.append(latent_representation.clone().detach().cpu().numpy())
-                replicate_idx_collection.append(row[self.replicate_id])
-                source.append('predicted')
+            elif bwd:
+                latent_representation = self.model.operator.bwd_step(latent_representation)
+                time_steps_collection.append(row[self.time_id]-1)  # Store time_id + step
+
+            latent_collection.append(latent_representation.clone().detach().cpu().numpy())
+            replicate_idx_collection.append(row[self.replicate_id])
+            source.append('predicted')
         
         # Step 4: Convert the latent representations into a NumPy array
         latent_collection = np.vstack(latent_collection)
@@ -800,7 +971,7 @@ class Modes_Explorer():
                             
         # Customize plot layout
         fig.update_layout(
-            title=f'Summed Time Series with {len(mode_id)} Mode(s) and Feature(s) (Reference Included)',
+            title=f'Summed Time Series with {"all" if "all" in mode_id else len(mode_id)} Mode(s) and Feature(s) (Reference Included)',
             xaxis_title='Timepoint',
             yaxis_title='Feature Value',
             template="plotly_dark",
@@ -875,7 +1046,7 @@ class Modes_Explorer():
                             
         # Customize plot layout
         fig.update_layout(
-            title=f'Summed Time Series with {len(mode_id)} Mode(s) and Feature(s) (Reference Included)',
+            title=f'Summed Time Series with {"all" if "all" in mode_id else len(mode_id)} Mode(s) and Feature(s) (Reference Included)',
             xaxis_title='Timepoint',
             yaxis_title='Feature Value',
             template="plotly_dark",
@@ -975,8 +1146,8 @@ class Importance_Explorer():
                 masked_input = torch.where(mask, test_input, torch.tensor(0.0, device=test_input.device))
 
                 
-                target_medians = self.get_target_medians(masked_targets, mask)
-                expanded_target_medians = target_medians.unsqueeze(0).expand_as(masked_targets)
+                input_medians = self.get_target_medians(masked_input, mask)
+                expanded_target_medians = input_medians.unsqueeze(0).expand_as(masked_input)
 
                 whole_test_input = data[start_Kstep,:,:,:]
                 whole_mask = whole_test_input != self.mask_value  
@@ -992,7 +1163,9 @@ class Importance_Explorer():
                 attributions = []
             
                 for target_index in range(len(self.feature_list)):
-                    attr, delta = ig.attribute(masked_targets, target=target_index, return_convergence_delta=True, baselines=masked_input) #masked_inputs
+                    attr, delta = ig.attribute(masked_input, target=target_index, return_convergence_delta=True, baselines=expanded_target_medians) #masked_inputs
+
+                    #attr[:,target_index] = 0
                     attributions.append(attr)
             
                 attributions_tensor = torch.stack(attributions)
@@ -1025,6 +1198,260 @@ class Importance_Explorer():
 
     
     def plot_importance_network(self, start_Kstep=0, max_Kstep=1, start_timepoint_idx=0, end_timepoint_idx=1, fwd=1, bwd=0, plot_tp=None, threshold_node=99.5, threshold_edge=0.01):
+
+        key = (start_Kstep, max_Kstep, start_timepoint_idx, end_timepoint_idx, fwd, bwd)
+        
+        # Calculate attributions and store in the dictionary with the key
+        if key not in self.attributions_dicts.keys():
+            self.attributions_dicts[key] = self.get_importance(
+                start_Kstep=start_Kstep,
+                max_Kstep=max_Kstep,
+                start_timepoint_idx=start_timepoint_idx,
+                end_timepoint_idx=end_timepoint_idx,
+                fwd=fwd,
+                bwd=bwd
+            )
+
+        attributions_dict = self.attributions_dicts[key]
+
+        mean_attr_tp = attributions_dict['mean_tp'].cpu().numpy()
+        mean_sq_attr_ts = attributions_dict['RMS_ts_attributions'].cpu().numpy()
+
+        max_attr_ts = attributions_dict['max_ts'].cpu().numpy()
+        max_indices_ts = attributions_dict['max_indices_ts'].cpu().numpy()
+        min_attr_ts = attributions_dict['min_ts'].cpu().numpy()
+        min_indices_ts = attributions_dict['min_indices_ts'].cpu().numpy()
+                
+        if plot_tp is not None:
+            edge_attributions_array = mean_attr_tp[plot_tp] ** 2
+            
+
+            df_info = self.test_set_df[self.time_id].unique()
+            info_string = self.time_id
+
+        else:
+            edge_attributions_array = mean_sq_attr_ts
+            edge_max_array = max_attr_ts
+            edge_max_indices = max_indices_ts
+            edge_min_array = min_attr_ts
+            edge_min_indices = min_indices_ts            
+            df_info = self.test_set_df[self.time_id].unique()
+            info_string = self.time_id
+                
+        #attributions_array = self.get_importance(start_Kstep=start_Kstep, max_Kstep=max_Kstep, start_timepoint_idx=start_timepoint_idx, end_timepoint_idx=end_timepoint_idx, fwd=fwd, bwd=bwd).cpu().numpy()        
+        #attributions_tensor_samplemean = attributions_tensor.mean(dim=1)
+        #attributions_array = attributions_tensor_samplemean.cpu().numpy()
+
+        # Create a 2D array of hovertext with feature names for both axes (x and y)
+        hovertext = np.array([[
+            f'X Feature: {self.feature_list[i]}, Y Feature: {self.feature_list[j]}'
+            for i in range(len(self.feature_list))] for j in range(len(self.feature_list))])
+        
+        # Create a graph using NetworkX
+        G = nx.Graph()
+        
+        # Add nodes to the graph (each feature as a node)
+        for feature in self.feature_list:
+            G.add_node(feature)
+        
+        # Threshold to select the top feature importances
+        non_zero_attributions = mean_sq_attr_ts[mean_sq_attr_ts != 0]
+        threshold_n = np.percentile(np.abs(non_zero_attributions), threshold_node)  # Adjust the threshold to select top features
+
+        # Add edges based on the importance values above the threshold
+        filtered_edge_importances = []
+        for i in range(len(self.feature_list)):
+            for j in range(i+1, len(self.feature_list)):  # To avoid duplicate edges
+                if np.abs(mean_sq_attr_ts[i, j]) > np.abs(threshold_n):
+                    G.add_edge(self.feature_list[i], self.feature_list[j], weight=mean_sq_attr_ts[i, j])
+                    if plot_tp is not None:
+                        filtered_edge_importances.append(edge_attributions_array[i, j])
+                    else:
+                        filtered_edge_importances.append(mean_sq_attr_ts[i, j])
+
+        # Remove nodes with no edges
+        nodes_with_edges = [node for node in G.nodes if G.degree(node) > 0]
+        G = G.subgraph(nodes_with_edges)  # Create a subgraph with only the nodes that have connections
+        
+        # Sort features based on their max importance (average across all pairs)
+        filtered_feature_list = [feature for feature in self.feature_list if feature in G.nodes()]
+        feature_importances = [np.mean(mean_sq_attr_ts[self.feature_list.tolist().index(feature), :]) for feature in filtered_feature_list]
+        feature_indices = [self.feature_list.tolist().index(feature) for feature in filtered_feature_list]
+        sorted_features = [filtered_feature_list[i] for i in np.argsort(feature_importances)[::-1]]  # Sort in descending order
+        sorted_feature_importances = [feature_importances[i] for i in np.argsort(feature_importances)[::-1]]
+        
+        
+        # Reassign positions using a circular layout, with sorted features
+        sorted_pos = nx.circular_layout(G)
+        sorted_pos = {sorted_features[i]: sorted_pos[list(sorted_pos.keys())[i]] for i in range(len(sorted_features))}
+        
+        # Extract node positions for Plotly from the sorted positions
+        x_pos = np.array([sorted_pos[node][0] for node in sorted_features])
+        y_pos = np.array([sorted_pos[node][1] for node in sorted_features])
+        
+        # Create lists to hold edge data for plotting
+        edge_x = []
+        edge_y = []
+        edge_traces = []  
+        text_traces = []
+        
+        # Generate the edge coordinates and color the edges
+        edge_data = []
+
+        sorted_attrs = np.sort(filtered_edge_importances)[::-1]
+        x = np.arange(len(sorted_attrs))
+        y = sorted_attrs
+        elbow_index, elbow_importance =  self.demonstrate_elbow_detection(x,y, threshold_edge)
+        print(elbow_importance)
+
+        for edge in G.edges():
+            edge_row = {}
+
+            x0, y0 = sorted_pos[edge[0]]
+            x1, y1 = sorted_pos[edge[1]]
+            
+            # Add coordinates for the edge to the lists
+            edge_x = [x0, x1]
+            edge_y = [y0, y1]
+        
+            edge_0_feature = edge[0]
+            index_0 = self.feature_list.tolist().index(edge_0_feature)
+            edge_1_feature = edge[1]
+            index_1 = self.feature_list.tolist().index(edge_1_feature)
+            threshold_e =  np.percentile(np.abs(edge_attributions_array), threshold_edge)
+            
+            if edge_0_feature in sorted_features and edge_1_feature in sorted_features:
+
+
+                if plot_tp is not None:
+
+                    # Check if both nodes are high importance and color the edge red
+                    edge_mean = mean_attr_tp[plot_tp][index_0, index_1]
+                    edge_importance = edge_attributions_array[index_0, index_1]
+
+                    edge_row = {
+                            'edge_0_feature': edge_0_feature,
+                            'edge_1_feature': edge_1_feature,
+                            'edge_importance': edge_mean,
+
+                    }
+                    text=f'({edge[0]} -> {edge[1]})<br>Mean:{edge_mean:.4f})'
+
+                else:
+          
+                    # Check if both nodes are high importance and color the edge red
+                    edge_importance = edge_attributions_array[index_0, index_1]
+                    edge_max = edge_max_array[index_0, index_1]
+                    edge_max_index = edge_max_indices[index_0, index_1]
+                    max_index_info = df_info[edge_max_index]
+                    edge_min = edge_min_array[index_0, index_1]
+                    edge_min_index = edge_min_indices[index_0, index_1]
+                    min_index_info = df_info[edge_min_index]
+                    text=f'({edge[0]} -> {edge[1]})<br>Max:{edge_max:.4f} ({info_string}-{max_index_info})<br>Min:{edge_min:.4f} ({info_string}-{min_index_info})'
+      
+                    edge_row = {
+                            'edge_0_feature': edge_0_feature,
+                            'edge_1_feature': edge_1_feature,
+                            'edge_importance': edge_importance,
+                            'edge_max': edge_max,
+                            'edge_max_index': edge_max_index,
+                            'max_index_info': max_index_info,
+                            'edge_min': edge_min,
+                            'edge_min_index': edge_min_index,
+                            'min_index_info': min_index_info,
+                    }
+
+                if np.abs(edge_importance) > elbow_importance:
+                    edge_color = 'red'  # Color red for high-importance edges
+                    edge_row['over_threshold'] = True
+                else:
+                    edge_color = 'black'  # Color black otherwise
+                    edge_row['over_threshold'] = False
+                
+                ## Create individual edge trace for each edge
+                edge_trace = go.Scatter(
+                    x=edge_x, y=edge_y,
+                    line=dict(width=0.5, color=edge_color),
+                    hoverinfo='text',
+                    text=f'({edge[0]} -> {edge[1]})<br>{edge_importance:.4f}',
+                    mode='lines'
+                )
+        
+                
+                xtext = [((x0+x1)/2)]
+                ytext = [((y0+y1)/2)]
+
+
+                
+                text_trace = go.Scatter(x=xtext,y= ytext, mode='markers',
+                                          marker_size=1,
+                                            marker=dict(
+                                                size=0,  # Size of the marker
+                                                color=edge_color,  # Color of the marker
+                                                opacity=1,  # Transparency of the marker
+                                            ),
+                                          text=text,
+                                          textposition='top center',
+                                          hoverinfo='text')
+                edge_traces.append(edge_trace)  # Add the trace to the list
+                text_traces.append(text_trace)
+                edge_data.append(edge_row)
+        
+        color_values = sorted_feature_importances
+        # Create node trace for Plotly
+        node_trace = go.Scatter(
+            x=x_pos, y=y_pos,
+            mode='markers',
+            hoverinfo='text',
+            marker=dict(
+                showscale=True,
+                colorscale='YlGnBu',
+                size=10,
+                color=color_values,
+                colorbar=dict(
+                    thickness=15,
+                    title='Feature Importance',
+                    xanchor='left',
+                    titleside='right'
+                )
+            )
+        )
+        # Add hovertext for the nodes
+        node_trace.marker.color = color_values  # Color by importance
+        node_trace.hovertext = [f'Feature: {sorted_features[i]}, Importance: {sorted_feature_importances[i]:.4f}' for i in range(len(sorted_features))]
+        
+        # Create the figure and add the traces
+        fig = go.Figure(data=edge_traces + text_traces + [node_trace])
+        
+        # Update layout for better readability
+        fig.update_layout(
+            title="Network of Top Feature Importances",
+            title_x=0.5,
+            showlegend=False,
+            hovermode='closest',
+            xaxis=dict(showgrid=False, zeroline=False),
+            yaxis=dict(showgrid=False, zeroline=False),
+            height=800,
+            width=800
+        )
+        
+        # Show the interactive network plot
+        fig.show()
+
+        fig.write_html("importance_network.html")
+
+
+        edge_df = pd.DataFrame(edge_data)
+
+        feature_importance_df = pd.DataFrame({
+            'Feature': sorted_features,
+            'Importance': sorted_feature_importances
+        }).sort_values(by='Importance', ascending=False).reset_index(drop=True)
+
+        return edge_df, feature_importance_df
+        
+   
+    def plot_diff_importance_network(self, start_Kstep=0, max_Kstep=1, start_timepoint_idx=0, end_timepoint_idx=1, fwd=1, bwd=0, plot_tp=None, threshold_node=99.5, threshold_edge=0.01):
 
         key = (start_Kstep, max_Kstep, start_timepoint_idx, end_timepoint_idx, fwd, bwd)
         
@@ -1269,9 +1696,14 @@ class Importance_Explorer():
 
 
         edge_df = pd.DataFrame(edge_data)
-        return edge_df
-        
 
+        feature_importance_df = pd.DataFrame({
+            'Feature': sorted_features,
+            'Importance': sorted_feature_importances
+        }).sort_values(by='Importance', ascending=False).reset_index(drop=True)
+
+        return edge_df, feature_importance_df
+                
     def find_elbow_point(self,x, y, smoothing=True, window=10, poly=9, threshold=0.01):
         """
         Find the elbow point in a curve using second derivative method.
@@ -1391,8 +1823,24 @@ class Importance_Explorer():
         # RMS over all output features
         # Melt the DataFrame to a long format for easier plotting with plotly
         melted_df = df.melt(id_vars='Timeshift', var_name='Feature', value_name='Importance')
-        #melted_df = melted_df.sort_values(by=['Feature', 'Timeshift'])
     
+        # Compute the maximum importance for each feature
+        feature_max_importance = melted_df.groupby('Feature')['Importance'].transform('max')
+        
+        # Add the max importance as a new column for sorting
+        melted_df['Feature Max Importance'] = feature_max_importance
+        
+        # Sort by:
+        # - Maximum importance (descending) to prioritize high-importance features.
+        # - Timeshift (ascending) to preserve chronological order within each feature.
+        melted_df = melted_df.sort_values(
+            by=['Feature Max Importance', 'Feature', 'Timeshift'], 
+            ascending=[False, True, True]
+        )
+        
+        # Drop the temporary column if it’s no longer needed
+        melted_df = melted_df.drop(columns=['Feature Max Importance'])
+
         # Filter features based on the max importance threshold if provided
         if threshold is not None:
             feature_max_value = melted_df.groupby('Feature')['Importance'].max()
@@ -1459,6 +1907,7 @@ class Timeseries_Explorer():
         colormap = plt.get_cmap('viridis')
         norm = mcolors.Normalize(vmin=min(self.time_values), vmax=max(self.time_values))
         self.time_color_values = {i: colormap(norm(i)) for i in self.time_values}
+        print(self.time_color_values)
 
         
         self.replicate_id = replicate_id
@@ -1504,7 +1953,7 @@ class Timeseries_Explorer():
         )
         
         feature_dropdown = widgets.Dropdown(
-            options=self.feature_list,
+            options=sorted(self.feature_list),
             description='Feature:',
             disabled=False,
         )
@@ -1542,9 +1991,14 @@ class Timeseries_Explorer():
                                               'feature': feature_dropdown,
                                               'num_shift': shift_dropdown,
                                               'time_slider_value': time_slider})
+
+
         
             display(ui, out)
-        plot_interactive_timeseries_plot(replicate_id_dropdown.value,
+
+            
+            # Save the interactive visualization
+            plot_interactive_timeseries_plot(replicate_id_dropdown.value,
                                  feature_dropdown.value,
                                  shift_dropdown.value)
         
@@ -1650,17 +2104,19 @@ class Timeseries_Explorer():
         return sc
     
 
-    def plot_feature_timeseries(self, replicate_idx, feature, num_shift, original_point_range):
+    def plot_feature_timeseries(self, replicate_idx, feature, num_shift, original_point_range, pregnancy=False):
     
         
         # Get Metadatas-------------------------------------------------------
         # Filter data for the specified subject ID
     
         if 'all' in replicate_idx:
-            birth_ga_weeks = self.df_gapfree['Birth GA/weeks'].mean()
+            if pregnancy:
+                birth_ga_weeks = self.df_gapfree['Birth GA/weeks'].mean()
     
         else:
-            birth_ga_weeks = self.df_gapfree['Birth GA/weeks'].mean()
+            if pregnancy:
+                birth_ga_weeks = self.df_gapfree['Birth GA/weeks'].mean()
     
         feature_overall_average = self.df_gapfree[feature].mean()
     
@@ -1686,7 +2142,7 @@ class Timeseries_Explorer():
                 plot_df = self.df[self.df[self.replicate_id] == replicate_id]
                 line_color = self.replicate_color_values[replicate_id]
                 plt.plot(plot_df[self.time_id], plot_df[feature], marker='o', linestyle='-', label=f'{replicate_id}', color=line_color)
-                plot_df = self.df_gaps[self.df_gaps['Subject ID'] == replicate_id]
+                plot_df = self.df_gaps[self.df_gaps[self.replicate_id] == replicate_id]
                 if not gap_label_added:
                     plt.scatter(plot_df[self.time_id], plot_df[feature], marker='o', color='red', label=f'gap', s=50, zorder=5)
                     gap_label_added = True
@@ -1695,7 +2151,8 @@ class Timeseries_Explorer():
 
         
         # Draw a red vertical line at the Birth GA/weeks value
-        plt.axvline(x=birth_ga_weeks, color='red', linestyle='--', linewidth=2, label='Birth GA/weeks')
+        if pregnancy:
+            plt.axvline(x=birth_ga_weeks, color='red', linestyle='--', linewidth=2, label='Birth GA/weeks')
         
         # Draw a orange horizontal line for the feature overall average
         plt.axhline(y=feature_overall_average, color='orange', linestyle='--', linewidth=2, label='Overall Average Value')
@@ -1710,7 +2167,7 @@ class Timeseries_Explorer():
             self.shift_and_plot(plt, num_shift, feature, replicate_idx, original_point_range, fwd=True)
     
             
-        plt.title(f'Time Series Plot of {feature} for Subject IDs {", ".join(replicate_idx)}')
+        plt.title(f'Time Series Plot of {feature} for Subject IDs {replicate_idx}')
         plt.xlabel(self.time_id)
         plt.ylabel(feature)
 

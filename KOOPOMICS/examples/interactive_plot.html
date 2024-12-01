@@ -1,0 +1,143 @@
+
+    <html>
+        <head>
+            <title>Interactive Plot</title>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js"></script>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+            
+            <style>
+                /* Container styling */
+                .widget-container {
+                    padding: 20px;
+                    max-width: 1200px;
+                    margin: 0 auto;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+                }
+                
+                /* Multi-select styling */
+                .widget-select-multiple {
+                    min-width: 200px;
+                    max-width: 100%;
+                    margin: 10px 0;
+                }
+                
+                .widget-select-multiple select {
+                    width: 100%;
+                    min-height: 120px;
+                    padding: 8px;
+                    border: 1px solid #ccc;
+                    border-radius: 4px;
+                    background-color: white;
+                    font-size: 14px;
+                }
+                
+                .widget-select-multiple select option {
+                    padding: 4px 8px;
+                }
+                
+                .widget-select-multiple select option:checked {
+                    background-color: #007bff;
+                    color: white;
+                }
+                
+                /* Range slider styling */
+                .widget-int-range-slider {
+                    width: 100%;
+                    padding: 15px 0;
+                }
+                
+                .jupyter-widgets-scale {
+                    width: 100%;
+                }
+                
+                /* Description label styling */
+                .widget-label {
+                    font-weight: bold;
+                    margin-bottom: 5px;
+                    color: #333;
+                }
+                
+                /* Slider track and thumb styling */
+                input[type="range"] {
+                    -webkit-appearance: none;
+                    width: 100%;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: #ddd;
+                    outline: none;
+                }
+                
+                input[type="range"]::-webkit-slider-thumb {
+                    -webkit-appearance: none;
+                    appearance: none;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 50%;
+                    background: #007bff;
+                    cursor: pointer;
+                }
+                
+                /* Layout for controls */
+                .widget-controls {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 15px;
+                    margin-bottom: 20px;
+                }
+                
+                /* Plot container */
+                .plot-container {
+                    margin-top: 20px;
+                    border: 1px solid #eee;
+                    border-radius: 4px;
+                    padding: 15px;
+                }
+            </style>
+        </head>
+        <body>
+            <div id="widget-container" class="widget-container"></div>
+            <script>
+                require.config({
+                    paths: {
+                        "jupyter-js-widgets": "https://unpkg.com/@jupyter-widgets/html-manager@^0.20.0/dist/embed-amd",
+                        "@jupyter-widgets/base": "https://unpkg.com/@jupyter-widgets/base@^4.0.0/dist/index",
+                        "@jupyter-widgets/controls": "https://unpkg.com/@jupyter-widgets/controls@^3.0.0/dist/index",
+                    },
+                    map: {
+                        "*": {
+                            "@jupyter-widgets/base": "jupyter-js-widgets"
+                        }
+                    }
+                });
+                
+                require(["jupyter-js-widgets"], function(widgets) {
+                    var widgetState = {"_dom_classes": [], "_model_module": "@jupyter-widgets/controls", "_model_module_version": "2.0.0", "_model_name": "VBoxModel", "_view_count": null, "_view_module": "@jupyter-widgets/controls", "_view_module_version": "2.0.0", "_view_name": "VBoxView", "box_style": "", "children": ["IPY_MODEL_6d4e826a5f484bd1a69b5c5c264572d2", "IPY_MODEL_c55444d9a9c841d28d06c9f61ed2134e"], "layout": "IPY_MODEL_130bdffbcaf14922aab934dfdecdc7c5", "tabbable": null, "tooltip": null};
+                    var manager = new widgets.HTMLManager();
+                    
+                    manager.set_state(widgetState).then(function() {
+                        return manager.display_model(
+                            undefined, 
+                            widgetState.state[Object.keys(widgetState.state)[0]].model_id,
+                            {'el': document.getElementById('widget-container')}
+                        );
+                    }).then(function(view) {
+                        // Initialize any multi-select dropdowns
+                        document.querySelectorAll('.widget-select-multiple select').forEach(function(select) {
+                            select.multiple = true;
+                        });
+                        
+                        // Add keyboard support for multi-select
+                        document.addEventListener('keydown', function(e) {
+                            if (e.ctrlKey || e.metaKey) {
+                                // Allow multi-select with Ctrl/Cmd key
+                                return true;
+                            }
+                        });
+                    }).catch(function(err) {
+                        console.error('Error displaying the widget:', err);
+                    });
+                });
+            </script>
+        </body>
+    </html>
+    

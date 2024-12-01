@@ -36,7 +36,7 @@ class SkewSymmetricMatrix(nn.Module):
     def kmatrix(self):
         """Creates a skew-symmetric matrix based on the trainable parameters."""
         # Initialize a zero matrix
-        kmatrix = torch.zeros(self.latent_dim, self.latent_dim, device=self.device)
+        kmatrix = torch.zeros(self.latent_dim, self.latent_dim, device=self.device, dtype=torch.complex64)
         upper_indices = torch.triu_indices(self.latent_dim, self.latent_dim, offset=1)
         kmatrix[upper_indices[0], upper_indices[1]] = self.skewsym_params.weight[0]
         kmatrix[upper_indices[1], upper_indices[0]] = -self.skewsym_params.weight[0]
@@ -71,7 +71,7 @@ class BandedKoopmanMatrix(nn.Module):
 
     def kmatrix(self):
         '''Create a banded Koopman matrix based on the trainable parameters.'''
-        kmatrix = torch.zeros(self.latent_dim, self.latent_dim, device=self.device)
+        kmatrix = torch.zeros(self.latent_dim, self.latent_dim, device=self.device, dtype=torch.complex64)
         
         param_idx = 0
         for offset in list(range(-self.bandwidth, self.bandwidth + 1)):

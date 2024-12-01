@@ -29,7 +29,8 @@ class PermutedDataLoader(DataLoader):
 
 class OmicsDataloader:
     def __init__(self, df, feature_list, replicate_id, batch_size=5, max_Kstep=10,
-                 dl_structure='random', shuffle=True, mask_value=-2, train_ratio=0, delay_size=3, dfs=False):
+                 dl_structure='random', shuffle=True, mask_value=-2, train_ratio=0, delay_size=3, dfs=False,
+                random_seed=42):
         '''
         df = Temporally and replicate sorted DataFrame with uniform timeseries (gaps are filled with mask values)
         '''
@@ -44,6 +45,10 @@ class OmicsDataloader:
         self.train_ratio = train_ratio
         self.delay_size = delay_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.random_seed = random_seed
+
+        torch.manual_seed(self.random_seed)
+        np.random.seed(self.random_seed)
         
         # Load data into tensor
         self.train_tensor = self.prepare_data()
@@ -241,6 +246,7 @@ class OmicsDataloader:
 
     def tensor_to_df(self, tensor):
         # Helper method to convert tensor to DataFrame for `temp_delay` structure
+        print(tensor.shape)
         flat_segments = tensor.view(tensor.shape[0], -1)
         num_steps, segment_size, num_features = tensor.shape[1:]
         column_names = [f"step_{i}_seg_{j}_feat_{k}" for i in range(num_steps) for j in range(segment_size) for k in range(num_features)]

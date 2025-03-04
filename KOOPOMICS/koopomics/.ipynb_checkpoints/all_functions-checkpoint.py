@@ -29,6 +29,6 @@ from .model.build_nn_functions import _build_nn_layers_with_dropout, _build_nn_l
 from .model.embeddingANN import FF_AE, Conv_AE
 from .model.koopmanANN import SkewSymmetricMatrix, BandedKoopmanMatrix, dynamicsC, dynamics_backD, FFLinearizer, Koop, InvKoop, LinearizingKoop
 
-from .model.model_loader import KoopmanModel
+from .model.model_loader import KoopmanModel, KoopmanParamFit
 
 

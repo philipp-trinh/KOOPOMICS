@@ -428,7 +428,8 @@ class BaseTrainer(KoopmanMetricsMixin):
         self.model = model
         self.train_dl = train_dl
         self.test_dl = test_dl
-
+        
+        self.verbose = False
         self.runconfig = kwargs.get('runconfig', None)
         # Set training parameters with fallback to runconfig
         self.max_Kstep = self.get_param('max_Kstep', 1, **kwargs)
@@ -627,6 +628,8 @@ class Koop_Full_Trainer(BaseTrainer):
                 
                 (train_fwd_loss_epoch, test_fwd_loss_epoch, 
                 train_bwd_loss_epoch, test_bwd_loss_epoch,
+                train_loss_latent_identity_epoch, train_loss_identity_epoch,
+                train_loss_inv_cons_epoch, train_loss_temp_cons_epoch,
                 baseline_fwd_loss, baseline_bwd_loss) = self.train_epoch()
                 
                 
@@ -645,20 +648,28 @@ class Koop_Full_Trainer(BaseTrainer):
                                'combined_test_loss': combined_test_loss,
                                'baseline_fwd_loss': baseline_fwd_loss,
                                'baseline_bwd_loss': baseline_bwd_loss,
-                               'baseline_ratio': baseline_ratio
+                               'baseline_ratio': baseline_ratio,
+                               'train_loss_latent_identity_epoch': train_loss_latent_identity_epoch,
+                               'train_loss_identity_epoch': train_loss_identity_epoch,
+                               'train_loss_inv_cons_epoch': train_loss_inv_cons_epoch,
+                               'train_loss_temp_cons_epoch': train_loss_temp_cons_epoch
                               })
                 self.end_epoch(baseline_fwd_loss, baseline_bwd_loss,baseline_ratio)
                 if self.early_stop:
-                    self.early_stopping(test_fwd_loss_epoch, test_bwd_loss_epoch, self.current_epoch, self.model)
+                    self.early_stopping(baseline_ratio, test_fwd_loss_epoch, test_bwd_loss_epoch, self.current_epoch, self.model)
                     if self.early_stopping.early_stop:
                         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Early stopping triggered!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                        print(f'Best Test fwd loss: {self.early_stopping.best_score1:.6f}, Best Test bwd loss: {self.early_stopping.best_score2:.6f} at Best Epoch {self.early_stopping.best_epoch}.')
+                        print(f'Best Baseline Ratio: {self.early_stopping.baseline_ratio:.6f}, Best Test fwd loss: {self.early_stopping.best_score1:.6f}, Best Test bwd loss: {self.early_stopping.best_score2:.6f} at Best Epoch {self.early_stopping.best_epoch}.')
                         self.model.load_state_dict(torch.load(self.early_stopping.model_path,  map_location=torch.device(self.device)))
                         print(f'Best Model Parameters of Shift {self.start_Kstep+1} Loaded.')
                         for param in self.model.embedding.parameters():
                             
                             param.requires_grad = False
                         break
+                        
+                        
+            return baseline_ratio
+
         except KeyboardInterrupt:
             print("Training interrupted. Saving model...")
             torch.save(self.model.state_dict(), f"interrupted_{self.model_name}_shift{self.start_Kstep}-{self.max_Kstep}_parameters.pth")
@@ -670,6 +681,7 @@ class Koop_Full_Trainer(BaseTrainer):
             self.model_path = f'{self.model_name}_shift{self.start_Kstep}-{self.max_Kstep}_parameters.pth'
             
         torch.save(self.model.state_dict(), self.model_path)
+        
     #==================================Training Function=======================
 
     def train_epoch(self):
@@ -777,6 +789,7 @@ class Koop_Full_Trainer(BaseTrainer):
             # Calculate total loss
             loss_total_batch = self.calculate_total_loss(loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch,
                                                         loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch)
+            
 
             # ===================Backward propagation==========================
             self.optimize_model(loss_total_batch)
@@ -829,6 +842,8 @@ class Koop_Full_Trainer(BaseTrainer):
         
         return (train_fwd_loss_epoch, test_fwd_loss_epoch, 
                 train_bwd_loss_epoch, test_bwd_loss_epoch,
+                train_loss_latent_identity_epoch, train_loss_identity_epoch,
+                train_loss_inv_cons_epoch, train_loss_temp_cons_epoch,
                 baseline_fwd_loss, baseline_bwd_loss)
 
     def log_batch_info(self, loss_total_batch, loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch, 
@@ -912,19 +927,20 @@ class Koop_Full_Trainer(BaseTrainer):
         print(f'Temporal Consistency Loss: {current_step_metrics["train_temp_cons_loss"]}')
 
     def end_epoch(self, baseline_fwd_loss, baseline_bwd_loss, baseline_ratio):
+        
+        if self.verbose:
+            current_epoch_metrics = self.epoch_metrics[-1]
+            print(f'============================Finished Training Epoch {self.current_epoch}=============================')
+            print(f'Train fwd Loss: {current_epoch_metrics["train_fwd_loss"]}')
+            print(f'Train bwd Loss: {current_epoch_metrics["train_bwd_loss"]}')
+            print('')
+            print(f'Test fwd Loss: {current_epoch_metrics["test_fwd_loss"]}')
+            print(f'Test bwd Loss: {current_epoch_metrics["test_bwd_loss"]}')
 
-        current_epoch_metrics = self.epoch_metrics[-1]
-        print(f'============================Finished Training Epoch {self.current_epoch}=============================')
-        print(f'Train fwd Loss: {current_epoch_metrics["train_fwd_loss"]}')
-        print(f'Train bwd Loss: {current_epoch_metrics["train_bwd_loss"]}')
-        print('')
-        print(f'Test fwd Loss: {current_epoch_metrics["test_fwd_loss"]}')
-        print(f'Test bwd Loss: {current_epoch_metrics["test_bwd_loss"]}')
-
-        if self.baseline is not None:
-            print(f'Baseline Test fwd Loss: {baseline_fwd_loss}')
-            print(f'Baseline Test bwd Loss: {baseline_bwd_loss}')
-            print(f'Baseline Ratio: {baseline_ratio}')
+            if self.baseline is not None:
+                print(f'Baseline Test fwd Loss: {baseline_fwd_loss}')
+                print(f'Baseline Test bwd Loss: {baseline_bwd_loss}')
+                print(f'Baseline Ratio: {baseline_ratio}')
 
         # Convert batch metrics to DataFrame at the end of an epoch
         batch_df = pd.DataFrame(self.batch_metrics)
@@ -958,6 +974,8 @@ class Koop_Step_Trainer(BaseTrainer):
                 
                 (train_fwd_loss_epoch, test_fwd_loss_epoch, 
                 train_bwd_loss_epoch, test_bwd_loss_epoch,
+                train_loss_latent_identity_epoch, train_loss_identity_epoch,
+                train_loss_inv_cons_epoch, train_loss_temp_cons_epoch,
                 baseline_fwd_loss, baseline_bwd_loss) = self.train_epoch()
                 
                 
@@ -979,20 +997,27 @@ class Koop_Step_Trainer(BaseTrainer):
                                'combined_test_loss': combined_test_loss,
                                'baseline_fwd_loss': baseline_fwd_loss,
                                'baseline_bwd_loss': baseline_bwd_loss,
-                               'baseline_ratio': baseline_ratio
+                               'baseline_ratio': baseline_ratio,
+                               'train_loss_latent_identity_epoch': train_loss_latent_identity_epoch,
+                               'train_loss_identity_epoch': train_loss_identity_epoch,
+                               'train_loss_inv_cons_epoch': train_loss_inv_cons_epoch,
+                               'train_loss_temp_cons_epoch': train_loss_temp_cons_epoch
                                
                               })
                 if self.early_stop:
-                    self.early_stopping(test_fwd_loss_epoch, test_bwd_loss_epoch, self.current_epoch, self.model)
+                    self.early_stopping(baseline_ratio, test_fwd_loss_epoch, test_bwd_loss_epoch, self.current_epoch, self.model)
                     if self.early_stopping.early_stop:
                         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Early stopping triggered!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                        print(f'Best Test fwd loss: {self.early_stopping.best_score1:.6f}, Best Test bwd loss: {self.early_stopping.best_score2:.6f} at Best Epoch {self.early_stopping.best_epoch}.')
+                        print(f'Best Baseline ratio: {self.early_stopping.baseline_ratio:.6f}, Best Test fwd loss: {self.early_stopping.best_score1:.6f}, Best Test bwd loss: {self.early_stopping.best_score2:.6f} at Best Epoch {self.early_stopping.best_epoch}.')
                         self.model.load_state_dict(torch.load(self.early_stopping.model_path,  map_location=torch.device(self.device)))
                         print(f'Best Model Parameters of Shift {self.start_Kstep+1} Loaded.')
                         for param in self.model.embedding.parameters():
                             
                             param.requires_grad = False
                         break
+
+            return baseline_ratio
+
         except KeyboardInterrupt:
             print("Training interrupted. Saving model...")
             torch.save(self.model.state_dict(), f"interrupted_{self.model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters.pth")
@@ -1167,6 +1192,8 @@ class Koop_Step_Trainer(BaseTrainer):
 
         return (train_fwd_loss_epoch, test_fwd_loss_epoch, 
                 train_bwd_loss_epoch, test_bwd_loss_epoch,
+                train_loss_latent_identity_epoch, train_loss_identity_epoch,
+                train_loss_inv_cons_epoch, train_loss_temp_cons_epoch,
                 baseline_fwd_loss, baseline_bwd_loss)
 
     def log_batch_info(self, loss_total_batch, loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch, 
@@ -1252,17 +1279,19 @@ class Koop_Step_Trainer(BaseTrainer):
     def end_epoch(self, baseline_fwd_loss, baseline_bwd_loss, baseline_ratio):
 
         current_epoch_metrics = self.epoch_metrics[-1]
-        print(f'============================Finished Training Epoch {self.current_epoch}=============================')
-        print(f'Train fwd Loss: {current_epoch_metrics["train_fwd_loss"]}')
-        print(f'Train bwd Loss: {current_epoch_metrics["train_bwd_loss"]}')
-        print('')
-        print(f'Test fwd Loss: {current_epoch_metrics["test_fwd_loss"]}')
-        print(f'Test bwd Loss: {current_epoch_metrics["test_bwd_loss"]}')
+        
+        if self.verbose:
+            print(f'============================Finished Training Epoch {self.current_epoch}=============================')
+            print(f'Train fwd Loss: {current_epoch_metrics["train_fwd_loss"]}')
+            print(f'Train bwd Loss: {current_epoch_metrics["train_bwd_loss"]}')
+            print('')
+            print(f'Test fwd Loss: {current_epoch_metrics["test_fwd_loss"]}')
+            print(f'Test bwd Loss: {current_epoch_metrics["test_bwd_loss"]}')
 
-        if self.baseline is not None:
-            print(f'Baseline Test fwd Loss: {baseline_fwd_loss}')
-            print(f'Baseline Test bwd Loss: {baseline_bwd_loss}')
-            print(f'Baseline Ratio: {baseline_ratio}')
+            if self.baseline is not None:
+                print(f'Baseline Test fwd Loss: {baseline_fwd_loss}')
+                print(f'Baseline Test bwd Loss: {baseline_bwd_loss}')
+                print(f'Baseline Ratio: {baseline_ratio}')
 
 
         # Convert batch metrics to DataFrame at the end of an epoch
@@ -1280,12 +1309,14 @@ class Koop_Step_Trainer(BaseTrainer):
 # =========================================================================================
 class Embedding_Trainer(BaseTrainer):
 
-    def __init__(self, model, train_dl, test_dl, runconfig: RunConfig, **kwargs):
+    def __init__(self, model, train_dl, test_dl, **kwargs):
         super().__init__(model, train_dl, test_dl, **kwargs)
-
+        
+        self.runconfig = kwargs.get('runconfig', None)
         self.freeze_embedding = self.get_param('freeze', True, **kwargs)
         if self.early_stop:
-            self.early_stopping = EarlyStopping(self.model_name, patience=self.patience, verbose=self.early_stop_verbose, wandb_log=self.wandb_log)
+            overfit_limit = self.get_param('E_overfit_limit', 0.1, **kwargs)
+            self.early_stopping = EarlyStopping(self.model_name, patience=self.patience, verbose=self.early_stop_verbose, wandb_log=self.wandb_log, overfit_limit=overfit_limit)
 
     #==================================Training Function=======================
     def train(self):
@@ -1306,10 +1337,10 @@ class Embedding_Trainer(BaseTrainer):
                     wandb.log({'train_loss_identity_epoch': train_loss_identity_epoch,
                               'test_loss_identity_epoch': test_loss_identity_epoch,
                                'baseline_identity_loss': baseline_identity_loss,
-                               'baseline_ratio': baseline_ratio
+                               'identity_baseline_ratio': baseline_ratio
                               })
                 if self.early_stop:    
-                    self.early_stopping(self.current_epoch, test_loss_identity_epoch, self.model)
+                    self.early_stopping(self.current_epoch, train_loss_identity_epoch, test_loss_identity_epoch, self.model)
                 
                     if self.early_stopping.early_stop:
                         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Early stopping triggered!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
@@ -1319,6 +1350,10 @@ class Embedding_Trainer(BaseTrainer):
                             param.requires_grad = False
                         print(f"!!Best Model Embedding Params Loaded and Frozen!!")
                         break
+                        
+                        
+            return baseline_ratio
+
         except KeyboardInterrupt:
             print("Training interrupted. Saving model...")
             torch.save(self.model.embedding.state_dict(), f"interrupted_{self.model_name}_embedding_parameters.pth")
@@ -1443,11 +1478,12 @@ class Embedding_Trainer(BaseTrainer):
 
 # ======================== EARLY STOPPING FUNCTIONS ======================================
 class EarlyStopping2scores:
-    def __init__(self, model_name, patience=5, verbose=False, delta=0, wandb_log=False, start_Kstep=0, max_Kstep=1):
+    def __init__(self, model_name, patience=10, verbose=False, delta=0.1, wandb_log=False, start_Kstep=0, max_Kstep=1):
         self.patience = patience
         self.verbose = verbose
         self.delta= delta
         self.counter = 0
+        self.baseline_ratio = None
         self.best_score1 = None
         self.best_score2 = None
         self.best_epoch = 0
@@ -1457,31 +1493,29 @@ class EarlyStopping2scores:
         self.max_Kstep = max_Kstep
         self.model_name = model_name
            
-    def __call__(self, score1, score2, current_epoch, model):
+    def __call__(self, baseline_ratio, score1, score2, current_epoch, model):
         if self.best_score1 is None:
+            self.baseline_ratio = baseline_ratio
             self.best_score1 = score1
             self.best_score2 = score2
             self.best_epoch = current_epoch
             self.save_model(model)
             return
-        if (score1 >= self.best_score1 + self.delta) and (score2 >= self.best_score2 + self.delta):
+        if (score1 >= self.best_score1 - self.delta) and (score2 >= self.best_score2 - self.delta):
             self.counter += 1
             if self.verbose:
                 print(f'EarlyStopping counter: {self.counter} out of {self.patience}.')
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
-            if score1 < self.best_score1 + self.delta:
-                self.best_score1 = score1
-            if score2 < self.best_score2 + self.delta:
-                self.best_score2 = score2
             self.counter = 0
             self.best_epoch = current_epoch
             self.best_score1 = score1
             self.best_score2 = score2
+            self.baseline_ratio = baseline_ratio
             self.save_model(model)
             if self.verbose:
-                print(f'Validation improved - Test fwd loss: {score1:.6f}, Test bwd loss: {score2:.6f}')
+                print(f'Validation improved - Baseline ratio: {baseline_ratio:.6f}, Test fwd loss: {score1:.6f}, Test bwd loss: {score2:.6f}')
 
     def save_model(self, model):
         
@@ -1499,29 +1533,45 @@ class EarlyStopping2scores:
 
 
 class EarlyStopping:
-    def __init__(self, model_name, patience=5, verbose=False, wandb_log=False):
+    def __init__(self, model_name, patience=5, overfit_limit=0.1, verbose=False, delta=0.15, wandb_log=False):
         self.patience = patience
         self.verbose = verbose
         self.counter = 0
         self.best_score = None
+        self.delta= delta
+        self.overfit_limit = overfit_limit
+
         self.best_epoch = 0
         self.early_stop = False
         self.wandb_log = wandb_log
         self.model_name = model_name 
-    def __call__(self, current_epoch, validation_loss, model):
-        if self.best_score is None:
-            self.best_epoch = current_epoch
-            self.best_score = validation_loss
-            self.save_model(model)
-        elif validation_loss < self.best_score:
-            self.best_epoch = current_epoch
-            self.best_score = validation_loss
-            self.save_model(model)
-            self.counter = 0
+                
+    def __call__(self, current_epoch, training_loss, validation_loss, model):
+        
+        self.error_ratio = 1 - (training_loss/validation_loss)
+        
+
+        if current_epoch > 30 and self.error_ratio > self.overfit_limit:
+            print('Overfitting detected!')
+            self.early_stop = True
+            
         else:
-            self.counter += 1
-            if self.counter >= self.patience:
-                self.early_stop = True
+            
+            if self.best_score is None:
+                self.best_epoch = current_epoch
+                self.best_score = validation_loss
+                self.save_model(model)
+
+            elif validation_loss < self.best_score - self.delta:
+                self.best_epoch = current_epoch
+                self.best_score = validation_loss
+                self.save_model(model)
+                self.counter = 0
+
+            else:
+                self.counter += 1
+                if self.counter >= self.patience:
+                    self.early_stop = True
 
     def save_model(self, model):
         

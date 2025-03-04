@@ -52,6 +52,10 @@ class OmicsDataloader:
         
         # Load data into tensor
         self.train_tensor = self.prepare_data()
+
+        # Structure Tensor
+        self.structured_train_tensor = torch.empty(0)
+        self.structure_data()
         
         # Define loaders and dataset attribute
         self.train_loader = None
@@ -69,7 +73,6 @@ class OmicsDataloader:
             tensor_list.append(metabolite_data)
         
         df_tensor = torch.tensor(np.stack(tensor_list), dtype=torch.float32)
-        
         sample_data = []
         for sample in range(df_tensor.shape[0]):
             train_data = []
@@ -85,6 +88,81 @@ class OmicsDataloader:
         
         return torch.stack(sample_data)
 
+    def structure_data(self):
+        
+        if self.dl_structure == 'temporal':
+            self.structured_train_tensor = self.train_tensor.clone()
+            
+        elif self.dl_structure == 'temp_delay':
+            self.structured_train_tensor = self.to_temp_delay()
+            
+        elif self.dl_structure == 'temp_segm':
+            self.structured_train_tensor = self.to_temp_segm()
+            
+        elif self.dl_structure == 'random':
+            self.structured_train_tensor = self.to_random()
+            
+
+        return self.train_tensor
+
+    def to_temp_delay(self, samplewise=False):
+        if self.train_tensor.shape[-2] >= 3:
+                        
+            # Define segment and delay structure for delayed data
+            num_timepoints = self.train_tensor.shape[2]
+            segment_size = self.delay_size
+            delay = 1
+            num_segments = ((num_timepoints - segment_size) // delay) + 1
+            feature_dim = self.train_tensor.shape[-1]
+            
+            overlapping_segments = torch.empty(
+                (self.train_tensor.shape[0], self.max_Kstep + 1, num_segments, segment_size, feature_dim),
+                dtype=self.train_tensor.dtype, device=self.device
+            )
+
+            start = 0
+            end = segment_size
+            for seg_idx in range(num_segments):
+                overlapping_segments[:, :, seg_idx] = self.train_tensor[:, :, start:end].clone()
+                start += delay
+                end = start + segment_size
+            
+            if not samplewise:
+                overlapping_segments = overlapping_segments.permute(0, 2, 1, 3, 4).reshape(
+                    -1, self.max_Kstep + 1, segment_size, feature_dim
+                )
+            
+        return overlapping_segments
+
+    def to_temp_segm(self):
+        if self.train_tensor.shape[-2] >= 3:
+    
+            # Define segmentation structure for segmented data
+            valid_slice_size, padding_needed = self.find_valid_slice_size()
+            if padding_needed:
+                # If there's no valid slice size, pad the tensor
+                original_num_timepoints = self.train_tensor.shape[2]
+                padding_needed = valid_slice_size - (original_num_timepoints % valid_slice_size)
+                mask_value_tensor = torch.full((self.train_tensor.shape[0], self.train_tensor.shape[1], padding_needed, self.train_tensor.shape[-1]), fill_value=self.mask_value, dtype=self.train_tensor.dtype, device=self.train_tensor.device)
+                # Concatenate padding to the original tensor along the timepoints dimension
+                self.train_tensor = torch.cat((self.train_tensor, mask_value_tensor), dim=2)
+            
+            
+            num_segments = self.train_tensor.shape[2] // valid_slice_size
+            feature_dim = self.train_tensor.shape[-1]
+            
+            segm_tensor = self.train_tensor.view(self.train_tensor.shape[0], self.max_Kstep+1, num_segments, valid_slice_size, feature_dim)
+            segm_tensor = segm_tensor.permute(0, 2, 1, 3, 4).reshape(-1, self.max_Kstep+1, valid_slice_size, feature_dim)
+
+        return segm_tensor
+
+    def to_random(self):
+        
+        feature_dim = self.train_tensor.shape[-1]
+        random_tensor = self.train_tensor.permute(0, 2, 1, 3).reshape(-1, self.max_Kstep+1, 1, feature_dim)
+
+        return random_tensor
+
     def create_dataloaders(self):
         # Create dataloaders based on the specified `dl_structure`
         if self.dl_structure == 'temporal':
@@ -99,11 +177,14 @@ class OmicsDataloader:
     def temporal_dataloader(self):
         # Create temporally structured dataloader
         full_dataset = TensorDataset(self.train_tensor)
+        
         if self.train_ratio > 0:
             num_samples = self.train_tensor.shape[0]
             train_size = int(self.train_ratio * num_samples)
             test_size = num_samples - train_size
             train_dataset, test_dataset = random_split(full_dataset, [train_size, test_size])
+
+            
             self.train_loader = PermutedDataLoader(dataset=train_dataset, batch_size=self.batch_size,
                                                    shuffle=self.shuffle, permute_dims=(1, 0, 2, 3),
                                                    mask_value=self.mask_value)
@@ -124,6 +205,7 @@ class OmicsDataloader:
 
     def temp_delay_dataloader(self):
         if self.train_tensor.shape[-2] >= 3:
+
             # Define segment and delay structure for delayed data
             num_timepoints = self.train_tensor.shape[2]
             segment_size = self.delay_size
@@ -139,13 +221,14 @@ class OmicsDataloader:
             start = 0
             end = segment_size
             for seg_idx in range(num_segments):
-                overlapping_segments[:, :, seg_idx] = self.train_tensor[:, :, start:end]
+                overlapping_segments[:, :, seg_idx] = self.train_tensor[:, :, start:end].clone()
                 start += delay
                 end = start + segment_size
     
             overlapping_segments = overlapping_segments.permute(0, 2, 1, 3, 4).reshape(
                 -1, self.max_Kstep + 1, segment_size, feature_dim
             )
+            
             full_dataset = TensorDataset(overlapping_segments)
             
             self.dataset_df = self.tensor_to_df(overlapping_segments)
@@ -171,7 +254,6 @@ class OmicsDataloader:
     
             # Define segmentation structure for segmented data
             valid_slice_size, padding_needed = self.find_valid_slice_size()
-            print(self.train_tensor.shape)
             if padding_needed:
                 # If there's no valid slice size, pad the tensor
                 original_num_timepoints = self.train_tensor.shape[2]
@@ -210,6 +292,8 @@ class OmicsDataloader:
         # Create random timepoints for prediction training
         feature_dim = self.train_tensor.shape[-1]
         random_tensor = self.train_tensor.permute(0, 2, 1, 3).reshape(-1, self.max_Kstep+1, 1, feature_dim)
+
+        
         full_dataset = TensorDataset(random_tensor)
         self.dataset_df = self.tensor_to_df(random_tensor)
 
@@ -246,7 +330,6 @@ class OmicsDataloader:
 
     def tensor_to_df(self, tensor):
         # Helper method to convert tensor to DataFrame for `temp_delay` structure
-        print(tensor.shape)
         flat_segments = tensor.view(tensor.shape[0], -1)
         num_steps, segment_size, num_features = tensor.shape[1:]
         column_names = [f"step_{i}_seg_{j}_feat_{k}" for i in range(num_steps) for j in range(segment_size) for k in range(num_features)]

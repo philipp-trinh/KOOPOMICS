@@ -37,7 +37,10 @@ class SkewSymmetricMatrix(nn.Module):
         """Creates a skew-symmetric matrix based on the trainable parameters."""
         # Initialize a zero matrix
         kmatrix = torch.zeros(self.latent_dim, self.latent_dim, device=self.device, dtype=torch.complex64)
+
         upper_indices = torch.triu_indices(self.latent_dim, self.latent_dim, offset=1)
+        self.skewsym_params.weight.data = self.skewsym_params.weight.data.to(self.device)
+        
         kmatrix[upper_indices[0], upper_indices[1]] = self.skewsym_params.weight[0]
         kmatrix[upper_indices[1], upper_indices[0]] = -self.skewsym_params.weight[0]
 
@@ -447,6 +450,12 @@ class LinearizingKoop(nn.Module): # Encapsulated Operator with Linearizer Neural
         
         return e_bwd
 
+    def fwdkoopOperation(self, e):
+        
+        return self.fwd_step(e)
 
+    def bwdkoopOperation(self, e):
+            
+        return self.bwd_step(e)
 
         

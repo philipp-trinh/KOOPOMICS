@@ -302,22 +302,26 @@ class KoopmanDynamics():
         self.mode_explorer.plot_modes(fwd,bwd)
 
     def plot_importance_network(self, start_timepoint_idx=0,end_timepoint_idx=1, start_Kstep=0, max_Kstep=1,
-                                 fwd=1, bwd=0, plot_tp=None,
+                                 fwd=True, bwd=False, plot_tp=None,
                                threshold_node=99.5, threshold_edge=0.001):
 
         edge_df = self.importance_explorer.plot_importance_network(start_Kstep=start_Kstep, max_Kstep=max_Kstep, start_timepoint_idx=start_timepoint_idx, end_timepoint_idx=end_timepoint_idx, fwd=fwd, bwd=bwd, plot_tp=plot_tp, threshold_node=threshold_node, threshold_edge=threshold_edge)
 
         return edge_df
 
-    def plot_feature_importance_over_timeshift_interactive(self, title='Feature Importances Over Time Shifts', threshold=None):
+    def plot_feature_importance_over_timeshift_interactive(self, title='Feature Importances Over Time Shifts', threshold=None, **kwargs):
 
         self.feature_color_mapping = self.create_feature_color_mapping(self.features, mode='plotly')
 
-        self.importance_explorer.plot_feature_importance_over_timeshift_interactive( self.feature_color_mapping, title='Feature Importances Over Time Shifts', threshold=threshold)
+        self.importance_explorer.plot_feature_importance_over_timeshift_interactive( self.feature_color_mapping, title='Feature Importances Over Time Shifts', threshold=threshold, **kwargs)
 
-    def plot_1d_timeseries(self):
+    def plot_1d_timeseries(self, feature=None):
 
-        self.timeseries_explorer.plot_1d_timeseries()
+        if feature == None:
+            self.timeseries_explorer.plot_1d_timeseries()
+        else:
+            self.timeseries_explorer.plot_1d_timeseries(feature=feature)
+
 
 
 
@@ -339,10 +343,18 @@ class Latent_Explorer():
         
         with torch.no_grad(): 
             latent_representations, identity_outputs = self.model.embed(self.input_tensor)
+            
+            if self.model.operator_info['linkoop'] == True:
+                linear_latent_representations = self.model.operator.linearizer.linearize(latent_representations)
+                self.linear_latent_representations = linear_latent_representations
+
 
         latent_representations = torch.where(self.mask[:, :latent_representations.shape[-1]], latent_representations, torch.tensor(0.0, device=latent_representations.device))
         
+        
+        
         self.latent_representations = latent_representations
+        
         
         self.latent_data = None
         self.plot_df_pca = None
@@ -416,37 +428,46 @@ class Latent_Explorer():
         # Step 5: Apply PCA to reduce the dimensionality to 3D
         pca = PCA(n_components=3)
         latent_3d = pca.fit_transform(latent_collection)
-        #true_latent_3d = pca.transform(true_latent_representation.detach().numpy())
+        true_latent_3d = pca.transform(true_latent_representation.detach().numpy())
 
         
         
         
         # Extract PCA components for plotting
         pca_x, pca_y, pca_z = latent_3d[:, 0], latent_3d[:, 1], latent_3d[:, 2]
-        #pca_x_true, pca_y_true, pca_z_true = true_latent_3d[:, 0], true_latent_3d[:, 1], true_latent_3d[:, 2]
+        pca_x_true, pca_y_true, pca_z_true = true_latent_3d[:, 0], true_latent_3d[:, 1], true_latent_3d[:, 2]
         loadings = np.abs(pca.components_)
         overall_importance = loadings.sum(axis=0)
         top_features_idx = np.argsort(overall_importance)[-3:]
+        print(pca_x)
+        print(pca_y)
+        print(pca_z)
+        print(replicate_idx_collection)
+        print(true_plot_df[self.replicate_id].values)
+        print(len(np.concatenate([replicate_idx_collection, true_plot_df[self.replicate_id].values])))
+        print(len(np.concatenate([time_steps_collection, true_plot_df[self.time_id].values])))
         
         # Step 6: Create a DataFrame for plotting with PCA results and hover information
         plot_df_pca = pd.DataFrame({
-            'PCA Component 1': np.concatenate([pca_x]),
-            'PCA Component 2': np.concatenate([pca_y]),
-            'PCA Component 3': np.concatenate([pca_z]),
+            'PCA Component 1': np.concatenate([pca_x, pca_x_true]),
+            'PCA Component 2': np.concatenate([pca_y, pca_y_true]),
+            'PCA Component 3': np.concatenate([pca_z, pca_z_true]),
             self.replicate_id: np.concatenate([replicate_idx_collection, true_plot_df[self.replicate_id].values]),
             self.time_id: np.concatenate([time_steps_collection, true_plot_df[self.time_id].values]),
             'Source': source + ['true'] * len(true_plot_df)
         })
 
         # Step 6: Create a DataFrame for plotting with PCA results and hover information
-        plot_df_loadings = pd.DataFrame({
-            f'Latent Dim {top_features_idx[0]}': latent_collection[:, top_features_idx[0]],
-            f'Latent Dim {top_features_idx[1]}': latent_collection[:, top_features_idx[1]],
-            f'Latent Dim {top_features_idx[2]}': latent_collection[:, top_features_idx[2]],
-            self.replicate_id: np.concatenate([replicate_idx_collection, true_plot_df[self.replicate_id].values]),
-            self.time_id: np.concatenate([time_steps_collection, true_plot_df[self.time_id].values]),
-            'Source': source + ['true'] * len(true_plot_df)
-        })
+        #plot_df_loadings = pd.DataFrame({
+        #    f'Latent Dim {top_features_idx[0]}': latent_collection[:, top_features_idx[0]],
+        #    f'Latent Dim {top_features_idx[1]}': latent_collection[:, top_features_idx[1]],
+        #    f'Latent Dim {top_features_idx[2]}': latent_collection[:, top_features_idx[2]],
+        #    self.replicate_id: np.concatenate([replicate_idx_collection, true_plot_df[self.replicate_id].values]),
+        #    self.time_id: np.concatenate([time_steps_collection, true_plot_df[self.time_id].values]),
+        #    'Source': source + ['true'] * len(true_plot_df)
+        #})
+        plot_df_loadings = pd.DataFrame()
+        
 
         return plot_df_pca, plot_df_loadings
 
@@ -493,14 +514,24 @@ class Latent_Explorer():
         
         fig.show()
 
-    def pca_latent_space_2d(self):
-        latent_representations_np = self.latent_representations.numpy()  # Shape: (num_samples, latent_dim)
+    def pca_latent_space_2d(self, linearize=False):
+        
+        if linearize:
+            latent_representations_np = self.linear_latent_representations.numpy()  # Shape: (num_samples, latent_dim)
+        else:
+            latent_representations_np = self.latent_representations.numpy()  # Shape: (num_samples, latent_dim)
+        
 
         # Apply PCA to reduce to 2 dimensions
         pca = PCA(n_components=3)
         latent_2d = pca.fit_transform(latent_representations_np)
         explained_variance = pca.explained_variance_ratio_
         print("Explained variance by each component:", explained_variance)
+        
+        sample_ids = self.df[self.replicate_id].values  # Unique identifier for each sample
+        time_ids = self.df[self.time_id].values     # Time points for coloring
+        unique_samples = np.unique(sample_ids)
+    
         
         
         # Assuming you have some labels for coloring the points (e.g., from the DataFrame)
@@ -511,10 +542,30 @@ class Latent_Explorer():
         plt.figure(figsize=(10, 8))
         scatter = plt.scatter(latent_2d[:, 0], latent_2d[:,1], c=labels, cmap='viridis', alpha=0.6)
         #np.zeros_like(latent_2d)
-        
+            # Add lines for each sample, connecting points in order of time_id
+        # Define a color palette for lines (one color per sample)
+        line_colors = plt.get_cmap('tab10', len(unique_samples))  # 'tab10' provides distinct colors
+
+        # Plot lines for each sample with a unique color
+        for i, sample in enumerate(unique_samples):
+            # Mask for the current sample
+            sample_mask = sample_ids == sample
+            # Get latent points and time_ids for this sample
+            sample_latent = latent_2d[sample_mask]
+            sample_times = time_ids[sample_mask]
+
+            # Sort points by time_id to connect them in order
+            sorted_indices = np.argsort(sample_times)
+            sample_latent_sorted = sample_latent[sorted_indices]
+
+            # Plot the line with a unique color
+            line_color = line_colors(i)
+            plt.plot(sample_latent_sorted[:, 0], sample_latent_sorted[:, 1], 
+                     color=line_color, alpha=0.5, label=sample)
+
         #latent_2d[:, 1]
         # Create a color bar
-        plt.colorbar(scatter, label='Label')
+        plt.colorbar(scatter, label='Timepoint')
         plt.title('2D PCA of Latent Space')
         plt.xlabel('PCA Component 1')
         plt.ylabel('PCA Component 2')
@@ -672,7 +723,6 @@ class Modes_Explorer():
                 valid_mask = mask.all(dim=-1)
                 valid_mask_int = valid_mask.to(torch.int64)
                 first_valid_timepoint = (valid_mask_int.argmax(dim=-1))
-                print(first_valid_timepoint)
             
                 # Calculate Mean Points of all samples
                 encoded_mask = data[..., :encoded_test_data.shape[-1]] != self.mask_value 
@@ -1082,36 +1132,101 @@ class KoopmanModelWrapper(torch.nn.Module):
 
 
 class Importance_Explorer():
-    def __init__(self, model, 
-                 test_set_df, feature_list, mask_value=-1e-9, condition_id='', time_id='', replicate_id='', 
-                 **kwargs):
-
+    def __init__(self, model, test_set_df, feature_list, mask_value=-1e-9, condition_id='', time_id='', replicate_id='', 
+                 baseline_df=None, norm_df=None, **kwargs):
+        """
+        Initialize the Importance_Explorer.
+    
+        Parameters:
+        - model: The trained model to analyze.
+        - test_set_df: DataFrame containing the test set data.
+        - feature_list: List of feature names.
+        - mask_value: Value used to mask missing data (default: -1e-9).
+        - condition_id: Column name for condition identifier (default: '').
+        - time_id: Column name for time identifier (default: '').
+        - replicate_id: Column name for replicate identifier (default: '').
+        - baseline_df: Optional DataFrame to compute the initial state median baseline. Defaults to test_set_df.
+        - norm_df: Optional DataFrame to compute normalization statistics (std or range). Defaults to test_set_df.
+        - **kwargs: Additional keyword arguments.
+        """
         self.model = model
         self.test_set_df = test_set_df
-        self.mask_value = mask_value
-
         self.feature_list = feature_list
+        self.mask_value = mask_value
         self.condition_id = condition_id
         self.time_id = time_id
         self.replicate_id = replicate_id
-
+        # Use provided DataFrames or default to test_set_df
+        self.norm_df = baseline_df if baseline_df is not None else test_set_df
         self.attributions_dicts = {}
-
         timeseries_length = len(test_set_df[time_id].unique())
-        self.timeseries_key = (0,1,0,timeseries_length-1,1,0)
+        self.timeseries_key = (0, 1, 0, timeseries_length-1, True, False)
+        # Compute initial state median and norm stats using the specified DataFrames
+        #self.baseline = self._compute_initial_state_median()
+        self.norm_stats = self._compute_norm_stats()
+        self.multishift = False
 
-    def get_target_medians(self, masked_targets, mask):
+    def _compute_initial_state_median(self):
+        """Compute the median of the initial state across all samples."""
+        dataloader_test = OmicsDataloader(self.norm_df, self.feature_list, self.replicate_id,
+                                          batch_size=600, dl_structure='temporal',
+                                          max_Kstep=7, mask_value=self.mask_value, shuffle=False)
+        test_loader = dataloader_test.get_dataloaders()
+        
+        all_initial_inputs = []
+        for data in test_loader:
+            initial_input = data[0, :, 0, :]  # [batch_size, features] at t=0
+            mask = initial_input != self.mask_value
+            masked_input = torch.where(mask, initial_input, torch.tensor(0.0, device=initial_input.device))
+            all_initial_inputs.append(masked_input)
+        
+        # Concatenate all batches
+        all_initial_inputs = torch.cat(all_initial_inputs, dim=0)
+        mask = all_initial_inputs != 0.0  # Mask for valid values
+        
+        # Compute column-wise medians
+        column_medians = []
+        for col in range(all_initial_inputs.shape[1]):
+            valid_values = all_initial_inputs[:, col][mask[:, col]]
+            if valid_values.numel() > 0:
+                column_median = valid_values.median()
+            else:
+                column_median = torch.tensor(0.0, device=all_initial_inputs.device)
+            column_medians.append(column_median)
+        
+        return torch.stack(column_medians)
+    
+    def tensor_median(self, tensor):
+        # Flatten tensor to 1D and sort
+        sorted_tensor, _ = torch.sort(tensor.flatten())
+        n = sorted_tensor.numel()
+        if n % 2 == 0:
+            # Average the two middle elements
+            mid1 = sorted_tensor[n // 2 - 1]
+            mid2 = sorted_tensor[n // 2]
+            return (mid1 + mid2) / 2.0
+        else:
+            return sorted_tensor[n // 2]
+
+    def _compute_dynamic_input_medians(self, input_tensor, mask, masked=False):
+        
+        if not masked:
+            mask = current_input != self.mask_value
+            masked_input = torch.where(mask, input_tensor, torch.tensor(0.0, device=current_input.device))
+        else: 
+            masked_input = input_tensor
+
         # Step 1: Initialize an empty list to store column-wise medians
         column_medians = []
         
         # Step 2: Calculate the median for each column separately
-        for col in range(masked_targets.shape[1]):
+        for col in range(masked_input.shape[1]):
             # Select only non-zero (non-masked) values in the current column
-            valid_values = masked_targets[:, col][mask[:, col]]
+            valid_values = masked_input[:, col][mask[:, col]]
             
             # Calculate median if there are valid values; otherwise, return 0
             if valid_values.numel() > 0:
-                column_median = valid_values.median()
+                column_median = self.tensor_median(valid_values)
             else:
                 column_median = torch.tensor(0.0, device=masked_targets.device)
             
@@ -1120,84 +1235,215 @@ class Importance_Explorer():
         # Step 3: Stack results to get a tensor with column-wise medians
         column_medians = torch.stack(column_medians)
     
-        return column_medians         
-
-
-    def get_importance(self, start_Kstep=0, max_Kstep=1, start_timepoint_idx=0, fwd=1, bwd=0, end_timepoint_idx = 1):
-
-        dataloader_test = OmicsDataloader(self.test_set_df, self.feature_list, self.replicate_id,
-                                             batch_size=600, dl_structure='temporal',
-                                             max_Kstep = max_Kstep, mask_value=self.mask_value,
-                                              shuffle=False
-                                         )
-        test_loader = dataloader_test.get_dataloaders()
-
-        timeseries_attributions = []
-
-        timepoint_counts = 0
-        for i in range(start_timepoint_idx, end_timepoint_idx):
-            print(f'Calculating Feature Importance of shift {i}->{i+max_Kstep}')
-            for data in test_loader:
-                test_input = data[start_Kstep,:,i,:]
-                test_target = data[max_Kstep,:,i,:]
-                
-                mask = test_target != self.mask_value  
-                masked_targets = torch.where(mask, test_target, torch.tensor(0.0, device=test_target.device))
-                masked_input = torch.where(mask, test_input, torch.tensor(0.0, device=test_input.device))
-
-                
-                input_medians = self.get_target_medians(masked_input, mask)
-                expanded_target_medians = input_medians.unsqueeze(0).expand_as(masked_input)
-
-                whole_test_input = data[start_Kstep,:,:,:]
-                whole_mask = whole_test_input != self.mask_value  
-                whole_masked_input = torch.where(whole_mask, whole_test_input, torch.tensor(0.0, device=test_input.device))                
-                
-                input_mean = masked_input.mean(dim=(0,1))
-                expanded_input_mean = input_mean.unsqueeze(0).expand_as(masked_targets)
-
-                
-                wrapped_model = KoopmanModelWrapper(self.model, fwd=fwd, bwd=bwd)
-                ig = IntegratedGradients(wrapped_model)
-            
-                attributions = []
-            
-                for target_index in range(len(self.feature_list)):
-                    attr, delta = ig.attribute(masked_input, target=target_index, return_convergence_delta=True, baselines=expanded_target_medians) #masked_inputs
-
-                    #attr[:,target_index] = 0
-                    attributions.append(attr)
-            
-                attributions_tensor = torch.stack(attributions)
-                timeseries_attributions.append(attributions_tensor)
-                
-        timeseries_attr_tensor = torch.stack(timeseries_attributions)
-        mean_tp_attributions = timeseries_attr_tensor.mean(dim=2)
-
+        return column_medians    
         
-        squared_ts_attributions = mean_tp_attributions ** 2
-        #mean_squared_tp_attributions = squared_ts_attributions.mean(dim=2)
-        # mean sq sum over samples given no timepoint aggregation
-        #squared_attributions_sum = squared_ts_attributions.sum(dim=0)
-        # sum over all timepoints
-        mean_squared_ts_attributions = squared_ts_attributions.mean(dim=0)
-        RMS_ts_attributions = mean_squared_ts_attributions.sqrt()
-        # mean sq sum over samples given with timepoint aggregation
+    def _compute_norm_stats(self, method='std'):
+        """Compute normalization statistics (std or range) from the full test_set_df."""
+        dataloader_test = OmicsDataloader(self.norm_df, self.feature_list, self.replicate_id,
+                                          batch_size=600, dl_structure='temporal',
+                                          max_Kstep=1, mask_value=self.mask_value, shuffle=False)
+        test_loader = dataloader_test.get_dataloaders()
+        all_data = []
+        for data in test_loader:
+            # Use all timepoints from start_Kstep (typically 0)
+            all_data.append(data[0, :, :, :])  # Shape: [batch_size, timepoints, features]
+        
+        # Concatenate all batches and flatten to [num_samples * timepoints, features]
+        all_data = torch.cat(all_data, dim=0)  # Shape: [total_batches * batch_size, timepoints, features]
+        flat_data = all_data.reshape(-1, all_data.shape[-1])  # Shape: [num_samples * timepoints, features]
+        mask = flat_data != self.mask_value
 
+        column_stats = []
+        for col in range(flat_data.shape[1]):
+            valid_values = flat_data[:, col][mask[:, col]]
+            if valid_values.numel() > 0:
+                if method == 'std':
+                    col_stat = valid_values.std()
+                    if col_stat == 0:
+                        col_stat = torch.tensor(1.0, device=valid_values.device)
+                elif method == 'range':
+                    col_max = valid_values.max()
+                    col_min = valid_values.min()
+                    col_stat = col_max - col_min
+                    if col_stat == 0:
+                        col_stat = torch.tensor(1.0, device=valid_values.device)
+                else:
+                    raise ValueError("Normalization method must be 'std' or 'range'")
+            else:
+                col_stat = torch.tensor(1.0, device=flat_data.device)
+            column_stats.append(col_stat)
+        return torch.stack(column_stats)
+            
+    def normalize_attributions(self, attributions, method='std'):
+        """Normalize attributions using precomputed statistics from test_set_df."""
+        # Use precomputed normalization stats based on the chosen method
+        if method not in ['std', 'range']:
+            raise ValueError("Normalization method must be 'std' or 'range'")
+        
+        # For now, assume self.norm_stats is computed with 'std' in __init__
+        # If you need dynamic method switching, precompute both and store in a dict
+        stats_per_feature = self.norm_stats  # Shape: [features]
+        normalized_attributions = attributions / stats_per_feature
+        return normalized_attributions        
+    def get_importance(self, start_Kstep=0, max_Kstep=1, start_timepoint_idx=0, 
+                       fwd=False, bwd=False, end_timepoint_idx=1, norm_method='std', multishift=False):
+        """
+        Calculate feature importances either from each original timepoint or dynamically evolving predictions.
+        
+        Parameters:
+        - start_Kstep: Starting step index (default: 0).
+        - max_Kstep: Maximum step size for prediction (default: 1).
+        - start_timepoint_idx: Starting timepoint index (default: 0).
+        - fwd: Use forward dynamics (default: False).
+        - bwd: Use backward dynamics (default: False).
+        - end_timepoint_idx: Ending timepoint index (default: 1).
+        - norm_method: Normalization method ('std' or 'range', default: 'std').
+        - evolve_dynamically: If True, evolve predictions iteratively from t=0; if False, use original timepoints (default: False).
+        
+        Returns:
+        - Dictionary with aggregated importance metrics.
+        """
+        dataloader_test = OmicsDataloader(self.test_set_df, self.feature_list, self.replicate_id,
+                                          batch_size=600, dl_structure='temporal',
+                                          max_Kstep=max_Kstep, mask_value=self.mask_value,
+                                          shuffle=False)
+        test_loader = dataloader_test.get_dataloaders()
+    
+        timeseries_attributions = []
+    
+        if multishift:
+            print('Multishifting to calculate Importance.')
+            # Dynamic evolution mode: Start from t=0 and predict forward
+            for data in test_loader:
+                current_input = data[start_Kstep, :, 0, :]  # Start with t=0
+                for i in range(start_timepoint_idx, end_timepoint_idx):
+                    baseline_input = data[start_Kstep, :, i, :]
+                    if not i + max_Kstep <= end_timepoint_idx:
+                        break
+                    print(f'Calculating Feature Importance of shift {i}->{i+max_Kstep}')
+    
+                    mask = current_input != self.mask_value
+                    masked_input = torch.where(mask, current_input, torch.tensor(0.0, device=current_input.device))
+                    masked_baseline_input = torch.where(mask, baseline_input, torch.tensor(0.0, device=current_input.device))
+                    
+                    median_baseline = self._compute_dynamic_input_medians(masked_baseline_input, mask, masked=True)
+
+                    expanded_baseline = median_baseline.unsqueeze(0).expand_as(masked_input)
+                
+                    
+    
+                    if fwd:
+                        wrapped_model = KoopmanModelWrapper(self.model, fwd=max_Kstep)
+                    else:
+                        wrapped_model = KoopmanModelWrapper(self.model, bwd=max_Kstep)
+    
+                    ig = IntegratedGradients(wrapped_model)
+                    attributions = []
+                    for target_index in range(len(self.feature_list)):
+                        attr, delta = ig.attribute(masked_input, target=target_index, 
+                                                  baselines=expanded_baseline, 
+                                                  return_convergence_delta=True)
+                        attributions.append(attr)
+    
+                    attributions_tensor = torch.stack(attributions)
+                    normalized_attributions = self.normalize_attributions(attributions_tensor, method=norm_method)
+                    timeseries_attributions.append(normalized_attributions)
+    
+                    # Predict the next state as the new input
+                    with torch.no_grad():
+                        current_input = wrapped_model(masked_input)  # Shape: [batch_size, features]
+    
+        else:
+            # Original mode: Calculate from each timepoint independently
+            for i in range(start_timepoint_idx, end_timepoint_idx):
+                if not i + max_Kstep <= end_timepoint_idx:
+                    break
+                print(f'Calculating Feature Importance of shift {i}->{i+max_Kstep}')
+    
+                for data in test_loader:
+                    test_input = data[start_Kstep, :, i, :]
+                    test_target = data[max_Kstep, :, i, :]
+                    
+                    mask = test_target != self.mask_value
+                    masked_targets = torch.where(mask, test_target, torch.tensor(0.0, device=test_target.device))
+                    masked_input = torch.where(mask, test_input, torch.tensor(0.0, device=test_input.device))
+                    
+                    median_baseline = self._compute_dynamic_input_medians(masked_input, mask, masked=True)
+                    
+                    expanded_baseline = median_baseline.unsqueeze(0).expand_as(masked_input)
+    
+                    if fwd:
+                        wrapped_model = KoopmanModelWrapper(self.model, fwd=max_Kstep)
+                    else:
+                        wrapped_model = KoopmanModelWrapper(self.model, bwd=max_Kstep)
+    
+                    ig = IntegratedGradients(wrapped_model)
+                    attributions = []
+                    for target_index in range(len(self.feature_list)):
+                        attr, delta = ig.attribute(masked_input, target=target_index, 
+                                                  baselines=expanded_baseline, 
+                                                  return_convergence_delta=True)
+                        attributions.append(attr)
+    
+                    attributions_tensor = torch.stack(attributions)
+                    normalized_attributions = self.normalize_attributions(attributions_tensor, method=norm_method)
+
+                    timeseries_attributions.append(normalized_attributions)
+                    break
+    
+        # Stack and aggregate across timepoints and batches
+        timeseries_attr_tensor = torch.stack(timeseries_attributions)  # [T*N, num_features, batch_size, features]
+        print('timeseries_attr_tensor')
+        print(timeseries_attr_tensor)
+        mean_tp_attributions = timeseries_attr_tensor.mean(dim=2)  # [T*N, num_features, features]
+        print('mean_tp_attributions')
+        print(mean_tp_attributions)
+
+        squared_ts_attributions = mean_tp_attributions ** 2
+        mean_squared_ts_attributions = squared_ts_attributions.mean(dim=0)  # [num_features, features]
+        RMS_ts_attributions = mean_squared_ts_attributions.sqrt()
+        print('RMS_ts_attributions')
+        print(RMS_ts_attributions)
+    
         max_ts, max_indices_ts = mean_tp_attributions.max(dim=0)
         min_ts, min_indices_ts = mean_tp_attributions.min(dim=0)
-
+    
         return {
             'mean_tp': mean_tp_attributions,
-            'RMS_ts_attributions': RMS_ts_attributions, 
+            'RMS_ts_attributions': RMS_ts_attributions,
             'max_ts': max_ts,
-            'max_indices_ts':max_indices_ts,
+            'max_indices_ts': max_indices_ts,
             'min_ts': min_ts,
             'min_indices_ts': min_indices_ts
         }
+    def get_all_feature_importances(self):
+        """
+        Computes and returns a DataFrame of all feature importances 
+        from all attributions stored in `self.attributions_dicts`.
+        """
+    
+        feature_importance_dict = {feature: 0 for feature in self.feature_list}
+    
+        # Accumulate importance scores from all stored attributions
+        for attribution in self.attributions_dicts.values():
+            mean_sq_attr_ts = attribution['RMS_ts_attributions'].cpu().numpy()
+    
+            # Sum importance across all features
+            feature_importance = np.sum(np.abs(mean_sq_attr_ts), axis=1)  # Sum across all connections per feature
+    
+            # Store in dictionary
+            for i, feature in enumerate(self.feature_list):
+                feature_importance_dict[feature] += feature_importance[i]
+    
+        # Convert to DataFrame and sort
+        feature_importance_df = pd.DataFrame.from_dict(feature_importance_dict, orient='index', columns=['Importance'])
+        feature_importance_df = feature_importance_df.sort_values(by='Importance', ascending=False).reset_index()
+        feature_importance_df.rename(columns={'index': 'Feature'}, inplace=True)
+    
+        return feature_importance_df
 
     
-    def plot_importance_network(self, start_Kstep=0, max_Kstep=1, start_timepoint_idx=0, end_timepoint_idx=1, fwd=1, bwd=0, plot_tp=None, threshold_node=99.5, threshold_edge=0.01):
+    def plot_importance_network(self, start_Kstep=0, max_Kstep=1, start_timepoint_idx=0, end_timepoint_idx=1, fwd=False, bwd=False, plot_tp=None, threshold_node=99.5, threshold_edge=0.01):
 
         key = (start_Kstep, max_Kstep, start_timepoint_idx, end_timepoint_idx, fwd, bwd)
         
@@ -1209,7 +1455,7 @@ class Importance_Explorer():
                 start_timepoint_idx=start_timepoint_idx,
                 end_timepoint_idx=end_timepoint_idx,
                 fwd=fwd,
-                bwd=bwd
+                bwd=bwd, multishift = self.multishift
             )
 
         attributions_dict = self.attributions_dicts[key]
@@ -1302,7 +1548,6 @@ class Importance_Explorer():
         x = np.arange(len(sorted_attrs))
         y = sorted_attrs
         elbow_index, elbow_importance =  self.demonstrate_elbow_detection(x,y, threshold_edge)
-        print(elbow_importance)
 
         for edge in G.edges():
             edge_row = {}
@@ -1463,7 +1708,7 @@ class Importance_Explorer():
                 start_timepoint_idx=start_timepoint_idx,
                 end_timepoint_idx=end_timepoint_idx,
                 fwd=fwd,
-                bwd=bwd
+                bwd=bwd, multishift = self.multishift
             )
 
         attributions_dict = self.attributions_dicts[key]
@@ -1799,30 +2044,50 @@ class Importance_Explorer():
     
         return feature_color_mapping
 
-    def plot_feature_importance_over_timeshift_interactive(self, feature_color_mapping, title='Feature Importances Over Time Shifts', threshold=None):
+    def plot_feature_importance_over_timeshift_interactive(
+        self,
+        feature_color_mapping,
+        title='Feature Importances Over Time Shifts',
+        threshold=None,
+        **kwargs
+    ):
 
-        # Calculate attributions and store in the dictionary with the key
-        if self.timeseries_key not in self.attributions_dicts.keys():
-            self.attributions_dicts[self.timeseries_key] = self.get_importance(
-                start_Kstep=self.timeseries_key[0],
-                max_Kstep=self.timeseries_key[1],
-                start_timepoint_idx=self.timeseries_key[2],
-                end_timepoint_idx=self.timeseries_key[3],
-                fwd=self.timeseries_key[4],
-                bwd=self.timeseries_key[5]
-            )
+        
+        # Extract parameters from kwargs with defaults from self.timeseries_key
+        start_Kstep = kwargs.get('start_Kstep', self.timeseries_key[0])
+        max_Kstep = kwargs.get('max_Kstep', self.timeseries_key[1])
+        start_timepoint_idx = kwargs.get('start_timepoint_idx', self.timeseries_key[2])
+        end_timepoint_idx = kwargs.get('end_timepoint_idx', self.timeseries_key[3])
+        fwd = kwargs.get('fwd', self.timeseries_key[4])
+        bwd = kwargs.get('bwd', self.timeseries_key[5])
+        
+        key = (start_Kstep, max_Kstep, start_timepoint_idx, end_timepoint_idx, fwd, bwd)
 
-        attributions_dict = self.attributions_dicts[self.timeseries_key]
+        if key not in self.attributions_dicts.keys():
+
+            # Calculate attributions and store in the dictionary with the key
+            self.attributions_dicts[key] = self.get_importance(
+                    start_Kstep=start_Kstep,
+                    max_Kstep=max_Kstep,
+                    start_timepoint_idx=start_timepoint_idx,
+                    end_timepoint_idx=end_timepoint_idx,
+                    fwd=fwd,
+                    bwd=bwd, multishift = self.multishift
+                )
+
+        attributions_dict = self.attributions_dicts[key]
 
         RMS_importance_values = (attributions_dict['mean_tp']**2).mean(dim=2).sqrt()
 
-        df = pd.DataFrame(RMS_importance_values.numpy(), columns=self.feature_list, index=self.test_set_df[self.time_id].unique()[1:])
-        df['Timeshift'] = df.index
+        print(self.test_set_df[self.time_id].unique()[:-max_Kstep])
+        df = pd.DataFrame(RMS_importance_values.numpy(), columns=self.feature_list, index=self.test_set_df[self.time_id].unique()[:-max_Kstep])
+        df['original tp'] = df.index
+        #df['target tp'] = df['original tp'] + max_Kstep
 
         
         # RMS over all output features
         # Melt the DataFrame to a long format for easier plotting with plotly
-        melted_df = df.melt(id_vars='Timeshift', var_name='Feature', value_name='Importance')
+        melted_df = df.melt(id_vars='original tp', var_name='Feature', value_name='Importance')
     
         # Compute the maximum importance for each feature
         feature_max_importance = melted_df.groupby('Feature')['Importance'].transform('max')
@@ -1834,7 +2099,7 @@ class Importance_Explorer():
         # - Maximum importance (descending) to prioritize high-importance features.
         # - Timeshift (ascending) to preserve chronological order within each feature.
         melted_df = melted_df.sort_values(
-            by=['Feature Max Importance', 'Feature', 'Timeshift'], 
+            by=['Feature Max Importance', 'Feature', 'original tp'], 
             ascending=[False, True, True]
         )
         
@@ -1851,15 +2116,15 @@ class Importance_Explorer():
         melted_df['Delta Importance'] = melted_df.groupby('Feature')['Importance'].diff()
     
         # Create hover text with feature importance and delta importance
-        melted_df['Hover Text'] = melted_df.apply(lambda row: f"<br>Delta Importance: {row['Delta Importance']:.2f}", axis=1)
+        melted_df['Hover Text'] = melted_df.apply(lambda row: f"<br>Delta Importance: {row['Delta Importance']:.2f} <br>target tp: {row['original tp'] + max_Kstep:.0f}", axis=1)
         #<br>Importance: {row['Importance']:.2f}
         # Create an interactive line plot with Plotly
-        fig = px.line(melted_df, x='Timeshift', y='Importance', color='Feature', title=title,
+        fig = px.line(melted_df, x='original tp', y='Importance', color='Feature', title=title,
                       color_discrete_map=feature_color_mapping, markers=True, hover_data=['Hover Text'])
     
         # Update layout for better readability
         fig.update_layout(
-            xaxis_title='Timeshift',
+            xaxis_title='original tp',
             yaxis_title='Feature Importance',
             legend_title_text='Features',
             showlegend=True  # Hide the legend in the interactive plot
@@ -1907,7 +2172,6 @@ class Timeseries_Explorer():
         colormap = plt.get_cmap('viridis')
         norm = mcolors.Normalize(vmin=min(self.time_values), vmax=max(self.time_values))
         self.time_color_values = {i: colormap(norm(i)) for i in self.time_values}
-        print(self.time_color_values)
 
         
         self.replicate_id = replicate_id
@@ -1931,7 +2195,7 @@ class Timeseries_Explorer():
         
         self.input_tensor = torch.tensor(self.df[self.df['gap']== False][self.feature_list].values, dtype=torch.float32)
 
-    def plot_1d_timeseries(self):
+    def plot_1d_timeseries(self, feature=None):
 
         # Get unique Subject IDs and feature columns
         sorted_replicate_ids = sorted(self.df[self.replicate_id].unique())
@@ -1951,12 +2215,20 @@ class Timeseries_Explorer():
             description='Replicates:',
             disabled=False
         )
-        
-        feature_dropdown = widgets.Dropdown(
-            options=sorted(self.feature_list),
-            description='Feature:',
-            disabled=False,
-        )
+
+        if feature is not None:
+            feature_dropdown = widgets.Dropdown(
+                options=sorted(self.feature_list),
+                value=feature,
+                description='Feature:',
+                disabled=False,
+            )
+        else:
+            feature_dropdown = widgets.Dropdown(
+                options=sorted(self.feature_list),
+                description='Feature:',
+                disabled=False,
+            )
         
         
         shift_dropdown = widgets.Dropdown(
@@ -1997,10 +2269,10 @@ class Timeseries_Explorer():
             display(ui, out)
 
             
-            # Save the interactive visualization
-            plot_interactive_timeseries_plot(replicate_id_dropdown.value,
-                                 feature_dropdown.value,
-                                 shift_dropdown.value)
+        # Save the interactive visualization
+        plot_interactive_timeseries_plot(replicate_id_dropdown.value,
+                             feature_dropdown.value,
+                             shift_dropdown.value)
         
     def shift_data(self, max_Kstep, fwd=False, bwd=False):
         """Generates forward and/or backward predictions up to max_Kstep and stores in shift_dict."""

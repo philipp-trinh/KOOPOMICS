@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.autograd import Variable
 import torch.nn.functional as F
-from torch import nn
+from typing import List, Union, Optional, Tuple, Any
 
 
 
@@ -81,30 +81,90 @@ class FF_AE(nn.Module):
     with ReLU activations.
     """
 
-    def __init__(self, E_layer_dims, D_layer_dims, E_dropout_rates=None, D_dropout_rates=None, activation_fn='tanh'):
+    def __init__(self,
+                 E_layer_dims: List[int],
+                 D_layer_dims: List[int],
+                 E_dropout_rates: Optional[List[float]] = None,
+                 D_dropout_rates: Optional[List[float]] = None,
+                 activation_fn: str = 'tanh'):
+        """
+        Initialize the FeedForward Autoencoder.
+        
+        Parameters:
+        -----------
+        E_layer_dims : List[int]
+            Dimensions for encoder layers
+        D_layer_dims : List[int]
+            Dimensions for decoder layers
+        E_dropout_rates : Optional[List[float]], default=None
+            Dropout rates for encoder layers
+        D_dropout_rates : Optional[List[float]], default=None
+            Dropout rates for decoder layers
+        activation_fn : str, default='tanh'
+            Activation function to use
+        """
         super(FF_AE, self).__init__()
 
+        # Initialize dropout rates with zeros if not provided
         if E_dropout_rates is None:
             E_dropout_rates = [0] * len(E_layer_dims)
 
         if D_dropout_rates is None:
             D_dropout_rates = [0] * len(D_layer_dims)
         
+        # Store parameters
         self.E_layer_dims = E_layer_dims
         self.D_layer_dims = D_layer_dims
         self.E_dropout_rates = E_dropout_rates
         self.D_dropout_rates = D_dropout_rates
         self.activation_fn = activation_fn
         
-        self.encode = _build_nn_layers_with_dropout(E_layer_dims, E_dropout_rates, activation_fn=activation_fn)
-        self.decode = _build_nn_layers_with_dropout(D_layer_dims, D_dropout_rates, activation_fn=activation_fn)
+        # Build encoder and decoder networks
+        self.encode = _build_nn_layers_with_dropout(
+            E_layer_dims,
+            E_dropout_rates,
+            activation_fn=activation_fn
+        )
+        
+        self.decode = _build_nn_layers_with_dropout(
+            D_layer_dims,
+            D_dropout_rates,
+            activation_fn=activation_fn
+        )
     
-    def ae_forward(self, x):
+    def ae_forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass through both encoder and decoder, returning both latent representation
+        and reconstruction.
+        
+        Parameters:
+        -----------
+        x : torch.Tensor
+            Input data tensor
+            
+        Returns:
+        --------
+        Tuple[torch.Tensor, torch.Tensor]
+            A tuple containing (latent_representation, reconstructed_data)
+        """
         e_ae = self.encode(x)
         x_ae = self.decode(e_ae)
         return e_ae, x_ae
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the autoencoder, returning only the reconstruction.
+        
+        Parameters:
+        -----------
+        x : torch.Tensor
+            Input data tensor
+            
+        Returns:
+        --------
+        torch.Tensor
+            Reconstructed data tensor
+        """
         e_ae = self.encode(x)
         x_ae = self.decode(e_ae)
         return x_ae

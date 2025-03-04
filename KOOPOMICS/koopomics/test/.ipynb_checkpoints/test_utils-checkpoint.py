@@ -11,48 +11,48 @@ from ..training.KoopmanMetrics import KoopmanMetricsMixin
 # Naive model class that predicts the average of the target for reference
 class NaiveMeanPredictor(nn.Module):
     def __init__(self, train_data, mask_value=None):
-        # Call the parent class (nn.Module) constructor
         super(NaiveMeanPredictor, self).__init__()
         self.means = None
         self.mask_value = mask_value
-        
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")
+    
         if isinstance(train_data, torch.utils.data.DataLoader):  # Check if it's a DataLoader
             self.get_means_dl(train_data)
         elif isinstance(train_data, pd.DataFrame):  # Check if it's a DataFrame
             self.get_means_df(train_data)
         else:
             raise ValueError("train_data must be either a DataLoader or a DataFrame")
-        
 
     def get_means_dl(self, dl):
+        # Get a sample batch to infer tensor shape
         for data in dl:
-            input_data = data[0]
-            
-        # Initialize variables to store the sum and count for mean calculation
-        sum_values = torch.zeros(input_data.shape[-1], dtype=torch.float32)
-        count_values = torch.zeros(input_data.shape[-1], dtype=torch.float32)
+            input_data = data[0].to(self.device)  # Move data to the correct device
+            break
+
+        # Initialize sum and count tensors on the correct device
+        sum_values = torch.zeros(input_data.shape[-1], dtype=torch.float32, device=self.device)
+        count_values = torch.zeros(input_data.shape[-1], dtype=torch.float32, device=self.device)
         
-        # Loop through the train_loader to calculate the mean
+        # Loop through the DataLoader to compute means
         with torch.no_grad():
             for data in dl:
-                input_data = data[0]
+                input_data = data[0].to(self.device)  # Ensure input is on the correct device
                 
-                
-                # If a mask_value is provided, apply masking
                 if self.mask_value is not None:
-                    mask = (input_data != self.mask_value) 
-                    masked_input_data = torch.where(mask, input_data, torch.tensor(0.0))
+                    mask = (input_data != self.mask_value)
+                    masked_input_data = torch.where(mask, input_data, torch.tensor(0.0, device=self.device))
 
                 if masked_input_data.shape[1] == 1:
                     sum_values += masked_input_data.sum(dim=0).squeeze()
-                    count_values += (masked_input_data != self.mask_value).sum(dim=0).squeeze() 
-                    
+                    count_values += (masked_input_data != self.mask_value).sum(dim=0).squeeze()
                 else:
-                    sum_values += masked_input_data.sum(dim=(0,1))
-                    count_values += (masked_input_data != self.mask_value).sum(dim=(0,1))
-                    
+                    sum_values += masked_input_data.sum(dim=(0, 1))
+                    count_values += (masked_input_data != self.mask_value).sum(dim=(0, 1))
+
+        # Compute means and store as non-trainable parameter
         self.means_values = sum_values / count_values
-        self.means = nn.Parameter(self.means_values.clone().detach(), requires_grad=False)
+        self.means = nn.Parameter(self.means_values.clone().detach(), requires_grad=False).to(self.device)
 
 
 
@@ -229,7 +229,7 @@ class Evaluator(KoopmanMetricsMixin):
                     loss_fwd_batch, loss_bwd_batch, loss_latent_identity_batch,
                     loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch
                 )
-                
+
                 # Accumulate batch losses for the epoch
                 test_fwd_loss += loss_fwd_batch
                 test_bwd_loss += loss_bwd_batch
@@ -279,6 +279,7 @@ class Evaluator(KoopmanMetricsMixin):
                     if self.loss_weights[0] > 0:
                         baseline_output = self.baseline(input_fwd)
                         loss_fwd = self.criterion(baseline_output, target_fwd)
+
                         loss_fwd_batch += loss_fwd
                         
                     # Backward loss computation
@@ -326,7 +327,7 @@ class Evaluator(KoopmanMetricsMixin):
                     # Prepare forward and backward inputs
                     input_identity = data_list[step].to(self.device)
                     target_identity = data_list[step].to(self.device)
-                    loss_identity_step = self.compute_identity_loss(input_identity, None) 
+                    loss_identity_step = self.compute_identity_loss(input_identity, target_identity) 
                     loss_identity_batch += loss_identity_step
                 
                 # Accumulate batch losses for the epoch

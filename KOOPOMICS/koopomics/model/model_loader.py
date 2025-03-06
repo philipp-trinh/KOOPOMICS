@@ -18,124 +18,6 @@ import wandb
 from torch.utils.data import TensorDataset
 
 
-class ConfigManager:
-    """
-    Centralized configuration manager for KOOPOMICS models.
-    
-    This class handles parameter parsing, validation, and provides default values
-    for all configuration parameters used in the KOOPOMICS package.
-    """
-    
-    def __init__(self, config: Dict[str, Any]):
-        """
-        Initialize the ConfigManager with a configuration dictionary.
-        
-        Parameters:
-        -----------
-        config : Dict[str, Any]
-            Dictionary containing configuration parameters
-        """
-        self.config = config
-        self._parse_config()
-        
-    def _parse_config(self):
-        """Parse and validate configuration parameters."""
-        # Model architecture parameters
-        self.E_layer_dims = self._parse_layer_dims(
-            self.config.get('E_layer_dims', "247,2000,2000,150")
-        )
-        
-        # Initialize dropout rates with proper length
-        self.E_dropout_rates = [0] * len(self.E_layer_dims)
-        self.E_dropout_rates[0] = self.config.get('E_dropout_rate_1', 0)
-        if len(self.E_dropout_rates) > 1:
-            self.E_dropout_rates[1] = self.config.get('E_dropout_rate_2', 0)
-            
-        # Training mode and operator parameters
-        self.training_mode = self.config.get('training_mode', 'modular')
-        self.operator = self.config.get('operator', 'invkoop')
-        
-        # Handle linearizer layers for modular training
-        if self.training_mode == 'modular':
-            self.operator = 'linkoop'
-            self.default_linE_layers = [self.E_layer_dims[-1]] + self.E_layer_dims[1:]
-            self.default_linE_layers_str = ",".join(map(str, self.default_linE_layers))
-            self.linE_layer_dims = self._parse_layer_dims(
-                self.config.get('linE_layer_dims', self.default_linE_layers_str)
-            )
-        
-        # Operator regularization parameters
-        self.op_reg = self.config.get('op_reg', 'None')
-        self.op_bandwidth = self.config.get('op_bandwidth', 2)
-        
-        # Training parameters
-        self.max_Kstep = self.config.get('max_Kstep', 1)
-        self.delay_size = self.config.get('delay_size', 5)
-        self.loss_weights = self._parse_float_list(
-            self.config.get('loss_weights', "1,1,1,1,1,1")
-        )
-        
-        # Learning parameters
-        self.learning_rate = self.config.get('learning_rate', 0.0001)
-        self.weight_decay = self.config.get('weight_decay', 0)
-        self.learning_rate_change = self.config.get('learning_rate_change', 0.5)
-        
-        # Other parameters
-        self.mask_value = self.config.get('mask_value', -2)
-        self.batch_size = self.config.get('batch_size', 32)
-        self.num_epochs = self.config.get('num_epochs', 1000)
-        self.num_decays = self.config.get('num_decays', 5)
-        self.decay_epochs = self._create_decay_epochs(self.num_epochs, self.num_decays)
-        
-    def _parse_layer_dims(self, layer_dims_str: str) -> List[int]:
-        """Parse layer dimensions from string to list of integers."""
-        return list(map(int, layer_dims_str.split(',')))
-    
-    def _parse_float_list(self, float_list_str: str) -> List[float]:
-        """Parse float list from string to list of floats."""
-        return list(map(float, float_list_str.split(',')))
-    
-    def _create_decay_epochs(self, num_epochs: int, num_decays: int) -> List[int]:
-        """Generate decay points evenly spaced within the training epochs."""
-        decay_epochs = np.linspace(0, num_epochs, num_decays + 2, endpoint=False)[1:]
-        return decay_epochs.astype(int).tolist()
-    
-    def get_embedding_config(self) -> Dict[str, Any]:
-        """Get configuration parameters for embedding module."""
-        return {
-            'E_layer_dims': self.E_layer_dims,
-            'D_layer_dims': self.E_layer_dims[::-1],
-            'E_dropout_rates': self.E_dropout_rates,
-            'activation_fn': 'leaky_relu'
-        }
-    
-    def get_linearizer_config(self) -> Dict[str, Any]:
-        """Get configuration parameters for linearizer module."""
-        return {
-            'linE_layer_dims': self.linE_layer_dims,
-            'linD_layer_dims': self.linE_layer_dims[::-1],
-            'activation_fn': 'leaky_relu'
-        }
-    
-    def get_operator_config(self) -> Dict[str, Any]:
-        """Get configuration parameters for operator module."""
-        return {
-            'latent_dim': self.E_layer_dims[-1],
-            'reg': self.op_reg,
-            'bandwidth': self.op_bandwidth,
-            'activation_fn': 'leaky_relu'
-        }
-    
-    def get_training_config(self) -> Dict[str, Any]:
-        """Get configuration parameters for training."""
-        return {
-            'max_Kstep': self.max_Kstep,
-            'loss_weights': self.loss_weights,
-            'mask_value': self.mask_value,
-            'decay_epochs': self.decay_epochs
-        }
-
-
 class KoopmanParamFit:
     def __init__(self, train_data: Union[torch.Tensor, Any], 
                  test_data: Union[torch.Tensor, Any], 
@@ -166,7 +48,6 @@ class KoopmanParamFit:
         Ensures all tensors are moved to the appropriate device (CUDA if available).
         """
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Using device: {device}")
     
         def move_to_device(tensor):
             return tensor.to(device) if isinstance(tensor, torch.Tensor) else tensor
@@ -402,7 +283,7 @@ class KoopmanModel(nn.Module):
     # x0 <-> g <-> x0
 
     def __init__(self, embedding, operator):
-        super(KoopmanModel, self).__init__()
+        super().__init__() 
 
         self.embedding = embedding
         self.operator = operator
@@ -411,16 +292,16 @@ class KoopmanModel(nn.Module):
 
         # Store the type of modules
         self.embedding_info = {
-            'diffeom': isinstance(embedding, DiffeomMap),
-            'ff_ae': isinstance(embedding, FF_AE),
-            'conv_ae': isinstance(embedding, Conv_AE),
-            'conv_e_ff_d': isinstance(embedding, Conv_E_FF_D),
+            'diffeom': type(embedding).__name__ == 'DiffeomMap',
+            'ff_ae': type(embedding).__name__ == 'FF_AE',
+            'conv_ae': type(embedding).__name__ == 'Conv_AE',
+            'conv_e_ff_d': type(embedding).__name__ == 'Conv_E_FF_D',
         }
         
         self.operator_info = {
-            'linkoop': isinstance(operator, LinearizingKoop),
-            'invkoop': isinstance(operator, InvKoop),
-            'koop': isinstance(operator, Koop)
+            'linkoop': type(operator).__name__ == 'LinearizingKoop',
+            'invkoop': type(operator).__name__ == 'InvKoop',
+            'koop': type(operator).__name__ == 'Koop'
         }
         
         self.regularization_info = {
@@ -624,45 +505,60 @@ class KoopmanModel(nn.Module):
 
     
     def kmatrix(self, detach=True):
+        """
+        Get the Koopman matrix (or matrices) from the trained model.
         
+        Parameters:
+            detach (bool): Whether to detach tensors from computation graph
+            
+        Returns:
+            Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+                Forward Koopman matrix, or tuple of (forward, backward) matrices
+        """
+        # For models with only forward Koopman
         if self.operator.bwd == False:
             fwdM = self.operator.fwdkoop
-
             return fwdM
             
+        # For models with both forward and backward Koopman
         elif self.operator.bwd:
+            # Initialize fwdM and bwdM to avoid UnboundLocalError
+            fwdM = None
+            bwdM = None
+            
+            # Handle LinearizingKoop
             if self.operator_info['linkoop'] == True:
-                
                 if self.regularization_info['no']:
                     fwdM = self.operator.koop.fwdkoop.weight.cpu().data.numpy()
                     bwdM = self.operator.koop.bwdkoop.weight.cpu().data.numpy()
                     
-                if self.regularization_info['nondelay']:
+                elif self.regularization_info['nondelay']:
                     fwdM = self.operator.koop.nondelay_fwd.dynamics.weight.cpu().data.numpy()
                     bwdM = self.operator.koop.nondelay_bwd.dynamics.weight.cpu().data.numpy()
 
-                if self.regularization_info['skewsym']:
+                elif self.regularization_info['skewsym']:
                     fwdM = self.operator.koop.skewsym_fwd.kmatrix().detach().cpu().numpy()
                     bwdM = self.operator.koop.skewsym_bwd.kmatrix().detach().cpu().numpy()
-              
+            
+            # Handle InvKoop directly
             elif self.operator_info['invkoop'] == True:
-
                 if self.regularization_info['no']:
                     fwdM = self.operator.fwdkoop.weight.cpu().data.numpy()
                     bwdM = self.operator.bwdkoop.weight.cpu().data.numpy()
                     
-                if self.regularization_info['nondelay']:
+                elif self.regularization_info['nondelay']:
                     fwdM = self.operator.nondelay_fwd.dynamics.weight.cpu().data.numpy()
                     bwdM = self.operator.nondelay_bwd.dynamics.weight.cpu().data.numpy()
 
-                if self.regularization_info['skewsym']:
+                elif self.regularization_info['skewsym']:
                     fwdM = self.operator.skewsym_fwd.kmatrix().detach().cpu().numpy()
                     bwdM = self.operator.skewsym_bwd.kmatrix().detach().cpu().numpy()
-            if detach:
-                return fwdM, bwdM
-            else:
-                return fwdM, bwdM
-
+            
+            # Verify that matrices were set properly
+            if fwdM is None or bwdM is None:
+                raise ValueError("Could not determine the Koopman matrices. Check if the regularization type is supported.")
+            
+            return (fwdM, bwdM)
 
     def eigen(self, plot=True):
 

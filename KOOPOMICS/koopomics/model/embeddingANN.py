@@ -103,7 +103,7 @@ class FF_AE(nn.Module):
         activation_fn : str, default='tanh'
             Activation function to use
         """
-        super(FF_AE, self).__init__()
+        super().__init__()
 
         # Initialize dropout rates with zeros if not provided
         if E_dropout_rates is None:

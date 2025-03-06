@@ -1,226 +1,153 @@
 # KOOPOMICS
 
-KOOPOMICS is a Python package for learning Koopman operators from multi-omics time series data. It provides tools for embedding high-dimensional data into a lower-dimensional space where the dynamics can be approximated by linear operators.
+**Koopman Operator Learning for OMICS Time Series Analysis**
 
-## Overview
+KOOPOMICS is a Python package for analyzing and forecasting OMICS time series data using Koopman operator theory. It implements a neural network approach to approximate Koopman operators for multivariate time series prediction.
 
-The KOOPOMICS package implements the Koopman operator theory for analyzing and predicting the dynamics of complex biological systems. It is particularly useful for multi-omics time series data, such as metabolomics, transcriptomics, and proteomics data.
+## Features
 
-The package provides:
-
-- Embedding networks for dimensionality reduction
-- Koopman operator networks for learning linear dynamics in the embedded space
-- Training utilities for different training strategies
-- Evaluation metrics for assessing model performance
-- Integration with Weights & Biases for experiment tracking and parameter sweeping
+- **Koopman Operator Learning**: Learn Koopman operators from OMICS time series data
+- **Embedding Learning**: Autoencoder-based embedding for dimensionality reduction
+- **Time Series Prediction**: Forward and backward prediction of time series data
+- **Model Interpretation**: Analyze Koopman eigenvalues and dynamics
+- **Integration with wandb**: Optional tracking and visualization with Weights & Biases
 
 ## Installation
 
+KOOPOMICS requires Python 3.10. The installation process is automated using conda:
+
+1. Clone the repository and navigate to the directory:
 ```bash
-pip install koopomics
+git clone https://github.com/yourusername/KOOPOMICS.git
+cd KOOPOMICS
 ```
+
+2. Create and activate the conda environment with all dependencies:
+```bash
+conda env create -f environment.yml
+conda activate koopomics
+```
+
+3. Install KOOPOMICS in development mode:
+```bash
+pip install -e .
+```
+
+The package will install all dependencies automatically.
 
 ## Quick Start
 
 ```python
-import torch
 import pandas as pd
-from koopomics import KOOPOMICS
+from koopomics import KOOP
 
-# Load data
-data = pd.read_csv('your_data.csv')
+# Create a KOOPOMICS model
+model = KOOP()
 
-# Initialize KOOPOMICS with default configuration
-koop = KOOPOMICS()
+# Load your data
+data = pd.read_csv("your_data.csv")
+feature_columns = [col for col in data.columns if col != "sample_id"]
+model.load_data(data, feature_list=feature_columns, replicate_id="sample_id")
 
-# Or initialize with custom configuration
-config = {
-    'model': {
-        'embedding_type': 'ff_ae',
-        'E_layer_dims': '264,2000,2000,100',
-        'activation_fn': 'leaky_relu',
-        'operator': 'invkoop',
-        'op_reg': 'skewsym'
-    },
-    'training': {
-        'mode': 'full',
-        'max_Kstep': 2,
-        'learning_rate': 0.001
-    }
-}
-koop = KOOPOMICS(config)
-
-# Load data
-koop.load_data(data, feature_list=['feature1', 'feature2', ...], replicate_id='replicate_column')
-
-# Train model
-koop.train()
+# Train the model
+model.train()
 
 # Make predictions
-backward_predictions, forward_predictions = koop.predict(steps_forward=2, steps_backward=1)
+backward_preds, forward_preds = model.predict(
+    test_data, 
+    feature_list=feature_columns, 
+    replicate_id="sample_id", 
+    steps_forward=2
+)
 
-# Evaluate model
-metrics = koop.evaluate()
-print(metrics)
+# Evaluate the model
+metrics = model.evaluate()
+print(f"Model performance vs baseline: {metrics['baseline_ratio']:.4f}")
 
-# Save model
-koop.save_model('model.pth')
-
-# Load model
-koop.load_model('model.pth')
+# Save the model
+model.save_model("koopomics_model.pth")
+model.save_config("koopomics_config.json")
 ```
 
-## Architecture
+## Core Concepts
 
-KOOPOMICS consists of two main components:
+KOOPOMICS is built around the concept of Koopman operator theory, which provides a way to analyze and predict nonlinear dynamical systems through linear operators in a higher-dimensional space.
 
-1. **Embedding Network**: Transforms high-dimensional data into a lower-dimensional latent space.
-2. **Koopman Operator**: Learns linear dynamics in the latent space.
+The package consists of these main components:
 
-### Embedding Types
+1. **Embedding Module**: Maps input data to a latent space
+2. **Koopman Operator**: Learns linear dynamics in the latent space
+3. **Decoder**: Maps latent space back to original feature space
 
-- `ff_ae`: Feedforward autoencoder
-- `conv_ae`: Convolutional autoencoder
-- `conv_e_ff_d`: Convolutional encoder with feedforward decoder
-- `diffeom`: Diffeomorphic map
+This approach allows for effective prediction even with complex, nonlinear OMICS time series data.
 
-### Operator Types
+## Advanced Usage
 
-- `invkoop`: Invertible Koopman operator
-- `linkoop`: Linearizing Koopman operator
-
-### Regularization Types
-
-- `None`: No regularization
-- `banded`: Banded matrix regularization
-- `skewsym`: Skew-symmetric matrix regularization
-- `nondelay`: Non-delay matrix regularization
-
-## Configuration
-
-KOOPOMICS can be configured using a dictionary, a YAML/JSON file, or programmatically:
+### Customizing Model Configuration
 
 ```python
+from koopomics import KOOP
+
+# Create a custom configuration
 config = {
-    'model': {
-        'embedding_type': 'ff_ae',
-        'E_layer_dims': '264,2000,2000,100',
-        'E_dropout_rate_1': 0.1,
-        'activation_fn': 'leaky_relu',
-        'operator': 'invkoop',
-        'op_reg': 'skewsym'
+    "model": {
+        "embedding_type": "ff_ae",
+        "E_layer_dims": "264,1000,500,50",
+        "activation_fn": "leaky_relu",
+        "operator": "invkoop",
+        "op_reg": "skewsym"
     },
-    'training': {
-        'mode': 'full',
-        'backpropagation_mode': 'full',
-        'max_Kstep': 2,
-        'loss_weights': '1,1,1,1,1,1',
-        'learning_rate': 0.001,
-        'weight_decay': 0.0,
-        'learning_rate_change': 0.5,
-        'num_epochs': 1000,
-        'decay_epochs': '500,750',
-        'early_stop': True,
-        'patience': 50
-    },
-    'data': {
-        'dl_structure': 'random',
-        'train_ratio': 0.7,
-        'mask_value': -1.0
+    "training": {
+        "mode": "full",
+        "max_Kstep": 3,
+        "num_epochs": 1000,
+        "learning_rate": 0.0005
     }
 }
 
-koop = KOOPOMICS(config)
+# Create model with custom configuration
+model = KOOP(config)
 ```
 
-## Training Modes
-
-KOOPOMICS supports different training modes:
-
-- `full`: Train the entire model (embedding and operator) at once
-- `modular`: Train the embedding first, then freeze it and train the operator
-- `embedding`: Train only the embedding (autoencoder)
-
-## Backpropagation Modes
-
-KOOPOMICS supports different backpropagation modes:
-
-- `full`: Backpropagate through the entire computational graph
-- `step`: Backpropagate step by step (useful for long sequences)
-
-## Data Structures
-
-KOOPOMICS supports different data structures:
-
-- `random`: Randomly split data into training and testing sets
-- `time`: Split data based on time points
-- `replicate`: Split data based on replicates
-
-## Weights & Biases Integration
-
-KOOPOMICS integrates with Weights & Biases for experiment tracking and parameter sweeping:
+### Analyzing Koopman Dynamics
 
 ```python
-# Train with wandb logging
-koop.train(use_wandb=True)
+# Get Koopman matrices
+fwd_matrix, bwd_matrix = model.get_koopman_matrix()
 
-# Run a parameter sweep
-from koopomics.training.wandb_utils import create_sweep_config, WandbManager
+# Get eigenvalues and vectors
+w_fwd, v_fwd, w_bwd, v_bwd = model.get_eigenvalues(plot=True)
 
-# Create a wandb manager
-wandb_manager = WandbManager(
-    config=koop.config.config,
-    project_name="KOOPOMICS",
-    entity=None  # Set to your wandb username or team name
-)
-
-# Define parameters to sweep over
-sweep_parameters = {
-    'model.E_layer_dims': {
-        'values': ['264,2000,2000,100', '264,1000,1000,50', '264,500,500,20']
-    },
-    'model.operator': {
-        'values': ['invkoop', 'linkoop']
-    },
-    'training.learning_rate': {
-        'distribution': 'log_uniform',
-        'min': -5,
-        'max': -2
-    }
-}
-
-# Create sweep configuration
-sweep_config = create_sweep_config(
-    method='random',
-    metric={'name': 'baseline_ratio', 'goal': 'maximize'},
-    parameters=sweep_parameters
-)
-
-# Create sweep
-sweep_id = wandb_manager.create_sweep(sweep_config)
-
-# Define a custom training function for the sweep
-def train_function():
-    import wandb
-    config = wandb.config
-    # ... (convert config to nested config)
-    koop = KOOPOMICS(nested_config)
-    koop.load_data(data)
-    best_metric = koop.train(use_wandb=True)
-    wandb.log({'best_metric': best_metric})
-
-# Run sweep
-wandb_manager.run_sweep(sweep_id, train_function, count=10)
+# Get embeddings for data
+embeddings = model.get_embeddings(data, feature_list=features, replicate_id="sample_id")
 ```
-
-See the `examples/sweep_example.py` script for a complete example of running a parameter sweep.
 
 ## Examples
 
-The `examples` directory contains example scripts for using KOOPOMICS:
+See the `examples/` directory for detailed examples:
 
-- `basic_example.py`: Basic usage of KOOPOMICS
-- `sweep_example.py`: Running a parameter sweep with Weights & Biases
+- Basic usage with synthetic data
+- Analysis of metabolomic data
+- Visualizing Koopman dynamics
+
+## Documentation
+
+For more detailed information, see the documentation in the `docs/` directory.
+
+## Citation
+
+If you use KOOPOMICS in your research, please cite:
+
+```
+@article{koopomics2025,
+  title={KOOPOMICS: Koopman Operator Learning for OMICS Time Series Analysis},
+  author={Author, A. and Author, B.},
+  journal={Journal of Computational Biology},
+  year={2025},
+  volume={1},
+  pages={1--10}
+}
+```
 
 ## License
 

@@ -11,11 +11,10 @@ from ..training.KoopmanMetrics import KoopmanMetricsMixin
 # Naive model class that predicts the average of the target for reference
 class NaiveMeanPredictor(nn.Module):
     def __init__(self, train_data, mask_value=None):
-        super(NaiveMeanPredictor, self).__init__()
+        super().__init__()
         self.means = None
         self.mask_value = mask_value
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Using device: {self.device}")
     
         if isinstance(train_data, torch.utils.data.DataLoader):  # Check if it's a DataLoader
             self.get_means_dl(train_data)

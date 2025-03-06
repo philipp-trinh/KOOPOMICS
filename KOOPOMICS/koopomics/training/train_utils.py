@@ -774,7 +774,8 @@ class Koop_Full_Trainer(BaseTrainer):
             if self.loss_weights[3] > 0:
                 for step in range(self.start_Kstep+1, self.max_Kstep+1):
                     input_identity = data_list[step].to(self.device)
-                    loss_identity_batch += self.compute_identity_loss(input_identity, None)
+                    loss_identity_batch += self.compute_identity_loss(input_identity, input_identity)
+                    print(loss_identity_batch)
 
             if self.loss_weights[4] > 0:
                 for step in range(self.start_Kstep+1, self.max_Kstep+1):

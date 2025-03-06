@@ -293,7 +293,7 @@ class InvKoop(nn.Module):
     """
     
     def __init__(self, latent_dim=0, dropout=None,reg=None, bandwidth=None, activation_fn='leaky_relu'):
-        super(InvKoop, self).__init__()
+        super().__init__()
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

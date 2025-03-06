@@ -46,6 +46,7 @@ class OmicsDataloader:
         self.delay_size = delay_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.random_seed = random_seed
+        self.perm_indices = None  # To store permutation indices for later reconstruction
 
         torch.manual_seed(self.random_seed)
         np.random.seed(self.random_seed)
@@ -89,12 +90,21 @@ class OmicsDataloader:
         return torch.stack(sample_data)
 
     def structure_data(self):
-        
+        """
+        Structure the data based on the specified `dl_structure`.
+        For temp_delay structure, we now support better randomization
+        by using samplewise=True when data will be split into train/test.
+        """
         if self.dl_structure == 'temporal':
             self.structured_train_tensor = self.train_tensor.clone()
             
         elif self.dl_structure == 'temp_delay':
-            self.structured_train_tensor = self.to_temp_delay()
+            # For temp_delay, we use samplewise=True only when train_ratio > 0
+            # This enables the improved shuffling before train/test split
+            if self.train_ratio > 0:
+                self.structured_train_tensor = self.to_temp_delay(samplewise=True)
+            else:
+                self.structured_train_tensor = self.to_temp_delay(samplewise=False)
             
         elif self.dl_structure == 'temp_segm':
             self.structured_train_tensor = self.to_temp_segm()
@@ -102,10 +112,9 @@ class OmicsDataloader:
         elif self.dl_structure == 'random':
             self.structured_train_tensor = self.to_random()
             
-
         return self.train_tensor
 
-    def to_temp_delay(self, samplewise=False):
+    def to_temp_delay(self, samplewise=False, shuffle_samples=False):
         if self.train_tensor.shape[-2] >= 3:
                         
             # Define segment and delay structure for delayed data
@@ -127,12 +136,40 @@ class OmicsDataloader:
                 start += delay
                 end = start + segment_size
             
+            # If shuffle_samples is True, shuffle the samples dimension for better randomization
+            if shuffle_samples and samplewise:
+                # Generate a random permutation of indices for the sample dimension
+                self.perm_indices = torch.randperm(overlapping_segments.size(0))
+                # Shuffle the tensor along the sample dimension
+                overlapping_segments = overlapping_segments[self.perm_indices]
+                print(f'Permuted indices: {self.perm_indices}')
+            
             if not samplewise:
                 overlapping_segments = overlapping_segments.permute(0, 2, 1, 3, 4).reshape(
                     -1, self.max_Kstep + 1, segment_size, feature_dim
                 )
             
         return overlapping_segments
+    
+    def get_original_indices(self, indices):
+        """
+        Maps indices from the shuffled dataset back to their original positions
+        This is useful for retrieving the correct test samples after shuffling
+        
+        Args:
+            indices: indices in the shuffled dataset
+            
+        Returns:
+            original indices before shuffling
+        """
+        if self.perm_indices is not None:
+            # Create a mapping from new positions to original positions
+            inverse_mapping = torch.empty_like(self.perm_indices)
+            inverse_mapping[self.perm_indices] = torch.arange(self.perm_indices.size(0))
+            
+            # Map the provided indices to their original positions
+            return inverse_mapping[indices]
+        return indices
 
     def to_temp_segm(self):
         if self.train_tensor.shape[-2] >= 3:
@@ -205,47 +242,46 @@ class OmicsDataloader:
 
     def temp_delay_dataloader(self):
         if self.train_tensor.shape[-2] >= 3:
-
-            # Define segment and delay structure for delayed data
-            num_timepoints = self.train_tensor.shape[2]
-            segment_size = self.delay_size
-            delay = 1
-            num_segments = ((num_timepoints - segment_size) // delay) + 1
-            feature_dim = self.train_tensor.shape[-1]
-            
-            overlapping_segments = torch.empty(
-                (self.train_tensor.shape[0], self.max_Kstep + 1, num_segments, segment_size, feature_dim),
-                dtype=self.train_tensor.dtype, device=self.device
-            )
-            
-            start = 0
-            end = segment_size
-            for seg_idx in range(num_segments):
-                overlapping_segments[:, :, seg_idx] = self.train_tensor[:, :, start:end].clone()
-                start += delay
-                end = start + segment_size
-    
-            overlapping_segments = overlapping_segments.permute(0, 2, 1, 3, 4).reshape(
-                -1, self.max_Kstep + 1, segment_size, feature_dim
-            )
-            
-            full_dataset = TensorDataset(overlapping_segments)
-            
-            self.dataset_df = self.tensor_to_df(overlapping_segments)
-
-
-            print("Shape of dataset:", overlapping_segments.shape)
-
-            
-            # Convert to DataFrame
-            self.df_full_dataset = self.tensor_to_df(overlapping_segments)
-    
+            # Use the improved to_temp_delay method with better randomization
             if self.train_ratio > 0:
-                self.split_and_load(full_dataset, overlapping_segments, permute_dims=(1, 0, 2, 3))
+                # First create segments in sample-wise format for better shuffling
+                overlapping_segments = self.to_temp_delay(samplewise=True, shuffle_samples=True)
+                
+                # Get dimensions for reshaping
+                num_samples = overlapping_segments.shape[0]
+                num_timepoints = self.train_tensor.shape[2]
+                segment_size = self.delay_size
+                delay = 1
+                num_segments = ((num_timepoints - segment_size) // delay) + 1
+                feature_dim = self.train_tensor.shape[-1]
+                
+                # Now reshape to the format needed for the dataloader
+                final_segments = overlapping_segments.permute(0, 2, 1, 3, 4).reshape(
+                    -1, self.max_Kstep + 1, segment_size, feature_dim
+                )
+                
+                full_dataset = TensorDataset(final_segments)
+                
+                # Store the dataframe representation
+                self.dataset_df = self.tensor_to_df(final_segments)
+                
+                print("Shape of dataset:", final_segments.shape)
+                
+                # Split and create the dataloaders
+                self.split_and_load(full_dataset, final_segments, permute_dims=(1, 0, 2, 3))
             else:
-                self.permuted_loader = PermutedDataLoader(dataset=full_dataset, mask_value=self.mask_value, permute_dims=(1, 0, 2, 3),
-                                                          batch_size=self.batch_size,
-                                                      shuffle=self.shuffle)
+                # If not splitting into train/test, use the standard approach
+                overlapping_segments = self.to_temp_delay(samplewise=False, shuffle_samples=False)
+                full_dataset = TensorDataset(overlapping_segments)
+                self.dataset_df = self.tensor_to_df(overlapping_segments)
+                print("Shape of dataset:", overlapping_segments.shape)
+                self.permuted_loader = PermutedDataLoader(
+                    dataset=full_dataset,
+                    mask_value=self.mask_value,
+                    permute_dims=(1, 0, 2, 3),
+                    batch_size=self.batch_size,
+                    shuffle=self.shuffle
+                )
         else:
             raise ValueError("Number of timepoints too small to create overlapping segments; increase timepoints or adjust segment size.")
             
@@ -353,12 +389,75 @@ class OmicsDataloader:
             return self.permuted_loader
 
     def get_dfs(self):
-        train_df = self.dataset_df.iloc[self.train_indices].sort_index()
-        test_df = self.dataset_df.iloc[self.test_indices].sort_index()
+        """
+        Get the full dataset DataFrame and the train/test split DataFrames.
+        Handles permuted indices by mapping back to original positions when necessary.
+        
+        Returns:
+            tuple: (full_df, train_df, test_df)
+        """
+        if self.perm_indices is not None and self.train_ratio > 0:
+            # Get original indices for train and test splits
+            original_train_indices = self.get_original_indices(self.train_indices)
+            original_test_indices = self.get_original_indices(self.test_indices)
+            
+            # Use the original indices to get the correct data
+            train_df = self.dataset_df.iloc[original_train_indices].sort_index()
+            test_df = self.dataset_df.iloc[original_test_indices].sort_index()
+        else:
+            # Regular case without permutation
+            train_df = self.dataset_df.iloc[self.train_indices].sort_index()
+            test_df = self.dataset_df.iloc[self.test_indices].sort_index()
+            
         return self.dataset_df, train_df, test_df
+    
+    def reconstruct_original_dataframe(self, indices=None):
+        """
+        Reconstruct the original pandas DataFrame with replicate_id, time_id, and features.
+        This collapses structured data (temp_delay, temp_segm) back to the original format.
+        
+        Parameters:
+            indices: Optional indices to use for selection (e.g., train or test indices)
+            
+        Returns:
+            pd.DataFrame: Reconstructed dataframe in the original format
+        """
+        # Start with a copy of the original dataframe
+        original_df = self.df.copy()
+        
+        # If indices are provided, filter the original data
+        # This handles both the train/test split and any shuffling
+        if indices is not None and self.train_ratio > 0:
+            # Map the indices back to their original positions if needed
+            if self.perm_indices is not None:
+                indices = self.get_original_indices(indices)
+                
+            # For temp_delay and temp_segm, we need to map from tensor indices to df rows
+            replicate_ids = sorted(original_df[self.replicate_id].unique())
+            if len(indices) < len(replicate_ids):
+                # Map tensor indices to replicate IDs
+                selected_replicates = [replicate_ids[i % len(replicate_ids)] for i in indices]
+                selected_mask = original_df[self.replicate_id].isin(selected_replicates)
+                original_df = original_df[selected_mask]
+                
+        return original_df
 
     def get_indices(self):
-        return self.train_indices, self.test_indices
+        """
+        Get the indices for the train and test splits.
+        Maps back to original positions when data has been shuffled.
+        
+        Returns:
+            tuple: (train_indices, test_indices)
+        """
+        if self.perm_indices is not None and self.train_ratio > 0:
+            # Map to original indices if data was shuffled
+            original_train_indices = self.get_original_indices(self.train_indices)
+            original_test_indices = self.get_original_indices(self.test_indices)
+            return original_train_indices, original_test_indices
+        else:
+            # Regular case without permutation
+            return self.train_indices, self.test_indices
 
 
 

@@ -1,0 +1,33 @@
+E_overfit_limit: 0.7445902762259214
+data:
+  delay_size: 9
+  dl_structure: temp_delay
+  random_seed: 42
+  train_ratio: 1
+model:
+  E_dropout_rate_1: 0.063066822411324
+  E_dropout_rate_2: 0.7968486665686756
+  E_layer_dims: 247,1000,10
+  activation_fn: leaky_relu
+  embedding_type: ff_ae
+  linE_layer_dims: 100,2000,2000,100
+  lin_act_fn: leaky_relu
+  op_bandwidth: 57
+  op_reg: nondelay
+  operator: invkoop
+sweep_name: outer_0
+training:
+  backpropagation_mode: full
+  batch_size: 453
+  early_stop: true
+  learning_rate: 6.526623574209355e-05
+  learning_rate_change: 0.6491112949762802
+  loss_weights: 1,1,1,1,1,1
+  mask_value: -2
+  max_Kstep: 1
+  mode: full
+  num_decays: 10
+  num_epochs: 1000
+  patience: 10
+  weight_decay: 0
+training_mode: full

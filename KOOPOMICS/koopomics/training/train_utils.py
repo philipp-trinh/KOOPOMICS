@@ -411,8 +411,11 @@ class BaseTrainer(KoopmanMetricsMixin):
     patience : int, default=10
         Number of epochs to wait before stopping training if no improvement.
 
-    verbose : bool, default=False
-        If True, prints early stopping information.
+    verbose : list of bool, default=[False, False, False]  
+        A list of booleans controlling the verbosity of different outputs.  
+        - verbose[0]: If True, prints batch-level updates.  
+        - verbose[1]: If True, prints epoch summaries.  
+        - verbose[2]: If True, prints early stopping information.  
 
     eastop_delta : float, default=0
         Minimum improvement in the monitored metric to qualify as an improvement.
@@ -429,7 +432,6 @@ class BaseTrainer(KoopmanMetricsMixin):
         self.train_dl = train_dl
         self.test_dl = test_dl
         
-        self.verbose = False
         self.runconfig = kwargs.get('runconfig', None)
         # Set training parameters with fallback to runconfig
         self.max_Kstep = self.get_param('max_Kstep', 1, **kwargs)
@@ -453,7 +455,10 @@ class BaseTrainer(KoopmanMetricsMixin):
         self.mask_value = self.get_param('mask_value', -2, **kwargs)
 
         # LogIns and Visuals:
-        self.batch_verbose = kwargs.get('batch_verbose', False)
+        self.verbose = self.get_param('verbose', [False, False, False], **kwargs)
+
+        self.batch_verbose = self.verbose[0]
+        self.epoch_verbose = self.verbose[1]
         self.comp_graph = kwargs.get('comp_graph', False)
         self.plot_train = kwargs.get('plot_train', False)
         self.model_name = kwargs.get('model_name', 'Koop')
@@ -465,9 +470,12 @@ class BaseTrainer(KoopmanMetricsMixin):
         if self.use_wandb is True:
             self.wandb_init = self.use_wandb
             self.wandb_log = self.use_wandb
+            self.run_id = None
         else:
             self.wandb_init = kwargs.get('wandb_init', False)
             self.wandb_log = kwargs.get('wandb_log', False)
+            self.run_id = None
+
 
         # Set the device
         self.device = self.get_device()
@@ -478,16 +486,19 @@ class BaseTrainer(KoopmanMetricsMixin):
 
         self.early_stop = kwargs.get('early_stop', False)
         self.patience = kwargs.get('patience', 10)
-        self.early_stop_verbose = kwargs.get('verbose', False)
+        self.early_stop_verbose = self.verbose[2]
         self.early_stop_delta = kwargs.get('eastop_delta', 0) 
-
+        self.model_dict_save_dir = kwargs.get('model_dict_save_dir', None)
         if self.early_stop:
-            self.early_stopping = EarlyStopping2scores(self.model_name, patience=self.patience, verbose=self.early_stop_verbose, delta=self.early_stop_delta, wandb_log=self.wandb_log, start_Kstep = self.start_Kstep, max_Kstep=self.max_Kstep)
+            self.early_stopping = EarlyStopping2scores(self.model_name, patience=self.patience, verbose=self.early_stop_verbose, 
+                                                       save_dir=self.model_dict_save_dir,
+                                                       delta=self.early_stop_delta, wandb_log=self.wandb_log, 
+                                                       start_Kstep = self.start_Kstep, max_Kstep=self.max_Kstep)
 
-        base_criterion = nn.MSELoss().to(self.device)
+        self.base_criterion = nn.MSELoss().to(self.device)
         
         self.criterion = kwargs.get('criterion', self.masked_criterion(
-                               base_criterion, self.mask_value))
+                               self.base_criterion, self.mask_value))
         
         #baseline = NaiveMeanPredictor(self.train_dl, mask_value=self.mask_value)
         self.baseline = kwargs.get('baseline', None)
@@ -660,6 +671,7 @@ class Koop_Full_Trainer(BaseTrainer):
                     if self.early_stopping.early_stop:
                         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Early stopping triggered!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
                         print(f'Best Baseline Ratio: {self.early_stopping.baseline_ratio:.6f}, Best Test fwd loss: {self.early_stopping.best_score1:.6f}, Best Test bwd loss: {self.early_stopping.best_score2:.6f} at Best Epoch {self.early_stopping.best_epoch}.')
+                        print(self.early_stopping.model_path)
                         self.model.load_state_dict(torch.load(self.early_stopping.model_path,  map_location=torch.device(self.device)))
                         print(f'Best Model Parameters of Shift {self.start_Kstep+1} Loaded.')
                         for param in self.model.embedding.parameters():
@@ -668,15 +680,16 @@ class Koop_Full_Trainer(BaseTrainer):
                         break
                         
                         
-            return baseline_ratio
+            return (self.early_stopping.baseline_ratio, self.early_stopping.best_score1, self.early_stopping.best_score2)
 
         except KeyboardInterrupt:
             print("Training interrupted. Saving model...")
             torch.save(self.model.state_dict(), f"interrupted_{self.model_name}_shift{self.start_Kstep}-{self.max_Kstep}_parameters.pth")
 
         if self.wandb_log:
-            run_id = wandb.run.id
+            self.run_id = wandb.run.id
             self.model_path = f'{self.model_name}_shift{self.start_Kstep}-{self.max_Kstep}_parameters_run_{run_id}.pth'
+
         else:
             self.model_path = f'{self.model_name}_shift{self.start_Kstep}-{self.max_Kstep}_parameters.pth'
             
@@ -775,7 +788,6 @@ class Koop_Full_Trainer(BaseTrainer):
                 for step in range(self.start_Kstep+1, self.max_Kstep+1):
                     input_identity = data_list[step].to(self.device)
                     loss_identity_batch += self.compute_identity_loss(input_identity, input_identity)
-                    print(loss_identity_batch)
 
             if self.loss_weights[4] > 0:
                 for step in range(self.start_Kstep+1, self.max_Kstep+1):
@@ -929,7 +941,7 @@ class Koop_Full_Trainer(BaseTrainer):
 
     def end_epoch(self, baseline_fwd_loss, baseline_bwd_loss, baseline_ratio):
         
-        if self.verbose:
+        if self.epoch_verbose:
             current_epoch_metrics = self.epoch_metrics[-1]
             print(f'============================Finished Training Epoch {self.current_epoch}=============================')
             print(f'Train fwd Loss: {current_epoch_metrics["train_fwd_loss"]}')
@@ -944,15 +956,15 @@ class Koop_Full_Trainer(BaseTrainer):
                 print(f'Baseline Ratio: {baseline_ratio}')
 
         # Convert batch metrics to DataFrame at the end of an epoch
-        batch_df = pd.DataFrame(self.batch_metrics)
+        #batch_df = pd.DataFrame(self.batch_metrics)
         self.batch_metrics.clear()  # Clear the list after logging
         # Save to CSV or append to a file
-        batch_df.to_csv(f'{self.model_name}_batch_metrics_epoch.csv', index=False, mode='a', header=not self.current_epoch)
+        #batch_df.to_csv(f'{self.model_name}_batch_metrics_epoch.csv', index=False, mode='a', header=not self.current_epoch)
 
         # Convert epoch metrics to DataFrame and save
-        epoch_df = pd.DataFrame(self.epoch_metrics)
+        #epoch_df = pd.DataFrame(self.epoch_metrics)
         self.epoch_metrics.clear()  # Clear the list after logging
-        epoch_df.to_csv(f'{self.model_name}_epoch_metrics.csv', index=False, mode='a', header=not self.current_epoch)
+        #epoch_df.to_csv(f'{self.model_name}_epoch_metrics.csv', index=False, mode='a', header=not self.current_epoch)
 
 
 
@@ -1017,8 +1029,8 @@ class Koop_Step_Trainer(BaseTrainer):
                             param.requires_grad = False
                         break
 
-            return baseline_ratio
-
+            return (self.early_stopping.baseline_ratio, self.early_stopping.best_score1, self.early_stopping.best_score2)
+        
         except KeyboardInterrupt:
             print("Training interrupted. Saving model...")
             torch.save(self.model.state_dict(), f"interrupted_{self.model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters.pth")
@@ -1092,6 +1104,7 @@ class Koop_Step_Trainer(BaseTrainer):
                 #-------------------------------------------------------------------------------------------------
                 # Iteratively predict shifted timepoints for input timepoint(s)
                 # Backpropagation happens for each timeshift (after batch size predictions)
+                feature_shape = data_list.shape[-1]
                 target_fwd = data_list[step].to(self.device)
                 target_bwd = reverse_data_list[step].to(self.device)
                 #------------------------------------------------------------------------------------------------- 
@@ -1281,7 +1294,7 @@ class Koop_Step_Trainer(BaseTrainer):
 
         current_epoch_metrics = self.epoch_metrics[-1]
         
-        if self.verbose:
+        if self.epoch_verbose:
             print(f'============================Finished Training Epoch {self.current_epoch}=============================')
             print(f'Train fwd Loss: {current_epoch_metrics["train_fwd_loss"]}')
             print(f'Train bwd Loss: {current_epoch_metrics["train_bwd_loss"]}')
@@ -1317,7 +1330,9 @@ class Embedding_Trainer(BaseTrainer):
         self.freeze_embedding = self.get_param('freeze', True, **kwargs)
         if self.early_stop:
             overfit_limit = self.get_param('E_overfit_limit', 0.1, **kwargs)
-            self.early_stopping = EarlyStopping(self.model_name, patience=self.patience, verbose=self.early_stop_verbose, wandb_log=self.wandb_log, overfit_limit=overfit_limit)
+            self.early_stopping = EarlyStopping(self.model_name, patience=self.patience, 
+                                                verbose=self.early_stop_verbose, wandb_log=self.wandb_log, overfit_limit=overfit_limit,
+                                                model_dict_save_dir = self.model_dict_save_dir)
 
     #==================================Training Function=======================
     def train(self):
@@ -1353,7 +1368,7 @@ class Embedding_Trainer(BaseTrainer):
                         break
                         
                         
-            return baseline_ratio
+            return self.early_stopping.best_score
 
         except KeyboardInterrupt:
             print("Training interrupted. Saving model...")
@@ -1455,14 +1470,15 @@ class Embedding_Trainer(BaseTrainer):
             
 
     def end_epoch(self, baseline_identity_loss):
+        
+        if self.epoch_verbose:
+            current_epoch_metrics = self.epoch_metrics[-1]
+            print(f'==============================Finished Training Epoch {self.current_epoch}==================================')
+            print(f'Train Identity Loss: {current_epoch_metrics["train_loss_identity_epoch"]}')
+            print(f'Test Identity Loss: {current_epoch_metrics["test_loss_identity_epoch"]}')
 
-        current_epoch_metrics = self.epoch_metrics[-1]
-        print(f'==============================Finished Training Epoch {self.current_epoch}==================================')
-        print(f'Train Identity Loss: {current_epoch_metrics["train_loss_identity_epoch"]}')
-        print(f'Test Identity Loss: {current_epoch_metrics["test_loss_identity_epoch"]}')
-
-        if self.baseline is not None:
-            print(f'Baseline Test bwd Loss: {baseline_identity_loss}')
+            if self.baseline is not None:
+                print(f'Baseline Test Identity Loss: {baseline_identity_loss}')
 
         # Convert batch metrics to DataFrame at the end of an epoch
         batch_df = pd.DataFrame(self.batch_metrics)
@@ -1478,11 +1494,25 @@ class Embedding_Trainer(BaseTrainer):
 
 
 # ======================== EARLY STOPPING FUNCTIONS ======================================
+
 class EarlyStopping2scores:
-    def __init__(self, model_name, patience=10, verbose=False, delta=0.1, wandb_log=False, start_Kstep=0, max_Kstep=1):
+    def __init__(self, model_name, patience=10, verbose=False, delta=0.1, wandb_log=False, start_Kstep=0, max_Kstep=1, save_dir=None):
+        """
+        Early stopping with two scores (e.g., forward and backward loss).
+
+        Args:
+            model_name (str): Name of the model (used for saving the model).
+            patience (int): How many epochs to wait after the last improvement.
+            verbose (bool): If True, prints progress messages.
+            delta (float): Minimum change to qualify as an improvement.
+            wandb_log (bool): If True, logs to Weights & Biases.
+            start_Kstep (int): Starting K-step (used in the model name).
+            max_Kstep (int): Maximum K-step (used in the model name).
+            save_dir (str): Directory to save the model. If None, saves in the current directory.
+        """
         self.patience = patience
         self.verbose = verbose
-        self.delta= delta
+        self.delta = delta
         self.counter = 0
         self.baseline_ratio = None
         self.best_score1 = None
@@ -1493,8 +1523,19 @@ class EarlyStopping2scores:
         self.start_Kstep = start_Kstep
         self.max_Kstep = max_Kstep
         self.model_name = model_name
-           
+        self.save_dir = save_dir
+
     def __call__(self, baseline_ratio, score1, score2, current_epoch, model):
+        """
+        Call the early stopping logic.
+
+        Args:
+            baseline_ratio (float): Baseline ratio for logging.
+            score1 (float): First score (e.g., forward loss).
+            score2 (float): Second score (e.g., backward loss).
+            current_epoch (int): Current epoch number.
+            model (torch.nn.Module): Model to save if improvement is detected.
+        """
         if self.best_score1 is None:
             self.baseline_ratio = baseline_ratio
             self.best_score1 = score1
@@ -1502,10 +1543,11 @@ class EarlyStopping2scores:
             self.best_epoch = current_epoch
             self.save_model(model)
             return
+
         if (score1 >= self.best_score1 - self.delta) and (score2 >= self.best_score2 - self.delta):
             self.counter += 1
             if self.verbose:
-                print(f'EarlyStopping counter: {self.counter} out of {self.patience}.')
+                logger.info(f'EarlyStopping counter: {self.counter} out of {self.patience}.')
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
@@ -1516,75 +1558,115 @@ class EarlyStopping2scores:
             self.baseline_ratio = baseline_ratio
             self.save_model(model)
             if self.verbose:
-                print(f'Validation improved - Baseline ratio: {baseline_ratio:.6f}, Test fwd loss: {score1:.6f}, Test bwd loss: {score2:.6f}')
+                logger.info(f'Validation improved - Baseline ratio: {baseline_ratio:.6f}, Test fwd loss: {score1:.6f}, Test bwd loss: {score2:.6f}')
 
     def save_model(self, model):
-        
+        """
+        Save the model's state_dict to a file.
+
+        Args:
+            model (torch.nn.Module): Model to save.
+        """
+        if self.save_dir is not None:
+            os.makedirs(self.save_dir, exist_ok=True)
 
         if self.wandb_log:
             run_id = wandb.run.id
-            self.model_path = f'best_{self.model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters_run_{run_id}.pth'
+            self.model_path = os.path.join(self.save_dir or '.', f'{run_id}_best_{self.model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters_run.pth')
         else:
-            self.model_path = f'best_{self.model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters.pth'
- 
+            self.model_path = os.path.join(self.save_dir or '.', f'best_{self.model_name}_shift{self.start_Kstep+1}-{self.max_Kstep+1}_parameters.pth')
+
         torch.save(model.state_dict(), self.model_path)
         if self.verbose:
-            print(f'Model saved to {self.model_path}')
+            logger.info(f'Model saved to {self.model_path}')
 
 
 
 class EarlyStopping:
-    def __init__(self, model_name, patience=5, overfit_limit=0.1, verbose=False, delta=0.15, wandb_log=False):
+    def __init__(self, model_name, patience=5, overfit_limit=0.1, verbose=False, delta=0.15, wandb_log=False, model_dict_save_dir=None):
+        """
+        Early stopping to terminate training when validation loss stops improving or overfitting is detected.
+
+        Args:
+            model_name (str): Name of the model (used for saving the model).
+            patience (int): How many epochs to wait after the last improvement.
+            overfit_limit (float): Threshold for detecting overfitting (error ratio).
+            verbose (bool): If True, prints progress messages.
+            delta (float): Minimum change to qualify as an improvement.
+            wandb_log (bool): If True, logs to Weights & Biases.
+            model_dict_save_dir (str): Directory to save the model. If None, saves in the current directory.
+        """
         self.patience = patience
         self.verbose = verbose
         self.counter = 0
         self.best_score = None
-        self.delta= delta
+        self.delta = delta
         self.overfit_limit = overfit_limit
-
         self.best_epoch = 0
         self.early_stop = False
         self.wandb_log = wandb_log
-        self.model_name = model_name 
-                
-    def __call__(self, current_epoch, training_loss, validation_loss, model):
-        
-        self.error_ratio = 1 - (training_loss/validation_loss)
-        
+        self.model_name = model_name
+        self.model_dict_save_dir = model_dict_save_dir
 
-        if current_epoch > 30 and self.error_ratio > self.overfit_limit:
-            print('Overfitting detected!')
-            self.early_stop = True
-            
+        # Ensure the save directory exists
+        if self.model_dict_save_dir is not None:
+            os.makedirs(self.model_dict_save_dir, exist_ok=True)
+            logger.info(f"Model save directory set to: {self.model_dict_save_dir}")
         else:
-            
+            self.model_dict_save_dir = os.getcwd()
+            logger.info(f"No save directory provided. Using current working directory: {self.model_dict_save_dir}")
+
+    def __call__(self, current_epoch, training_loss, validation_loss, model):
+        """
+        Call the early stopping logic.
+
+        Args:
+            current_epoch (int): Current epoch number.
+            training_loss (float): Training loss for the current epoch.
+            validation_loss (float): Validation loss for the current epoch.
+            model (torch.nn.Module): Model to save if improvement is detected.
+        """
+        self.error_ratio = 1 - (training_loss / validation_loss)
+
+        # Check for overfitting
+        if current_epoch > 30 and self.error_ratio > self.overfit_limit:
+            logger.warning(f"Overfitting detected! Error ratio: {self.error_ratio:.6f} > {self.overfit_limit}")
+            self.early_stop = True
+        else:
+            # Check for improvement in validation loss
             if self.best_score is None:
                 self.best_epoch = current_epoch
                 self.best_score = validation_loss
                 self.save_model(model)
-
+                logger.info(f"Initial validation loss: {validation_loss:.6f}")
             elif validation_loss < self.best_score - self.delta:
                 self.best_epoch = current_epoch
                 self.best_score = validation_loss
                 self.save_model(model)
                 self.counter = 0
-
+                logger.info(f"Validation loss improved to: {validation_loss:.6f} (delta: {self.delta})")
             else:
                 self.counter += 1
                 if self.counter >= self.patience:
                     self.early_stop = True
+                    logger.info(f"Early stopping triggered. No improvement for {self.patience} epochs.")
 
     def save_model(self, model):
-        
+        """
+        Save the model's embedding state_dict to a file.
+
+        Args:
+            model (torch.nn.Module): Model to save.
+        """
         if self.wandb_log:
             run_id = wandb.run.id
-            self.model_path = f'best_{self.model_name}_embedding_parameters_run_{run_id}.pth'
+            self.model_path = os.path.join(self.model_dict_save_dir, f'{run_id}_best_{self.model_name}_embedding_parameters_run.pth')
         else:
-            self.model_path = f'best_{self.model_name}_embedding_parameters.pth'
-            
+            self.model_path = os.path.join(self.model_dict_save_dir, f'best_{self.model_name}_embedding_parameters.pth')
+
         torch.save(model.embedding.state_dict(), self.model_path)
         if self.verbose:
-            print(f'Model saved to {self.model_path}')
+            logger.info(f"Model saved to {self.model_path}")
 
 
 def update_batch_loss_plot(epoch, fwd_loss_batch_values, bwd_loss_batch_values, inv_cons_loss_batch_values, temp_cons_loss_batch_values, total_loss_batch_values):

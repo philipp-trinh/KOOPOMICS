@@ -17,6 +17,11 @@ import matplotlib.pyplot as plt
 import wandb
 from torch.utils.data import TensorDataset
 
+import logging
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 
 class KoopmanParamFit:
     def __init__(self, train_data: Union[torch.Tensor, Any], 
@@ -160,7 +165,7 @@ class KoopmanParamFit:
         # Apply the loaded parameters to the model
         self.KoopOmicsModel.load_state_dict(model_state)
 
-        print(f"Model successfully loaded from {param_path}")
+        logging.info(f"Model successfully loaded from {param_path}")
 
         return self.KoopOmicsModel
 
@@ -288,7 +293,7 @@ class KoopmanModel(nn.Module):
         self.embedding = embedding
         self.operator = operator
         self.device = next(self.parameters()).device
-        print(self.device)
+        logging.info(self.device)
 
         # Store the type of modules
         self.embedding_info = {
@@ -317,15 +322,15 @@ class KoopmanModel(nn.Module):
     def print_model_info(self):
         for name, exists in self.embedding_info.items():
             if exists:
-                print(f'{name} embedding module is active.')
+                logging.info(f'{name} embedding module is active.')
                 
         for name, exists in self.operator_info.items():
             if exists:
-                print(f'{name} operator module is active; with')
+                logging.info(f'{name} operator module is active; with')
                 
         for name, exists in self.regularization_info.items():
             if exists:
-                print(f'{name} matrix regularization.')
+                logging.info(f'{name} matrix regularization.')
 
     
 
@@ -381,20 +386,20 @@ class KoopmanModel(nn.Module):
             self.embedding.load_state_dict(torch.load(embedding_param_path, map_location=torch.device(self.device)))
             for param in self.embedding.parameters():
                 param.requires_grad = False
-            print('Embedding parameters loaded and frozen.')
+            logging.info('Embedding parameters loaded and frozen.')
         else:
-            print('========================EMBEDDING TRAINING===================')
+            logging.info('========================EMBEDDING TRAINING===================')
 
             embedding_trainer = Embedding_Trainer(self, train_dl, test_dl, use_wandb=use_wandb, early_stop=early_stop, mask_value=self.mask_value, **kwargs)
             In_Training = True
             embedding_trainer.train()
-            print(f'========================EMBEDDING TRAINING FINISHED===================')
+            logging.info(f'========================EMBEDDING TRAINING FINISHED===================')
 
         if model_param_path is not None: # Continuing training from a state (f.ex. after training one shift step to train 2 multishifts)
             self.load_state_dict(torch.load(model_param_path, map_location=torch.device(self.device)))
             for param in self.embedding.parameters():
                 param.requires_grad = False
-            print('Model parameters loaded, with embedding parameters frozen.')
+            logging.info('Model parameters loaded, with embedding parameters frozen.')
 
 
         #wandb_init = not In_Training

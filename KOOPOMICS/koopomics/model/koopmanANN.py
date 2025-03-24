@@ -120,7 +120,6 @@ class dynamicsC(NondelayMatrix):
                     self.dynamics.weight.data[i][j] = 0
                     self.fixed.weight.data[i][j] = 0
         
-        self.koop_act_fn = get_activation_fn(act_fn)
 
     def forward(self, x):
         x = x.to(torch.complex64)

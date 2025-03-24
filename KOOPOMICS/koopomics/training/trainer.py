@@ -30,7 +30,9 @@ class BaseTrainer:
         wandb_manager (WandbManager): Weights & Biases manager
     """
     
-    def __init__(self, model: nn.Module, train_loader, test_loader, config, use_wandb: bool = False, print_losses: bool = False):
+    def __init__(self, model: nn.Module, train_loader, test_loader, config, 
+                 use_wandb: bool = False, print_losses: bool = False,
+                 model_dict_save_dir = None, group=None):
         """
         Initialize the BaseTrainer.
         
@@ -53,7 +55,9 @@ class BaseTrainer:
         self.config = config
         self.device = config.device
         self.use_wandb = use_wandb
+        self.group = group
         self.print_losses = print_losses
+        self.model_dict_save_dir = model_dict_save_dir
         
         # Move model to device
         self.model = self.model.to(self.device)
@@ -77,7 +81,10 @@ class BaseTrainer:
             self.wandb_manager = WandbManager(
                 config=config.config,
                 project_name="KOOPOMICS",
-                entity=None  # Set to your wandb username or team name
+                train_loader=train_loader,
+                test_loader=test_loader,
+                model_dict_save_dir=self.model_dict_save_dir,
+                group=self.group
             )
     
     def train(self) -> float:
@@ -92,7 +99,6 @@ class BaseTrainer:
         # Initialize wandb run if needed
         if self.use_wandb and self.wandb_manager is not None:
             self.wandb_manager.init_run(
-                run_name=f"{self.model.__class__.__name__}_{self.training_config['mode']}",
                 tags=[self.training_config['mode']]
             )
         
@@ -246,7 +252,9 @@ class FullTrainer(BaseTrainer):
     This trainer trains the entire model (embedding and operator) at once.
     """
     
-    def __init__(self, model: nn.Module, train_loader, test_loader, config, use_wandb: bool = False, print_losses: bool = True):
+    def __init__(self, model: nn.Module, train_loader, test_loader, config, 
+                 use_wandb: bool = False, print_losses: bool = True,
+                 model_dict_save_dir = None, group=None):
         """
         Initialize the FullTrainer.
         
@@ -265,7 +273,7 @@ class FullTrainer(BaseTrainer):
         print_losses : bool, default=False
             Wheter to print all losses per epoch
         """
-        super().__init__(model, train_loader, test_loader, config, use_wandb, print_losses)
+        super().__init__(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir, group)
     
     def train(self) -> float:
         """
@@ -280,7 +288,8 @@ class FullTrainer(BaseTrainer):
         if self.use_wandb and self.wandb_manager is not None:
             self.wandb_manager.init_run(
                 run_name=f"{self.model.__class__.__name__}_full",
-                tags=["full", self.training_config['backpropagation_mode']]
+                tags=["full", self.training_config['backpropagation_mode']],
+                group=self.group
             )
         
         try:
@@ -307,7 +316,9 @@ class FullTrainer(BaseTrainer):
                     baseline=self.baseline,
                     model_name=self.model.__class__.__name__,
                     wandb_log=self.use_wandb,
-                    print_losses=self.print_losses
+                    verbose=self.config.verbose,
+                    model_dict_save_dir = self.model_dict_save_dir
+
                 )
             else:
                 logger.info("Using full backpropagation")
@@ -328,11 +339,13 @@ class FullTrainer(BaseTrainer):
                     baseline=self.baseline,
                     model_name=self.model.__class__.__name__,
                     wandb_log=self.use_wandb,
-                    print_losses=self.print_losses
+                    verbose=self.config.verbose,
+                    model_dict_save_dir = self.model_dict_save_dir
+
                 )
             
             # Train model
-            best_metric = trainer.train()
+            best_baseline_ratio, best_fwd_loss, best_bwd_loss = trainer.train()
             
             # Save best model
             if hasattr(trainer, 'early_stopping') and hasattr(trainer.early_stopping, 'model_path'):
@@ -340,9 +353,9 @@ class FullTrainer(BaseTrainer):
                 
                 # Log best model to wandb if needed
                 if self.use_wandb and self.wandb_manager is not None:
-                    self.wandb_manager.log_model(self.model, f"{self.model.__class__.__name__}_best")
+                    self.wandb_manager.log_model(self.model)
             
-            return best_metric
+            return best_baseline_ratio, best_fwd_loss, best_bwd_loss
         finally:
             # Finish wandb run if needed
             if self.use_wandb and self.wandb_manager is not None:
@@ -355,7 +368,9 @@ class ModularTrainer(BaseTrainer):
     This trainer first trains the embedding module, then freezes it and trains the operator module.
     """
     
-    def __init__(self, model: nn.Module, train_loader, test_loader, config, use_wandb: bool = False, print_losses: bool = True):
+    def __init__(self, model: nn.Module, train_loader, test_loader, config, 
+                 use_wandb: bool = False, print_losses: bool = True,
+                 model_dict_save_dir=None, group=None):
         """
         Initialize the ModularTrainer.
         
@@ -374,7 +389,7 @@ class ModularTrainer(BaseTrainer):
         print_losses : bool, default=False
             Wheter to print all losses per epoch
         """
-        super().__init__(model, train_loader, test_loader, config, use_wandb, print_losses)
+        super().__init__(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir, group)
         
         # Paths for saving intermediate models
         self.embedding_path = f"{self.model.__class__.__name__}_embedding.pth"
@@ -393,7 +408,8 @@ class ModularTrainer(BaseTrainer):
         if self.use_wandb and self.wandb_manager is not None:
             self.wandb_manager.init_run(
                 run_name=f"{self.model.__class__.__name__}_modular",
-                tags=["modular", self.training_config['backpropagation_mode']]
+                tags=["modular", self.training_config['backpropagation_mode']],
+                group=self.group
             )
         
         try:
@@ -411,10 +427,13 @@ class ModularTrainer(BaseTrainer):
                 mask_value=self.config.mask_value,
                 early_stop=self.config.early_stop,
                 patience=self.config.patience,
+                E_overfit_limit = self.config.E_overfit_limit,
                 baseline=self.baseline,
                 model_name=self.model.__class__.__name__,
                 wandb_log=self.use_wandb,
-                print_losses=self.print_losses
+                verbose=self.config.verbose,
+                model_dict_save_dir = self.model_dict_save_dir
+
             )
             
             embedding_trainer.train()
@@ -425,7 +444,7 @@ class ModularTrainer(BaseTrainer):
             
             # Log embedding to wandb if needed
             if self.use_wandb and self.wandb_manager is not None:
-                self.wandb_manager.log_model(self.model.embedding, f"{self.model.__class__.__name__}_embedding")
+                self.wandb_manager.log_model(self.model)
             
             # Freeze embedding
             for param in self.model.embedding.parameters():
@@ -456,7 +475,9 @@ class ModularTrainer(BaseTrainer):
                     baseline=self.baseline,
                     model_name=self.model.__class__.__name__,
                     wandb_log=self.use_wandb,
-                    print_losses=self.print_losses
+                    verbose=self.config.verbose,
+                    model_dict_save_dir = self.model_dict_save_dir
+
                 )
             else:
                 logger.info("Using full backpropagation")
@@ -477,11 +498,13 @@ class ModularTrainer(BaseTrainer):
                     baseline=self.baseline,
                     model_name=self.model.__class__.__name__,
                     wandb_log=self.use_wandb,
-                    print_losses=self.print_losses
+                    verbose=self.config.verbose,
+                    model_dict_save_dir = self.model_dict_save_dir
+
                 )
             
             # Train operator
-            best_metric = operator_trainer.train()
+            best_baseline_ratio, best_fwd_loss, best_bwd_loss = operator_trainer.train()
             
             # Save best model
             if hasattr(operator_trainer, 'early_stopping') and hasattr(operator_trainer.early_stopping, 'model_path'):
@@ -489,9 +512,272 @@ class ModularTrainer(BaseTrainer):
                 
                 # Log best model to wandb if needed
                 if self.use_wandb and self.wandb_manager is not None:
-                    self.wandb_manager.log_model(self.model, f"{self.model.__class__.__name__}_best")
+                    self.wandb_manager.log_model(self.model)
             
-            return best_metric
+            return best_baseline_ratio, best_fwd_loss, best_bwd_loss
+        finally:
+            # Finish wandb run if needed
+            if self.use_wandb and self.wandb_manager is not None:
+                self.wandb_manager.finish_run()
+
+class ModularShiftTrainer(BaseTrainer):
+    """
+    Improved trainer for modular model training with sequential shift training.
+    
+    This trainer implements a sequential training approach:
+    1. Train embedding module 
+    2. Save parameters
+    3. Load parameters and train shift 1 until early stop
+    4. Save parameters
+    5. Load parameters and train shift 2 until early stop
+    6. Compare with shift 1 error and if worse, reset to shift 1 and don't continue
+    7. If better, save parameters and train shift 3, and so on
+    """
+    
+    def __init__(self, model: nn.Module, train_loader, test_loader, config, 
+                 use_wandb: bool = False, print_losses: bool = True,
+                 model_dict_save_dir=None, group=None):
+        """
+        Initialize the ModularShiftTrainer.
+        
+        Parameters:
+        -----------
+        model : nn.Module
+            Model to train
+        train_loader : DataLoader
+            Training data loader
+        test_loader : DataLoader
+            Testing data loader
+        config : ConfigManager
+            Configuration manager
+        use_wandb : bool, default=False
+            Whether to use Weights & Biases for logging
+        print_losses : bool, default=False
+            Whether to print all losses per epoch
+        model_dict_save_dir : str, default=None
+            Directory to save model dictionaries
+        """
+        super().__init__(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir, group)
+
+        self.num_shifts = self.config.max_Kstep
+        
+        # Paths for saving intermediate models
+        self.embedding_path = f"{self.model.__class__.__name__}_embedding.pth"
+        self.base_model_path = f"{self.model.__class__.__name__}_base.pth"
+        self.shift_paths = [f"{self.model.__class__.__name__}_shift{i+1}.pth" for i in range(self.num_shifts)]
+        
+        # Track performance metrics for each shift
+        self.shift_metrics = []
+    
+    def train_embedding(self):
+        """
+        Train the embedding module.
+        
+        Returns:
+        --------
+        float
+            Best embedding identity loss
+        """
+        logger.info("Training embedding module")
+        embedding_trainer = Embedding_Trainer(
+            self.model,
+            self.train_loader,
+            self.test_loader,
+            learning_rate=self.config.learning_rate,
+            weight_decay=self.config.weight_decay,
+            learning_rate_change=self.config.learning_rate_change,
+            num_epochs=self.config.num_epochs,
+            decayEpochs=self.config.decay_epochs,
+            mask_value=self.config.mask_value,
+            early_stop=self.config.early_stop,
+            patience=self.config.patience,
+            E_overfit_limit=self.config.E_overfit_limit,
+            baseline=self.baseline,
+            model_name=self.model.__class__.__name__,
+            wandb_log=self.use_wandb,
+            verbose=self.config.verbose,
+            model_dict_save_dir=self.model_dict_save_dir
+        )
+        
+        best_identity_loss = embedding_trainer.train()
+        
+        # Save embedding
+        torch.save(self.model.state_dict(), self.embedding_path)
+        logger.info(f"Embedding model saved to {self.embedding_path}")
+        
+        # Freeze embedding
+        for param in self.model.embedding.parameters():
+            param.requires_grad = False
+        logger.info("Embedding parameters frozen")
+        
+        return best_identity_loss
+    
+    def train_shift(self, shift_idx):
+        """
+        Train a specific shift model.
+        
+        Parameters:
+        -----------
+        shift_idx : int
+            Index of the shift to train (0-based)
+            
+        Returns:
+        --------
+        Tuple[float, float, float]
+            Tuple of (baseline_ratio, forward_loss, backward_loss)
+        """
+        logger.info(f"Training shift {shift_idx+1}")
+        
+        # Set the shift start step and max step
+        start_Kstep = shift_idx
+        max_Kstep = shift_idx + 1
+        
+        # Create the appropriate trainer based on backpropagation mode
+        backpropagation_mode = self.training_config['backpropagation_mode']
+        
+        trainer_kwargs = {
+            "max_Kstep": max_Kstep,
+            "start_Kstep": start_Kstep,
+            "learning_rate": self.config.learning_rate,
+            "weight_decay": self.config.weight_decay,
+            "learning_rate_change": self.config.learning_rate_change,
+            "num_epochs": self.config.num_epochs,
+            "decayEpochs": self.config.decay_epochs,
+            "loss_weights": self.config.loss_weights,
+            "mask_value": self.config.mask_value,
+            "early_stop": self.config.early_stop,
+            "patience": self.config.patience,
+            "baseline": self.baseline,
+            "model_name": self.model.__class__.__name__,
+            "wandb_log": self.use_wandb,
+            "verbose": self.config.verbose,
+            "model_dict_save_dir": self.model_dict_save_dir
+        }
+        
+        if backpropagation_mode == 'step':
+            logger.info("Using step-wise backpropagation")
+            trainer = Koop_Step_Trainer(model=self.model, train_dl=self.train_loader,
+                                        test_dl=self.test_loader, **trainer_kwargs)
+        else:
+            logger.info("Using full backpropagation")
+            trainer = Koop_Full_Trainer(model=self.model, train_dl=self.train_loader,
+                                        test_dl=self.test_loader, **trainer_kwargs)
+        
+        # Train the shift
+        best_baseline_ratio, best_fwd_loss, best_bwd_loss = trainer.train()
+        
+        # Save best model if early stopping was used
+        if hasattr(trainer, 'early_stopping') and hasattr(trainer.early_stopping, 'model_path'):
+            # Load the best model from early stopping
+            self.model.load_state_dict(torch.load(trainer.early_stopping.model_path, map_location=self.device))
+            logger.info(f"Loaded best model for shift {shift_idx+1} from {trainer.early_stopping.model_path}")
+        
+        # Save the trained shift model
+        shift_path = self.shift_paths[shift_idx]
+        torch.save(self.model.state_dict(), shift_path)
+        logger.info(f"Shift {shift_idx+1} model saved to {shift_path}")
+        
+        # Calculate combined loss
+        combined_loss = (best_fwd_loss + best_bwd_loss) / 2
+        
+        # Store metrics for this shift
+        shift_metrics = {
+            'shift_idx': shift_idx,
+            'baseline_ratio': best_baseline_ratio,
+            'forward_loss': best_fwd_loss,
+            'backward_loss': best_bwd_loss,
+            'combined_loss': combined_loss,
+            'model_path': shift_path
+        }
+        
+        self.shift_metrics.append(shift_metrics)
+        
+        return best_baseline_ratio, best_fwd_loss, best_bwd_loss, combined_loss
+    
+    def train(self):
+        """
+        Train the model using the sequential shift training approach.
+        
+        Returns:
+        --------
+        Dict
+            Best shift metrics
+        """
+        # Initialize wandb run if needed
+        if self.use_wandb and self.wandb_manager is not None:
+            self.wandb_manager.init_run(
+                run_name=f"{self.model.__class__.__name__}_modular_shift",
+                tags=["modular_shift", self.training_config['backpropagation_mode']],
+                group=self.group
+            )
+        
+        try:
+            # Step 1: Train embedding
+            embedding_loss = self.train_embedding()
+            logger.info(f"Embedding training completed with best identity loss: {embedding_loss}")
+            
+            # Save base model with trained embedding
+            torch.save(self.model.state_dict(), self.base_model_path)
+            logger.info(f"Base model saved to {self.base_model_path}")
+            
+            # Step 2: Train each shift sequentially
+            best_shift_metrics = None
+            best_shift_idx = -1
+            best_combined_loss = float('inf')
+            
+            for shift_idx in range(self.num_shifts):
+                # Always start from the base model with trained embedding
+                self.model.load_state_dict(torch.load(self.base_model_path, map_location=self.device))
+                logger.info(f"Loaded base model for training shift {shift_idx+1}")
+                
+                # Train this shift
+                baseline_ratio, fwd_loss, bwd_loss, combined_loss = self.train_shift(shift_idx)
+                
+                # Log shift metrics
+                logger.info(f"Shift {shift_idx+1} training results:")
+                logger.info(f"  Baseline ratio: {baseline_ratio:.6f}")
+                logger.info(f"  Forward loss: {fwd_loss:.6f}")
+                logger.info(f"  Backward loss: {bwd_loss:.6f}")
+                logger.info(f"  Combined loss: {combined_loss:.6f}")
+                
+                # Update best shift if this one is better
+                if combined_loss < best_combined_loss:
+                    best_combined_loss = combined_loss
+                    best_shift_idx = shift_idx
+                    best_shift_metrics = self.shift_metrics[shift_idx]
+                    logger.info(f"New best shift: Shift {shift_idx+1} with combined loss {combined_loss:.6f}")
+                else:
+                    logger.info(f"Shift {shift_idx+1} performance is worse than best shift {best_shift_idx+1} "
+                                f"({combined_loss:.6f} > {best_combined_loss:.6f})")
+                    if shift_idx > 0:  # Only break after at least training shift 1 and 2
+                        logger.info(f"Stopping shift training as performance degraded")
+                        break
+            
+            # Load the best shift model
+            if best_shift_idx >= 0:
+                best_model_path = self.shift_paths[best_shift_idx]
+                self.model.load_state_dict(torch.load(best_model_path, map_location=self.device))
+                logger.info(f"Loaded best shift model (Shift {best_shift_idx+1}) from {best_model_path}")
+                
+                # Final evaluation
+                final_metrics = self.evaluate()
+                logger.info("Final model evaluation:")
+                for metric_name, metric_value in final_metrics.items():
+                    logger.info(f"  {metric_name}: {metric_value:.6f}")
+                
+                # Log best model to wandb if needed
+                if self.use_wandb and self.wandb_manager is not None:
+                    self.wandb_manager.log_model(self.model)
+                    
+                best_baseline_ratio = best_shift_metrics['baseline_ratio']
+                best_fwd_loss = best_shift_metrics['forward_loss']
+                best_bwd_loss = best_shift_metrics['backward_loss']
+                
+                return best_baseline_ratio, best_fwd_loss, best_bwd_loss
+            else:
+                logger.warning("No successful shift training completed")
+                return None
+                
         finally:
             # Finish wandb run if needed
             if self.use_wandb and self.wandb_manager is not None:
@@ -504,7 +790,9 @@ class EmbeddingTrainer(BaseTrainer):
     This trainer only trains the embedding module (autoencoder).
     """
     
-    def __init__(self, model: nn.Module, train_loader, test_loader, config, use_wandb: bool = False, print_losses: bool = False):
+    def __init__(self, model: nn.Module, train_loader, test_loader, config, 
+                 use_wandb: bool = False, print_losses: bool = False,
+                 model_dict_save_dir=None, group=None):
         """
         Initialize the EmbeddingTrainer.
         
@@ -523,7 +811,7 @@ class EmbeddingTrainer(BaseTrainer):
         print_losses : bool, default=False
             Wheter to print all losses per epoch
         """
-        super().__init__(model, train_loader, test_loader, config, use_wandb, print_losses)
+        super().__init__(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir)
     
     def train(self) -> float:
         """
@@ -538,7 +826,8 @@ class EmbeddingTrainer(BaseTrainer):
         if self.use_wandb and self.wandb_manager is not None:
             self.wandb_manager.init_run(
                 run_name=f"{self.model.__class__.__name__}_embedding",
-                tags=["embedding"]
+                tags=["embedding"],
+                group=self.group
             )
         
         try:
@@ -558,7 +847,9 @@ class EmbeddingTrainer(BaseTrainer):
                 baseline=self.baseline,
                 model_name=self.model.__class__.__name__,
                 wandb_log=self.use_wandb,
-                print_losses=self.print_losses
+                verbose=self.config.verbose,
+                model_dict_save_dir = self.model_dict_save_dir
+
             )
             
             # Train embedding
@@ -579,7 +870,10 @@ class EmbeddingTrainer(BaseTrainer):
             if self.use_wandb and self.wandb_manager is not None:
                 self.wandb_manager.finish_run()
 
-def create_trainer(model: nn.Module, train_loader, test_loader, config, use_wandb: bool = False, print_losses: bool = False, baseline=None) -> BaseTrainer:
+def create_trainer(model: nn.Module, train_loader, test_loader, config, 
+                   use_wandb: bool = False, print_losses: bool = False,
+                    baseline=None, model_dict_save_dir: Optional[str] = None,
+                    group: Optional[str] = None) -> BaseTrainer:
     """
     Create a trainer based on the training mode.
     
@@ -606,11 +900,13 @@ def create_trainer(model: nn.Module, train_loader, test_loader, config, use_wand
     training_mode = config.training_mode
     
     if training_mode == 'full':
-        trainer = FullTrainer(model, train_loader, test_loader, config, use_wandb, print_losses)
+        trainer = FullTrainer(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir, group)
     elif training_mode == 'modular':
-        trainer = ModularTrainer(model, train_loader, test_loader, config, use_wandb, print_losses)
+        trainer = ModularTrainer(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir, group)
+    elif training_mode == 'modular_shift':
+        trainer = ModularShiftTrainer(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir, group)
     elif training_mode == 'embedding':
-        trainer = EmbeddingTrainer(model, train_loader, test_loader, config, use_wandb, print_losses)
+        trainer = EmbeddingTrainer(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir, group)
     else:
         raise ValueError(f"Unknown training mode: {training_mode}")
     

@@ -47,7 +47,7 @@ def build_model_from_config(config: ConfigManager) -> 'KoopmanModel':
 
         embedding_module = FF_AE(
             E_layer_dims=model_config['E_layer_dims'],
-            D_layer_dims=model_config['E_layer_dims'][::-1],
+            D_layer_dims=model_config['D_layer_dims'],
             E_dropout_rates=model_config['E_dropout_rates'],
             D_dropout_rates=[0] * len(model_config['E_layer_dims']),
             activation_fn=model_config['activation_fn']
@@ -168,6 +168,7 @@ def create_default_config(num_features: int, latent_dim: Optional[int] = None) -
             "early_stop": True,
             "patience": 10,
             "batch_size": 32,
+            "verbose": [False,False,False]
         },
         
         # Data parameters

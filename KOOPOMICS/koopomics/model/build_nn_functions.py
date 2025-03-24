@@ -6,34 +6,24 @@ import torch.nn.functional as F
 from typing import List, Union, Optional, Dict, Any, Callable
 
 
+class Sine(nn.Module):
+    def forward(self, x):
+        return torch.sin(x)
+
+class ReLUSine(nn.Module):
+    def forward(self, x):
+        return torch.sin(F.relu(x))
+
+
 def get_activation_fn(name: str) -> nn.Module:
     """
     Returns an activation function given its name.
     
-    Parameters:
-    -----------
-    name : str
-        Name of the activation function. Supported values:
-        - 'relu': ReLU activation
-        - 'tanh': Tanh activation
-        - 'sigmoid': Sigmoid activation
-        - 'prelu': PReLU activation
-        - 'leaky_relu': LeakyReLU activation
-        - 'elu': ELU activation
-        - 'selu': SELU activation
-        - 'gelu': GELU activation
-    
-    Returns:
-    --------
-    nn.Module
-        Corresponding activation function module.
-        
-    Raises:
-    -------
-    ValueError
-        If the activation function name is not recognized.
+    Supported names include:
+        'relu', 'tanh', 'sigmoid', 'prelu', 'leaky_relu', 'elu', 'selu', 'gelu',
+        'sine': applies torch.sin(x)
+        'relu_sine': applies ReLU then sin(x)
     """
-    # Dictionary mapping activation function names to their implementations
     activation_fns = {
         'relu': nn.ReLU(),
         'tanh': nn.Tanh(),
@@ -42,7 +32,12 @@ def get_activation_fn(name: str) -> nn.Module:
         'leaky_relu': nn.LeakyReLU(),
         'elu': nn.ELU(),
         'selu': nn.SELU(),
-        'gelu': nn.GELU()
+        'gelu': nn.GELU(),
+        'sine': Sine(),
+        'relu_sine': ReLUSine(),
+        'swish': nn.SiLU(),
+        'linear': nn.Identity()
+
     }
     
     if name in activation_fns:
@@ -78,30 +73,28 @@ def _build_nn_layers(layer_dims: List[int], activation_fn: str = 'relu') -> nn.S
     return nn.Sequential(*layers)
 
 def _build_nn_layers_with_dropout(
-    layer_dims: List[int], 
-    dropout_rates: List[float], 
-    activation_fn: str = 'relu'
+    layer_dims: List[int],
+    dropout_rates: List[float],
+    activation_fn: Union[str, List[Union[str, nn.Module]]] = 'relu'
 ) -> nn.Sequential:
     """
-    Build neural network layers from a list of dimensions and apply dropout where specified.
+    Build neural network layers from a list of dimensions with dropout and custom activations.
     
     Parameters:
     -----------
     layer_dims : List[int]
-        A list of integers where each pair of consecutive elements 
-        represents the input and output dimensions of a layer.
+        List of integers representing the dimensions for each linear layer.
     dropout_rates : List[float]
-        A list of floats where each element specifies the dropout rate 
-        for the corresponding layer. If 0, no dropout is applied to that layer.
-    activation_fn : str, optional
-        Name of the activation function to use. Default is 'relu'.
-                           
+        List of dropout rates for each layer. Must match the length of layer_dims.
+    activation_fn : Union[str, List[Union[str, nn.Module]]], optional
+        Either a single activation function (name or module) or a list of activations for each layer 
+        (except the final one). If a single activation is provided, it is applied to all layers.
+    
     Returns:
     --------
     nn.Sequential
-        A sequential model consisting of fully connected layers, activations,
-        and dropout where specified.
-        
+        A sequential model consisting of linear layers with activations and dropout.
+    
     Raises:
     -------
     AssertionError
@@ -109,25 +102,41 @@ def _build_nn_layers_with_dropout(
     """
     layers = []
     
-    # Check if the dropout_rates list matches the number of layers
+    # Ensure dropout_rates list matches the number of layers (including input dropout)
     assert len(dropout_rates) == len(layer_dims), \
         f"Length of dropout_rates ({len(dropout_rates)}) must be equal to the number of layers ({len(layer_dims)})"
+    
+    n_layers = len(layer_dims) - 1  # number of linear layers
 
-    activation = get_activation_fn(activation_fn)
+    # Process the activation_fn input:
+    if isinstance(activation_fn, list):
+        activation_list = []
+        for act in activation_fn:
+            if isinstance(act, str):
+                activation_list.append(get_activation_fn(act))
+            elif isinstance(act, nn.Module):
+                activation_list.append(act)
+            else:
+                raise ValueError("Activation function must be provided as a string or nn.Module instance.")
+        # Extend the list if it's shorter than needed
+        if len(activation_list) < n_layers:
+            activation_list.extend([activation_list[-1]] * (n_layers - len(activation_list)))
+    else:
+        # Single activation provided: repeat it for all layers except the output layer
+        default_activation = get_activation_fn(activation_fn) if isinstance(activation_fn, str) else activation_fn
+        activation_list = [default_activation] * n_layers
 
-    # Apply dropout to input if specified
+    # Add input dropout if specified (first element of dropout_rates)
     if dropout_rates[0] > 0:
         layers.append(nn.Dropout(p=dropout_rates[0]))
         print(f'{dropout_rates[0]*100:.1f}% dropout for input layer initialized.')
-    
-    for i in range(len(layer_dims) - 1):
-        # Add a linear (fully connected) layer
+
+    # Build layers: for each linear layer add activation (except the last layer)
+    for i in range(n_layers):
         layers.append(nn.Linear(layer_dims[i], layer_dims[i + 1]))
-        
-        # Add activation if it's not the last layer
-        if i < len(layer_dims) - 2:
-            layers.append(activation)
-            
+        # Add activation if not the last linear layer
+        if i < n_layers - 1:
+            layers.append(activation_list[i])
         # Add dropout after the layer if specified
         if i + 1 < len(dropout_rates) and dropout_rates[i + 1] > 0:
             layers.append(nn.Dropout(p=dropout_rates[i + 1]))

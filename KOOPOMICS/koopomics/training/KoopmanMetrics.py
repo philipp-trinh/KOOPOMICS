@@ -25,7 +25,12 @@ def masked_criterion(criterion, mask_value=-1):
 
 
 class KoopmanMetricsMixin:
-    
+
+    def spectral_loss(pred, target):
+        pred_fft = torch.fft.fft(pred, dim=-1)
+        target_fft = torch.fft.fft(target, dim=-1)
+        return torch.mean(torch.abs(pred_fft - target_fft))
+        
     def get_device(self):
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -38,7 +43,7 @@ class KoopmanMetricsMixin:
                 return torch.tensor(0.0, device=predictions.device)
 
             masked_targets = torch.where(mask, targets, torch.tensor(0.0, device=targets.device))
-            
+
             masked_predictions = torch.where(mask, predictions, torch.tensor(0.0, device=targets.device))
 
             # Calculate the loss with the given criterion
@@ -120,6 +125,8 @@ class KoopmanMetricsMixin:
         return loss_fwd_step, loss_latent_fwd_identity_step    
     
     def compute_forward_loss(self, input_fwd, target_fwd, fwd=1):
+
+
         loss_fwd_step = torch.tensor(0.0, device=self.device)
         loss_latent_fwd_identity_step = torch.tensor(0.0, device=self.device)
         
@@ -133,7 +140,8 @@ class KoopmanMetricsMixin:
                 self.temporal_cons_fwd_storage[f] = shifted_fwd_storage
         
         shifted_fwd = self.model.embedding.decode(latent_fwd)
-        
+
+
         loss_fwd_step += self.criterion(shifted_fwd, target_fwd)
 
         # Compute latent identity loss with shifted latent prediction

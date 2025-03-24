@@ -1,108 +1,200 @@
+"""
+KOOPOMICS Test Utilities Module
+
+This module provides evaluation and testing utilities for Koopman models, including:
+1. NaiveMeanPredictor - A baseline model that predicts the mean of training data
+2. Evaluator - A class for evaluating model performance with various metrics
+
+Author: KOOPOMICS Team
+"""
+
 import pandas as pd
 import numpy as np
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 from IPython.display import clear_output
+import json
+import seaborn as sns
+from mpl_toolkits.mplot3d import Axes3D
 
 from ..training.KoopmanMetrics import KoopmanMetricsMixin
 
 
-# Naive model class that predicts the average of the target for reference
 class NaiveMeanPredictor(nn.Module):
+    """
+    A simple baseline model that predicts the mean values of the training data.
+    
+    This model serves as a baseline for comparison with more complex models.
+    It computes the mean of each feature in the training data and returns
+    these means as predictions, regardless of the input.
+    
+    Attributes:
+        means (nn.Parameter): Tensor of mean values for each feature
+        mask_value (float): Value used to mask missing data points
+        device (torch.device): Device to use for computation
+    """
     def __init__(self, train_data, mask_value=None):
+        """
+        Initialize the NaiveMeanPredictor.
+        
+        Args:
+            train_data (DataLoader or DataFrame): Training data to compute means from
+            mask_value (float, optional): Value to mask in the data
+        """
         super().__init__()
         self.means = None
         self.mask_value = mask_value
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Always keep device attribute to CPU initially, then move tensors as needed
+        self.device = torch.device("cpu")
     
-        if isinstance(train_data, torch.utils.data.DataLoader):  # Check if it's a DataLoader
+        if isinstance(train_data, torch.utils.data.DataLoader):
             self.get_means_dl(train_data)
-        elif isinstance(train_data, pd.DataFrame):  # Check if it's a DataFrame
+        elif isinstance(train_data, pd.DataFrame):
             self.get_means_df(train_data)
         else:
             raise ValueError("train_data must be either a DataLoader or a DataFrame")
+        
+        # Move model to GPU if available
+        if torch.cuda.is_available():
+            self.to(torch.device("cuda"))
+            self.device = torch.device("cuda")
 
     def get_means_dl(self, dl):
+        """
+        Compute mean values from a DataLoader.
+        
+        Args:
+            dl (DataLoader): DataLoader containing the training data
+        """
         # Get a sample batch to infer tensor shape
         for data in dl:
-            input_data = data[0].to(self.device)  # Move data to the correct device
+            input_data = data[0].to(self.device)
             break
 
-        # Initialize sum and count tensors on the correct device
+        # Initialize sum and count tensors on the device
         sum_values = torch.zeros(input_data.shape[-1], dtype=torch.float32, device=self.device)
         count_values = torch.zeros(input_data.shape[-1], dtype=torch.float32, device=self.device)
         
-        # Loop through the DataLoader to compute means
+        # Compute means efficiently in a single pass
         with torch.no_grad():
             for data in dl:
-                input_data = data[0].to(self.device)  # Ensure input is on the correct device
+                input_data = data[0].to(self.device)
                 
+                # Create mask and apply in one step
                 if self.mask_value is not None:
                     mask = (input_data != self.mask_value)
-                    masked_input_data = torch.where(mask, input_data, torch.tensor(0.0, device=self.device))
+                    masked_input_data = torch.where(mask, input_data, torch.zeros_like(input_data))
+                else:
+                    masked_input_data = input_data
+                    mask = torch.ones_like(input_data, dtype=torch.bool)
 
+                # Sum across appropriate dimensions based on shape
                 if masked_input_data.shape[1] == 1:
                     sum_values += masked_input_data.sum(dim=0).squeeze()
-                    count_values += (masked_input_data != self.mask_value).sum(dim=0).squeeze()
+                    count_values += mask.sum(dim=0).squeeze()
                 else:
                     sum_values += masked_input_data.sum(dim=(0, 1))
-                    count_values += (masked_input_data != self.mask_value).sum(dim=(0, 1))
+                    count_values += mask.sum(dim=(0, 1))
 
         # Compute means and store as non-trainable parameter
         self.means_values = sum_values / count_values
-        self.means = nn.Parameter(self.means_values.clone().detach(), requires_grad=False).to(self.device)
-
-
+        self.means = nn.Parameter(self.means_values.clone().detach(), requires_grad=False)
 
     def get_means_df(self, df):
+        """
+        Compute mean values from a DataFrame.
+        
+        Args:
+            df (DataFrame): DataFrame containing the training data
+        """
+        # Ensure feature_list is available
+        if not hasattr(self, 'feature_list'):
+            raise ValueError("feature_list attribute not set for DataFrame processing")
+            
         # Create a mask to filter out rows that contain the mask_value
         if self.mask_value is not None:
-            mask = (df[self.feature_list] != self.mask_value).all(axis=1)  # True for rows without mask_value
-            filtered_df = df[mask]  # Filtered DataFrame
+            mask = (df[self.feature_list] != self.mask_value).all(axis=1)
+            filtered_df = df[mask]
         else:
-            filtered_df = df  # No masking applied
+            filtered_df = df
 
-        # Calculate means only for the rows that are not masked
+        # Calculate means and convert to tensor - more efficiently with numpy
         self.means_values = filtered_df[self.feature_list].mean().values
-        self.means = nn.Parameter(torch.tensor(self.means_values, dtype=torch.float32))
+        
+        # Create tensor directly on the correct device
+        self.means = nn.Parameter(
+            torch.tensor(self.means_values, dtype=torch.float32, device=self.device),
+            requires_grad=False
+        )
         
     def kmatrix(self):
-        return torch.zeros(4,4), torch.zeros(4,4)
+        """Return placeholder Koopman matrices for API compatibility."""
+        return torch.zeros(4, 4, device=self.device), torch.zeros(4, 4, device=self.device)
         
     def forward(self, input_vector, fwd=0, bwd=0):
         """
-        For the forward pass, ignore the input and return the mean values
-        calculated during the fit step.
+        Forward pass that returns the precomputed mean values.
+        
+        Args:
+            input_vector (torch.Tensor): Input tensor (ignored except for shape)
+            fwd (int, optional): Forward steps (ignored, included for API compatibility)
+            bwd (int, optional): Backward steps (ignored, included for API compatibility)
+            
+        Returns:
+            torch.Tensor: Tensor of mean values expanded to match input shape
         """
         device = input_vector.device
         input_shape = input_vector.shape
         
-        # If input is 2D (batch_size, num_features)
+        # Match output shape to input shape
         if len(input_shape) == 2:
             batch_size, num_features = input_shape
-            expanded_means = self.means.to(device).unsqueeze(0)  # Shape: (1, num_features)
-            return expanded_means.expand(batch_size, num_features)  # Shape: (batch_size, num_features)
+            expanded_means = self.means.to(device).unsqueeze(0)
+            return expanded_means.expand(batch_size, num_features)
         
-        # If input is 3D (batch_size, timepoints, num_features)
         elif len(input_shape) == 3:
             batch_size, timepoints, num_features = input_shape
-            expanded_means = self.means.to(device).unsqueeze(0).unsqueeze(0)  # Shape: (1, 1, num_features)
-            return expanded_means.expand(batch_size, timepoints, num_features)  # Shape: (batch_size, timepoints, num_features)
+            expanded_means = self.means.to(device).unsqueeze(0).unsqueeze(0)
+            return expanded_means.expand(batch_size, timepoints, num_features)
         
-        # Handle cases where the input is not 2D or 3D
         else:
             raise ValueError("Input must be either 2D or 3D.")
 
 
 class Evaluator(KoopmanMetricsMixin):
+    """
+    Class for evaluating Koopman models and computing various performance metrics.
+    
+    This evaluator computes forward and backward prediction losses, reconstruction losses,
+    and can compare model performance against a baseline.
+    
+    Attributes:
+        model (nn.Module): The Koopman model to evaluate
+        test_loader (DataLoader): DataLoader for the test dataset
+        train_loader (DataLoader): DataLoader for the training dataset
+        mask_value (float): Value used to mask missing data points
+        max_Kstep (int): Maximum number of Koopman steps for prediction
+        baseline (nn.Module): Optional baseline model for comparison
+        device (torch.device): Device to use for computation
+        criterion (function): Loss function for evaluation
+        loss_weights (list): Weights for different loss components
+    """
     def __init__(self, model, train_loader, test_loader, **kwargs):
         """
-        Initialize the Evaluator class.
-
+        Initialize the Evaluator.
+        
         Args:
-            model (torch.nn.Module): The trained model to be evaluated.
-            test_loader (torch.utils.data.DataLoader): DataLoader for the test dataset.
+            model (nn.Module): The model to evaluate
+            train_loader (DataLoader): DataLoader for training data
+            test_loader (DataLoader): DataLoader for test data
+            **kwargs: Additional keyword arguments:
+                - mask_value (float): Value to mask in the data (default: -2)
+                - max_Kstep (int): Maximum Koopman steps (default: 1)
+                - baseline (nn.Module): Baseline model for comparison
+                - model_name (str): Name of the model
+                - criterion (function): Custom loss function
+                - loss_weights (list): Weights for different loss components
         """
         self.model = model
         self.test_loader = test_loader
@@ -111,65 +203,97 @@ class Evaluator(KoopmanMetricsMixin):
         self.max_Kstep = kwargs.get('max_Kstep', 1)
         self.baseline = kwargs.get('baseline', None)
         self.model_name = kwargs.get('model_name', 'Koop')
-
         
-        self.baseline = kwargs.get('baseline', None)
-
-        self.device = self.get_device()
+        # Ensure model and data are on the same device
+        self.device = next(model.parameters()).device
         
+        # Set up loss function - ensure criterion is not None
         base_criterion = nn.MSELoss().to(self.device)
-
-        self.criterion = kwargs.get('criterion', self.masked_criterion(base_criterion, mask_value=self.mask_value))
+        provided_criterion = kwargs.get('criterion')
+        
+        if provided_criterion is not None:
+            self.criterion = provided_criterion
+        else:
+            self.criterion = self.masked_criterion(base_criterion, mask_value=self.mask_value)
+        
+        # Set loss weights
         self.loss_weights = kwargs.get('loss_weights', [1, 1, 1, 1, 1, 1])
+        
+        # Initialize state
         self.current_step = 0
-        self.metrics = {} 
+        self.metrics = {}
         
-    def __call__(self, train_metrics = False):
+        # Move baseline to the same device as the model if it exists
+        if self.baseline is not None:
+            self.baseline.to(self.device)
         
+    def __call__(self, train_metrics=False):
+        """
+        Evaluate the model on test data and optionally on training data.
+        
+        Args:
+            train_metrics (bool): Whether to evaluate on training data
+            
+        Returns:
+            tuple: (train_metrics, test_metrics, baseline_metrics)
+        """
+        # Evaluate on training data if requested
         train_model_metrics = {}
         if train_metrics:
             train_model_metrics = self.evaluate(self.train_loader)
+            
+        # Always evaluate on test data
         test_model_metrics = self.evaluate(self.test_loader)
 
-
+        # Compute baseline metrics if a baseline model is provided
         baseline_metrics = {}
-        
         if self.baseline:
             baseline_metrics = self.compute_baseline_performance()
+            
+            # Calculate baseline ratio (improvement over baseline)
+            combined_test_loss = test_model_metrics['prediction_loss']
+            combined_baseline_loss = (baseline_metrics['forward_loss'] + baseline_metrics['backward_loss']) / 2
+            baseline_ratio = (combined_baseline_loss - combined_test_loss) / combined_baseline_loss
+            
+            # Add baseline ratio to metrics
+            test_model_metrics['baseline_ratio'] = baseline_ratio
 
-        return train_model_metrics, test_model_metrics, baseline_metrics 
+        return train_model_metrics, test_model_metrics, baseline_metrics
 
     def metrics_embedding(self):
-
+        """
+        Evaluate embedding performance of the model.
+        
+        Returns:
+            tuple: (model_metrics, baseline_metrics)
+        """
         model_metrics = self.evaluate_embedding()
 
         baseline_metrics = {}
-        
         if self.baseline:
             baseline_metrics = self.compute_baseline_performance_embedding()
 
-        return model_metrics, baseline_metrics         
+        return model_metrics, baseline_metrics
 
-    
     def evaluate(self, dl):
         """
-        Evaluate the model on the test dataset and calculate loss components.
-    
-        Args:
-            test_loader (torch.utils.data.DataLoader): DataLoader for the test dataset.
-
-        Returns:
-            dict: Dictionary of average loss values for each component and the total loss.
-        """
-        self.model.eval()  # Set the model to evaluation mode
+        Evaluate model performance on a given DataLoader.
         
-        test_fwd_loss =  torch.tensor(0.0, device=self.device)
-
-        test_bwd_loss =  torch.tensor(0.0, device=self.device)
-
-        total_test_loss =  torch.tensor(0.0, device=self.device)
+        Args:
+            dl (DataLoader): DataLoader containing evaluation data
+            
+        Returns:
+            dict: Dictionary of evaluation metrics
+        """
+        self.model.eval()
+        
+        # Initialize tensors for accumulating losses
+        test_fwd_loss = torch.tensor(0.0, device=self.device)
+        test_bwd_loss = torch.tensor(0.0, device=self.device)
+        test_identity_loss = torch.tensor(0.0, device=self.device)
+        total_test_loss = torch.tensor(0.0, device=self.device)
    
-        with torch.no_grad():  # Disable gradient computation
+        with torch.no_grad():
             for data_list in dl:
                 # Initialize batch losses
                 loss_fwd_batch = torch.tensor(0.0, device=self.device)
@@ -184,43 +308,62 @@ class Evaluator(KoopmanMetricsMixin):
                 input_bwd = data_list[-1].to(self.device)
                 reverse_data_list = torch.flip(data_list, dims=[0])
     
-    
-                # Loop through each step in max_Kstep
-                for step in range(1,self.max_Kstep+1):
+                # Get reconstruction loss
+                if self.loss_weights[3] >0:
+
+                    embedded_output, identity_output = self.model.embed(input_fwd)
+                    reconstruction_loss = self.criterion(identity_output, input_fwd)
+                    loss_identity_batch += reconstruction_loss
+
+                # Evaluate each prediction step
+                for step in range(1, self.max_Kstep+1):
                     self.current_step = step
                     target_fwd = data_list[step].to(self.device)
                     target_bwd = reverse_data_list[step].to(self.device)
     
-                    # Temporal consistency storage if required
+                    # Initialize temporal consistency storage if needed
+                    # Ensure proper device for temporal consistency storage
                     if self.max_Kstep > 1 and self.loss_weights[5] > 0:
-                        self.temporal_cons_fwd_storage = torch.zeros(self.max_Kstep, *input_fwd.shape).to(self.device)
-                        self.temporal_cons_bwd_storage = torch.zeros(self.max_Kstep, *input_bwd.shape).to(self.device)
+                        # Create storage tensors directly on the same device as input
+                        self.temporal_cons_fwd_storage = torch.zeros(
+                            self.max_Kstep, *input_fwd.shape,
+                            dtype=input_fwd.dtype,
+                            device=input_fwd.device
+                        )
+                        self.temporal_cons_bwd_storage = torch.zeros(
+                            self.max_Kstep, *input_bwd.shape,
+                            dtype=input_bwd.dtype,
+                            device=input_bwd.device
+                        )
     
-                    # Forward loss computation
+                    # Compute forward prediction loss
                     if self.loss_weights[0] > 0:
                         loss_fwd_step, loss_latent_fwd_identity_step = self.compute_forward_loss(input_fwd, target_fwd, fwd=step)
                         loss_fwd_batch += loss_fwd_step
                         loss_latent_identity_batch += loss_latent_fwd_identity_step
     
-                    # Backward loss computation
+                    # Compute backward prediction loss
                     if self.loss_weights[1] > 0:
                         loss_bwd_step, loss_latent_bwd_identity_step = self.compute_backward_loss(input_bwd, target_bwd, bwd=step)
                         loss_bwd_batch += loss_bwd_step
                         loss_latent_identity_batch += loss_latent_bwd_identity_step
     
-                    # Identity loss
+                    # Compute identity loss
                     if self.loss_weights[3] > 0:
-                        loss_identity_step = (self.compute_identity_loss(input_fwd, target_fwd) + self.compute_identity_loss(input_bwd, target_bwd)) / 2
+                        loss_identity_step = (self.compute_identity_loss(input_fwd, target_fwd) +
+                                             self.compute_identity_loss(input_bwd, target_bwd)) / 2
                         loss_identity_batch += loss_identity_step
     
-                    # Inverse consistency loss
+                    # Compute inverse consistency loss
                     if self.loss_weights[4] > 0:
-                        loss_inv_cons_step = (self.compute_inverse_consistency(input_fwd, target_fwd) + self.compute_inverse_consistency(input_bwd, target_bwd)) / 2
+                        loss_inv_cons_step = (self.compute_inverse_consistency(input_fwd, target_fwd) +
+                                            self.compute_inverse_consistency(input_bwd, target_bwd)) / 2
                         loss_inv_cons_batch += loss_inv_cons_step
     
-                    # Temporal consistency loss
+                    # Compute temporal consistency loss
                     if self.loss_weights[5] > 0 and self.current_step > 1:
-                        loss_temp_cons_step = (self.compute_temporal_consistency(self.temporal_cons_fwd_storage) + self.compute_temporal_consistency(self.temporal_cons_bwd_storage, bwd=True)) / 2
+                        loss_temp_cons_step = (self.compute_temporal_consistency(self.temporal_cons_fwd_storage) +
+                                              self.compute_temporal_consistency(self.temporal_cons_bwd_storage, bwd=True)) / 2
                         loss_temp_cons_batch += loss_temp_cons_step
     
                 # Calculate total batch loss
@@ -229,783 +372,245 @@ class Evaluator(KoopmanMetricsMixin):
                     loss_identity_batch, loss_inv_cons_batch, loss_temp_cons_batch
                 )
 
-                # Accumulate batch losses for the epoch
+                # Accumulate batch losses
                 test_fwd_loss += loss_fwd_batch
                 test_bwd_loss += loss_bwd_batch
+                test_identity_loss += loss_identity_batch
                 total_test_loss += loss_total_batch
-        # Average loss for the test loader
+                
+        # Compute average losses
         avg_test_fwd_loss = test_fwd_loss / (len(dl) * self.max_Kstep)
         avg_test_bwd_loss = test_bwd_loss / (len(dl) * self.max_Kstep)
+        avg_test_identity_loss = test_identity_loss / len(dl)
         avg_total_test_loss = total_test_loss / (len(dl) * self.max_Kstep)
+        
+        # Calculate prediction loss as average of forward and backward loss
+        prediction_loss = (avg_test_fwd_loss + avg_test_bwd_loss) / 2
+        
+        # Return detached tensors to avoid memory leaks
         return {
             'forward_loss': avg_test_fwd_loss.detach(),
             'backward_loss': avg_test_bwd_loss.detach(),
+            'reconstruction_loss': avg_test_identity_loss.detach(),
+            'prediction_loss': prediction_loss.detach(),
             'total_loss': avg_total_test_loss.detach()
         }
     
     def compute_baseline_performance(self):
         """
-        Evaluate the model on the test dataset and calculate loss components.
-    
-        Args:
-            test_loader (torch.utils.data.DataLoader): DataLoader for the test dataset.
-
-        Returns:
-            dict: Dictionary of average loss values for each component and the total loss.
-        """
-        self.baseline.eval()  # Set the model to evaluation mode
+        Evaluate baseline model performance on test data.
         
+        Returns:
+            dict: Dictionary of baseline evaluation metrics
+        """
+        self.baseline.eval()
+        
+        # Initialize accumulator tensors
         test_fwd_loss = torch.tensor(0.0, device=self.device)
         test_bwd_loss = torch.tensor(0.0, device=self.device)
     
-        with torch.no_grad():  # Disable gradient computation
+        with torch.no_grad():
             for data_list in self.test_loader:
                 # Initialize batch losses
                 loss_fwd_batch = torch.tensor(0.0, device=self.device)
                 loss_bwd_batch = torch.tensor(0.0, device=self.device)
     
-                # Prepare forward and backward inputs
+                # Prepare inputs and targets
                 input_fwd = data_list[0].to(self.device)
                 input_bwd = data_list[-1].to(self.device)
                 reverse_data_list = torch.flip(data_list, dims=[0])
     
-                # Loop through each step in max_Kstep
+                # Evaluate each step
                 for step in range(self.max_Kstep):
                     target_fwd = data_list[step + 1].to(self.device)
                     target_bwd = reverse_data_list[step + 1].to(self.device)
     
-                    # Forward loss computation
+                    # Forward prediction
                     if self.loss_weights[0] > 0:
                         baseline_output = self.baseline(input_fwd)
                         loss_fwd = self.criterion(baseline_output, target_fwd)
-
                         loss_fwd_batch += loss_fwd
                         
-                    # Backward loss computation
+                    # Backward prediction
                     if self.loss_weights[1] > 0:
                         baseline_output = self.baseline(input_bwd)
                         loss_bwd = self.criterion(baseline_output, target_bwd)
                         loss_bwd_batch += loss_bwd
 
-                    
-
-                # Accumulate batch losses for the epoch
+                # Accumulate batch losses
                 test_fwd_loss += loss_fwd_batch
                 test_bwd_loss += loss_bwd_batch
     
-        # Average loss for the test loader
+        # Compute average losses
         avg_test_fwd_loss = test_fwd_loss / (len(self.test_loader) * self.max_Kstep)
         avg_test_bwd_loss = test_bwd_loss / (len(self.test_loader) * self.max_Kstep)
     
+        # Return detached tensors
         return {
             'forward_loss': avg_test_fwd_loss.detach(),
             'backward_loss': avg_test_bwd_loss.detach(),
         }
 
-
-
     def evaluate_embedding(self):
         """
-        Evaluate the embedding module on the test dataset and calculate loss components.
-    
-        Args:
-            test_loader (torch.utils.data.DataLoader): DataLoader for the test dataset.
-
+        Evaluate embedding performance on test data.
+        
         Returns:
-            dict: Dictionary of average loss values for embedding.
+            dict: Dictionary of embedding evaluation metrics
         """
-        self.model.eval()  # Set the model to evaluation mode
+        self.model.eval()
         
         test_identity_loss = torch.tensor(0.0, device=self.device)
 
-        with torch.no_grad():  # Disable gradient computation
+        with torch.no_grad():
             for data_list in self.test_loader:
-
                 loss_identity_batch = torch.tensor(0.0, device=self.device)
+                
                 for step in range(data_list.shape[0]):
-                    # Prepare forward and backward inputs
+                    # Compute reconstruction loss for each time step
                     input_identity = data_list[step].to(self.device)
                     target_identity = data_list[step].to(self.device)
-                    loss_identity_step = self.compute_identity_loss(input_identity, target_identity) 
+                    loss_identity_step = self.compute_identity_loss(input_identity, target_identity)
                     loss_identity_batch += loss_identity_step
                 
-                # Accumulate batch losses for the epoch
+                # Accumulate batch loss
                 test_identity_loss += loss_identity_batch
     
-        # Average loss for the test loader
+        # Compute average loss
         avg_test_identity_loss = test_identity_loss / len(self.test_loader)
 
         return {
             'identity_loss': avg_test_identity_loss.detach(),
         }
 
-  
     def compute_baseline_performance_embedding(self):
         """
-        Evaluate the model on the test dataset and calculate loss components.
-    
-        Args:
-            test_loader (torch.utils.data.DataLoader): DataLoader for the test dataset.
-
+        Evaluate baseline embedding performance on test data.
+        
         Returns:
-            dict: Dictionary of average loss values for each component and the total loss.
+            dict: Dictionary of baseline embedding evaluation metrics
         """
-        self.baseline.eval()  # Set the model to evaluation mode
+        self.baseline.eval()
         
         test_identity_loss = torch.tensor(0.0, device=self.device)
 
-        with torch.no_grad():  # Disable gradient computation
+        with torch.no_grad():
             for data_list in self.test_loader:
-
                 loss_identity_batch = torch.tensor(0.0, device=self.device)
 
                 for step in range(data_list.shape[0]):
-                    # Prepare forward and backward inputs
+                    # Compute reconstruction loss for baseline model
                     input_identity = data_list[step].to(self.device)
                     target_identity = data_list[step].to(self.device)
                     baseline_output = self.baseline(input_identity)
-
-                    
                     loss_identity_step = self.criterion(baseline_output, target_identity)
                     loss_identity_batch += loss_identity_step
                 
-                # Accumulate batch losses for the epoch
+                # Accumulate batch loss
                 test_identity_loss += loss_identity_batch
     
-        # Average loss for the test loader
+        # Compute average loss
         avg_test_identity_loss = test_identity_loss / len(self.test_loader)
 
         return {
             'identity_loss': avg_test_identity_loss.detach(),
         }
-    def compute_prediction_errors(self, dataloader,featurewise=True):
+        
+    def compute_prediction_errors(self, dataloader, featurewise=True):
         """
-        Compute prediction error for both forward and backward predictions, optionally featurewise.
-    
+        Compute prediction errors for both forward and backward predictions.
+        
+        This function calculates per-feature prediction errors, which is useful
+        for identifying which features are predicted well and which are not.
+        
         Args:
-            model (nn.Module): The trained model to validate.
-            dataloader (DataLoader): DataLoader for the validation set.
-            max_Kstep (int): Maximum number of forward and backward prediction steps.
-    
+            dataloader (DataLoader): DataLoader containing evaluation data
+            featurewise (bool): Whether to compute per-feature errors
+            
         Returns:
-            dict: A dictionary with forward and backward per-feature errors.
-                  Keys are 'fwd_feature_errors' and 'bwd_feature_errors', with values being dicts
-                  where each key is the feature index, and the value is the cumulative error for that feature.
+            dict: Dictionary of prediction errors
         """
-        self.model.eval()  # Set the model to evaluation mode
-        base_criterion = nn.MSELoss(reduction='none')  # 'none' so we can compute per-feature loss
+        self.model.eval()
+        
+        # Use reduction='none' to get per-feature errors
+        base_criterion = nn.MSELoss(reduction='none')
         criterion = self.masked_criterion(base_criterion, mask_value=self.mask_value)
     
-        fwd_feature_loss_dict = {}
-        bwd_feature_loss_dict = {}
-        total_fwd_loss = 0
-        total_bwd_loss = 0
-    
+        # Initialize accumulators as tensors on the correct device
+        total_fwd_loss = torch.tensor(0.0, device=self.device)
+        total_bwd_loss = torch.tensor(0.0, device=self.device)
         num_batches = 0
+        
+        # These will be initialized after we see the first batch
+        fwd_feature_errors = None
+        bwd_feature_errors = None
     
-        with torch.no_grad():  # No gradients needed during validation
+        with torch.no_grad():
             for data_list in dataloader:
                 num_batches += 1
-                # Prepare forward and backward inputs
+                # Prepare inputs and ensure they're on the right device
                 input_fwd = data_list[0].to(self.device)
                 input_bwd = data_list[-1].to(self.device)
                 reverse_data_list = torch.flip(data_list, dims=[0])
+                
+                # Initialize feature error accumulators after first batch
+                if featurewise and fwd_feature_errors is None:
+                    num_features = input_fwd.shape[-1]
+                    fwd_feature_errors = torch.zeros(num_features, device=self.device)
+                    bwd_feature_errors = torch.zeros(num_features, device=self.device)
     
-    
-                # Loop through each step in max_Kstep
-                for step in range(1,self.max_Kstep+1):
+                # Evaluate each step
+                for step in range(1, self.max_Kstep+1):
                     self.current_step = step
                     target_fwd = data_list[step].to(self.device)
                     target_bwd = reverse_data_list[step].to(self.device)
     
-
+                    # Forward prediction
                     bwd_output, fwd_output = self.model.predict(input_fwd, fwd=step)
-    
-                    # Compute loss per feature for forward
-                    per_feature_loss_fwd = criterion(fwd_output[-1], target_fwd)  # Shape: (batch_size, num_features)
+                    per_feature_loss_fwd = criterion(fwd_output[-1], target_fwd)
+                    
+                    # Compute per-feature errors more efficiently
                     if featurewise:
-                        # Accumulate per-feature loss
-                        for feature_idx in range(per_feature_loss_fwd.shape[-1]):
-                            feature_loss = per_feature_loss_fwd[:,:,feature_idx].mean().item()  # Mean over batch for each feature
-                            if feature_idx not in fwd_feature_loss_dict:
-                                fwd_feature_loss_dict[feature_idx] = feature_loss
-                            else:
-                                fwd_feature_loss_dict[feature_idx] += feature_loss
+                        # Mean across batch dimensions for each feature
+                        feature_means = per_feature_loss_fwd.mean(dim=(0, 1))
+                        fwd_feature_errors += feature_means
                             
                     total_fwd_loss += per_feature_loss_fwd.mean()
-                # ------------------- Backward prediction ------------------
-
+                    
+                    # Backward prediction
                     bwd_output, fwd_output = self.model.predict(input_bwd, bwd=step)
-    
-                    # Compute loss per feature for backward
-                    per_feature_loss_bwd = criterion(bwd_output[-1], target_bwd)  # Shape: (batch_size, num_features)
+                    per_feature_loss_bwd = criterion(bwd_output[-1], target_bwd)
     
                     if featurewise:
-                        # Accumulate per-feature loss
-                        for feature_idx in range(per_feature_loss_bwd.shape[-1]):
-                            feature_loss = per_feature_loss_bwd[:, :, feature_idx].mean().item()  # Mean over batch for each feature
-                            if feature_idx not in bwd_feature_loss_dict:
-                                bwd_feature_loss_dict[feature_idx] = feature_loss
-                            else:
-                                bwd_feature_loss_dict[feature_idx] += feature_loss
+                        # Mean across batch dimensions for each feature
+                        feature_means = per_feature_loss_bwd.mean(dim=(0, 1))
+                        bwd_feature_errors += feature_means
                     
                     total_bwd_loss += per_feature_loss_bwd.mean()
                     
         # Normalize by the number of batches
-        for feature_idx in fwd_feature_loss_dict:
-            fwd_feature_loss_dict[feature_idx] /= (num_batches * self.max_Kstep)
-        for feature_idx in bwd_feature_loss_dict:
-            bwd_feature_loss_dict[feature_idx] /= (num_batches * self.max_Kstep)
-        total_fwd_loss /= (num_batches * self.max_Kstep)
-        total_bwd_loss /= (num_batches * self.max_Kstep)
+        normalization_factor = num_batches * self.max_Kstep
+        
+        # Convert tensor results to dictionary format for compatibility
+        fwd_feature_loss_dict = {}
+        bwd_feature_loss_dict = {}
+        
+        if featurewise and fwd_feature_errors is not None:
+            # Normalize and convert to dictionary
+            normalized_fwd_errors = fwd_feature_errors / normalization_factor
+            normalized_bwd_errors = bwd_feature_errors / normalization_factor
+            
+            fwd_feature_loss_dict = {i: normalized_fwd_errors[i].item() for i in range(len(normalized_fwd_errors))}
+            bwd_feature_loss_dict = {i: normalized_bwd_errors[i].item() for i in range(len(normalized_bwd_errors))}
+            
+        # Normalize total losses
+        total_fwd_loss = total_fwd_loss / normalization_factor
+        total_bwd_loss = total_bwd_loss / normalization_factor
     
         return {
             'fwd_feature_errors': fwd_feature_loss_dict,
             'bwd_feature_errors': bwd_feature_loss_dict,
-            'total_fwd_loss': total_fwd_loss,
-            'total_bwd_loss': total_bwd_loss
+            'total_fwd_loss': total_fwd_loss.item(),
+            'total_bwd_loss': total_bwd_loss.item()
         }
-
-
-
-
-def calculate_reference_values(self, train_dataloader, test_dataloader, max_Kstep=1, featurewise=False, normalize=False):
-
-    ref_train_errors = compute_prediction_errors(self, train_dataloader, max_Kstep, featurewise=featurewise)
-    
-    ref_test_errors = compute_prediction_errors(self, test_dataloader, max_Kstep, featurewise=featurewise)
-
-    if normalize: 
-        for i, feature in enumerate(self.feature_list):
-            ref_train_errors['fwd_feature_errors'][i] = normalize_mse_loss(ref_train_errors['fwd_feature_errors'][i], self.df[feature])
-            ref_train_errors['bwd_feature_errors'][i] = normalize_mse_loss(ref_train_errors['bwd_feature_errors'][i], self.df[feature])
-            ref_test_errors['fwd_feature_errors'][i] = normalize_mse_loss(ref_test_errors['fwd_feature_errors'][i], self.df[feature])
-            ref_test_errors['bwd_feature_errors'][i] = normalize_mse_loss(ref_test_errors['bwd_feature_errors'][i], self.df[feature])
-
-    return ref_train_errors, ref_test_errors
-
-def normalize_mse_loss(mse_loss, target_tensor):
-    min_target = target_tensor.min()
-    max_target = target_tensor.max()
-    return mse_loss / (max_target - min_target + 1e-8)  # Normalize MSE loss by range of target tensor
-
-def compute_prediction_errors(model, dataloader, max_Kstep=2, featurewise=False):
-    """
-    Compute prediction error for both forward and backward predictions, optionally featurewise.
-
-    Args:
-        model (nn.Module): The trained model to validate.
-        dataloader (DataLoader): DataLoader for the validation set.
-        max_Kstep (int): Maximum number of forward and backward prediction steps.
-
-    Returns:
-        dict: A dictionary with forward and backward per-feature errors.
-              Keys are 'fwd_feature_errors' and 'bwd_feature_errors', with values being dicts
-              where each key is the feature index, and the value is the cumulative error for that feature.
-    """
-    model.eval()  # Set the model to evaluation mode
-    criterion = nn.MSELoss(reduction='none')  # 'none' so we can compute per-feature loss
-
-    fwd_feature_loss_dict = {}
-    bwd_feature_loss_dict = {}
-    total_fwd_loss = 0
-    total_bwd_loss = 0
-
-    num_batches = 0
-
-    with torch.no_grad():  # No gradients needed during validation
-        for batch in dataloader:
-            inputs = batch['input_data']  
-            timeseries_tensor = batch['timeseries_tensor'] 
-            timeseries_ids = batch['timeseries_ids']
-            current_time_idx = batch['current_time_idx']
-
-            num_batches += 1
-
-            # ------------------- Forward prediction ------------------
-            for step in range(1, max_Kstep + 1):
-                # Get dynamic forward targets
-                target_tensor_fwd, comparable_booleans_fwd = get_validation_targets(
-                    inputs, timeseries_tensor, current_time_idx, timeseries_ids, fwd=step
-                )
-
-                bwd_output, fwd_output = model(inputs, fwd=step)
-
-                # Compute loss per feature for forward
-                masked_fwd_output = fwd_output[-1] * comparable_booleans_fwd.float()
-                per_feature_loss_fwd = criterion(masked_fwd_output, target_tensor_fwd)  # Shape: (batch_size, num_features)
-
-                if featurewise:
-                    # Accumulate per-feature loss
-                    for feature_idx in range(per_feature_loss_fwd.shape[-1]):
-                        feature_loss = per_feature_loss_fwd[:, feature_idx].mean().item()  # Mean over batch for each feature
-                        if feature_idx not in fwd_feature_loss_dict:
-                            fwd_feature_loss_dict[feature_idx] = feature_loss
-                        else:
-                            fwd_feature_loss_dict[feature_idx] += feature_loss
-                        
-                total_fwd_loss += per_feature_loss_fwd.mean()
-            # ------------------- Backward prediction ------------------
-            for step in range(1, max_Kstep + 1):
-                # Get dynamic backward targets
-                target_tensor_bwd, comparable_boolean_bwd = get_validation_targets(
-                    inputs, timeseries_tensor, current_time_idx, timeseries_ids, bwd=step
-                )
-
-                bwd_output, fwd_output = model(inputs, bwd=step)
-
-                # Compute loss per feature for backward
-                masked_bwd_output = bwd_output[-1] * comparable_boolean_bwd.float()
-                per_feature_loss_bwd = criterion(masked_bwd_output, target_tensor_bwd)  # Shape: (batch_size, num_features)
-
-                if featurewise:
-                    # Accumulate per-feature loss
-                    for feature_idx in range(per_feature_loss_bwd.shape[-1]):
-                        feature_loss = per_feature_loss_bwd[:, feature_idx].mean().item()  # Mean over batch for each feature
-                        if feature_idx not in bwd_feature_loss_dict:
-                            bwd_feature_loss_dict[feature_idx] = feature_loss
-                        else:
-                            bwd_feature_loss_dict[feature_idx] += feature_loss
-                
-                total_bwd_loss += per_feature_loss_bwd.mean()
-                
-    # Normalize by the number of batches
-    for feature_idx in fwd_feature_loss_dict:
-        fwd_feature_loss_dict[feature_idx] /= (num_batches * max_Kstep)
-    for feature_idx in bwd_feature_loss_dict:
-        bwd_feature_loss_dict[feature_idx] /= (num_batches * max_Kstep)
-    total_fwd_loss /= (num_batches * max_Kstep)
-    total_bwd_loss /= (num_batches * max_Kstep)
-
-    return {
-        'fwd_feature_errors': fwd_feature_loss_dict,
-        'bwd_feature_errors': bwd_feature_loss_dict,
-        'total_fwd_loss': total_fwd_loss,
-        'total_bwd_loss': total_bwd_loss
-    }
-
-
-
-
-
-def get_validation_targets(inputs, timeseries_tensor, 
-                        current_time_ids_array, timeseries_ids, 
-                        delay_length=0, delay_modification=None,
-                        fwd=0, bwd=0):
-    """
-    Get dynamic targets based on forward and backward prediction indices.
-
-    Args:
-        dataframe (pd.DataFrame): The sample DataFrame containing all data.
-        time_id (string): The df identifier for timepoints (e.g. 'week').
-        time_ids (list): List of time indices for the target calculation.
-        fwd (int, optional): Number of forward time steps to look ahead. Should be > 0.
-        bwd (int, optional): Number of backward time steps to look back. Should be > 0.
-
-    Returns:
-        list: A list of tensors, each containing the dynamic targets for a sample.
-    """
-
-    # Validate inputs
-    if (fwd <= 0 and bwd <= 0) or (fwd > 0 and bwd > 0):
-        raise ValueError("At least one of 'fwd' or 'bwd' must be specified, not both and > 0.")
-
-    # Initialize a tensor to collect target rows (same shape as inputs)
-    target_tensor = torch.zeros_like(inputs)
-    
-    # Initialize the boolean mask for the same shape as inputs
-    comparable_boolean_mask = torch.zeros_like(inputs, dtype=torch.bool)
-
-    if fwd != 0:
-        shifted_time_ids = current_time_ids_array + fwd
-
-        if delay_length == 0:
-            for i, time_id in enumerate(shifted_time_ids):
-                timeseries_list = [t.item() for t in timeseries_ids[i] if t != -1]
-    
-                if time_id.item() in timeseries_list:
-    
-                    comparable_boolean_mask[i,:] = True # Set the mask to True for this row
-                
-                    # Get the index of the shifted time_id in the timeseries
-                    shifted_time_index = sorted(timeseries_list).index(time_id.item())
-    
-                    # Assign the corresponding target data row to the target_tensor
-                    target_tensor[i, :] = timeseries_tensor[i][shifted_time_index, :]
-                else:
-                    comparable_boolean_mask[i,:] = False
-                    
-        elif delay_length > 0:
-
-            if delay_modification == 'flatten':
-                input_length = inputs.shape[1]
-                num_feature = int(input_length/delay_length)
-
-        
-                for delay_index, delay in enumerate(shifted_time_ids):
-                    timeseries_list = [t.item() for t in timeseries_ids[delay_index] if t != -1]  
-                    next_shift_id = delay[-1]           
-                    if next_shift_id in timeseries_list:
-
-                        # Get the index of the shifted time_id in the timeseries
-                        shifted_time_index = sorted(timeseries_list).index(next_shift_id)
-                        target_tensor[delay_index,:num_feature*(delay_length-1)] = inputs[delay_index,num_feature:num_feature*delay_length]
-                        target_tensor[delay_index,num_feature*(delay_length-1):num_feature*delay_length] = timeseries_tensor[delay_index,shifted_time_index, :]
-
-                
-                        comparable_boolean_mask[delay_index,:] = True
-                        
-                    else:
-                        comparable_boolean_mask[delay_index,:] = False
-                    
-                                      
-                
-
-    elif bwd != 0:
-        shifted_time_ids = current_time_ids_array - bwd
-        if delay_length == 0:
-       
-            for i, time_id in enumerate(shifted_time_ids):
-                timeseries_set = {t.item() for t in timeseries_ids[i] if t != -1}
-                if time_id.item() in timeseries_set:
-                    
-                    comparable_boolean_mask[i,:] = True # Set the mask to True for this row
-                
-                    # Get the index of the shifted time_id in the timeseries
-                    shifted_time_index = sorted(list(timeseries_set)).index(time_id.item())
-                    # Assign the corresponding target data row to the target_tensor
-                    target_tensor[i, :] = timeseries_tensor[i][shifted_time_index, :]
-                else:
-                    comparable_boolean_mask[i,:] = False
-        elif delay_length > 0:
-
-            if delay_modification == 'flatten':
-                input_length = inputs.shape[1]
-                num_feature = int(input_length/delay_length)
-
-                for delay_index, delay in enumerate(shifted_time_ids):
-                    timeseries_list = [t.item() for t in timeseries_ids[delay_index] if t != -1]  
-                    next_shift_id = delay[-1]           
-                    if next_shift_id in timeseries_list:
-
-                        # Get the index of the shifted time_id in the timeseries
-                        shifted_time_index = sorted(timeseries_list).index(next_shift_id)
-
-                        target_tensor[delay_index,num_feature:num_feature*delay_length] = inputs[delay_index,:num_feature*(delay_length-1)]
-                        target_tensor[delay_index,:num_feature] = timeseries_tensor[delay_index,shifted_time_index, :]
-
-                
-                        comparable_boolean_mask[delay_index,:] = True
-                        
-                    else:
-                        comparable_boolean_mask[delay_index,:] = False
-                    
-
-    return target_tensor, comparable_boolean_mask
-
-
-
-def test_embedding(model, dataloader):
-    """
-    Validate the model on a validation dataset.
-
-    Args:
-        model (nn.Module): The trained model to validate.
-        dataloader (DataLoader): DataLoader for the validation set.
-
-    Returns:
-        dict: A dictionary with total forward and backward loss and consistency loss.
-    """
-    model.eval()  # Set the model to evaluation mode
-    criterion = nn.MSELoss()
-    
-    total_identity_loss = 0
-
-    num_batches = 0
-
-    with torch.no_grad():  # No gradients needed during validation
-        for b, batch in enumerate(dataloader):
-            inputs = batch['input_data']  
-            timeseries_tensor = batch['timeseries_tensor']
-            timeseries_ids = batch['timeseries_ids'] 
-            row_ids = batch['current_row_idx']
-            
-            feature_list = batch['feature_list']
-            replicate_id = batch['replicate_id']
-            time_id = batch['time_id']
-
-            num_batches += 1
-            # ------------------- Embedding Identity prediction ------------------                     
-            embedded_output, identity_output = model.embed(inputs) 
-
-            target = inputs
-            
-            # Compute loss
-            loss_sample_identity = criterion(identity_output, target)
-            total_identity_loss += loss_sample_identity
-
-        total_identity_loss_avg = total_identity_loss/ num_batches 
-
-    return {
-        'test_identity_loss': total_identity_loss_avg
-    }
-
-
-def test(model, dataloader, max_Kstep=2, disable_tempcons = False):
-    """
-    Validate the model on a validation dataset.
-
-    Args:
-        model (nn.Module): The trained model to validate.
-        dataloader (DataLoader): DataLoader for the validation set.
-        max_Kstep (int): Maximum number of forward/backward prediction steps.
-
-    Returns:
-        dict: A dictionary with total forward and backward loss and consistency loss.
-    """
-    model.eval()  # Set the model to evaluation mode
-    criterion = nn.MSELoss()
-    
-    total_fwd_loss = 0
-    total_bwd_loss = 0
-    total_temp_cons = 0
-    total_inv_cons = 0
-
-    fwd_loss_dict = {}
-    fwd_temp_cons_dict = {}
-    
-    bwd_loss_dict = {}
-    bwd_temp_cons_dict = {}
-    
-    num_samples = 0
-    num_batches = 0
-    num_temp_comparisons = 0
-
-    with torch.no_grad():  # No gradients needed during validation
-        for i, batch in enumerate(dataloader):
-            inputs = batch['input_data']  
-            timeseries_tensor = batch['timeseries_tensor'] 
-            timeseries_ids = batch['timeseries_ids']
-            
-            current_row_idx = batch['current_row_idx']
-            current_time_idx = batch['current_time_idx']
-            delay_length_input = batch['delay_length_input']
-            delay_modification = batch['delay_modification']
-            feature_list = batch['feature_list']
-            replicate_id = batch['replicate_id']
-            time_id = batch['time_id']
-
-            num_samples += len(inputs)
-            num_batches += 1
-
-            # ------------------- Forward prediction ------------------
-            for step in range(1, max_Kstep+1):
-                # Get dynamic forward targets
-                target_tensor_fwd, comparable_booleans_fwd = get_validation_targets(inputs, timeseries_tensor, 
-                current_time_idx, timeseries_ids, 
-                delay_length=delay_length_input, delay_modification=delay_modification,
-                fwd=step)    
-
-                # Check if the first element in each row is False
-                comparable_first_elements_fwd = comparable_booleans_fwd[:, 0]
-                
-                # Count how many first elements are False (which implies the whole row is False)
-                count_all_true_rows_fwd = (comparable_first_elements_fwd == True).sum().item()
-                if count_all_true_rows_fwd > 0:
-                    
-                    bwd_output, fwd_output = model(inputs, fwd=step) 
-                    
-                    # Compute loss
-                    masked_fwd_output = fwd_output[-1] * comparable_booleans_fwd.float()
-                    valid_loss_fwd = criterion(masked_fwd_output, target_tensor_fwd)
-                    total_fwd_loss += valid_loss_fwd
-                    
-                    # Save step losses for multi-step analysis
-                    if step not in fwd_loss_dict:
-                        fwd_loss_dict[step] = valid_loss_fwd.item()
-                    else:
-                        fwd_loss_dict[step] += valid_loss_fwd.item()
-
-                else:
-                    break
-
-            # ------------------- Backward prediction ------------------
-            for step in range(1, max_Kstep+1):
-                # Get dynamic backward targets
-                target_tensor_bwd, comparable_boolean_bwd = get_validation_targets(inputs, timeseries_tensor, current_time_idx, 
-                                                                           timeseries_ids,
-                                                                                                   delay_length=delay_length_input, delay_modification=delay_modification,
-bwd=step)
-
-                # Check if the first element in each row is False
-                comparable_first_elements_bwd = comparable_boolean_bwd[:, 0]
-                
-                # Count how many first elements are False (which implies the whole row is False)
-                count_all_true_rows_bwd = (comparable_first_elements_bwd == True).sum().item()
-                if count_all_true_rows_bwd > 0:
-                    bwd_output, fwd_output = model(inputs, bwd=step)  
-                    
-                    # Compute loss
-                    masked_bwd_output = bwd_output[-1] * comparable_boolean_bwd.float()
-
-                    valid_loss_bwd = criterion(masked_bwd_output, target_tensor_bwd)
-                    total_bwd_loss += valid_loss_bwd
-                    
-                    # Save step losses for multi-step analysis
-                    if step not in bwd_loss_dict:
-                        bwd_loss_dict[step] = valid_loss_bwd.item()
-                            
-                    else:
-                        bwd_loss_dict[step] += valid_loss_bwd.item()
-    
-                else:
-                    break                
-
-
-    
-            # ------------------- Inverse Consistency Calculation ------------------
-            B, F = model.kmatrix()
-
-            
-            K = F.shape[-1]
-
-            for k in range(1,K+1):
-                Fs1 = F[:,:k]
-                Bs1 = B[:k,:]
-                Fs2 = F[:k,:]
-                Bs2 = B[:,:k]
-
-                Ik = torch.eye(k).float()#.to(device)
-
-                loss_inv_cons = (torch.sum((torch.matmul(Bs1, Fs1) - Ik)**2) + \
-                                     torch.sum((torch.matmul(Fs2, Bs2) - Ik)**2) ) / (2.0*k)
-
-                total_inv_cons += loss_inv_cons.item()
-
-            # ----------------- Temporal Consistency Calculation ------------------
-            if max_Kstep > 1 and not disable_tempcons:   
-                
-                for step in range(2, max_Kstep+1):
-                    
-                    # Input timeseries data and predict shifted timeseries
-                    bwd_output, fwd_output = model(timeseries_tensor, fwd=step, bwd=step) 
-                    fwd_shifted_timeseries_ids = timeseries_ids + step
-                    bwd_shifted_timeseries_ids = timeseries_ids - step
-
-                    valid_mask = timeseries_ids != 0 # Boolean for paddings
-                    for prior_step in range(1, step):
-                        num_temp_comparisons += 1
-                        
-                        aligned_prior_tensor_fwd = torch.zeros_like(fwd_output[prior_step-1])
-                        aligned_prior_tensor_bwd = torch.zeros_like(bwd_output[prior_step-1])
-
-                        aligned_prior_tensor_fwd[:, :-step] = fwd_output[prior_step-1][:, step:]
-                        aligned_prior_tensor_bwd[:, step:] = bwd_output[prior_step-1][:, :-step]
-                        num_features = aligned_prior_tensor_fwd.shape[-1]
-                        
-                        fwd_comparable_booleans = torch.zeros_like(timeseries_ids, dtype=torch.bool)
-                        bwd_comparable_booleans = torch.zeros_like(timeseries_ids, dtype=torch.bool)
-    
-                        for i in range(timeseries_ids.shape[0]):  # Loop over each row in the batch
-                            # Get valid timepoints for the current row
-                            valid_timeseries_ids = timeseries_ids[i][valid_mask[i]]
-                            
-                            # Forward comparison: check if fwd_shifted_time_ids exist in the original timeseries row
-
-                            fwd_comparable_booleans[i][valid_mask[i]] = torch.isin(fwd_shifted_timeseries_ids[i][valid_mask[i]], valid_timeseries_ids)
-
-                            
-                            expanded_fwd_comparable_booleans = fwd_comparable_booleans.unsqueeze(2)
-                            expanded_fwd_comparable_booleans = expanded_fwd_comparable_booleans.expand(-1, -1, num_features)
-                            
-                            
-                            
-                            
-                            # Backward comparison: check if bwd_shifted_time_ids exist in the original timeseries row
-                            bwd_comparable_booleans[i][valid_mask[i]] = torch.isin(bwd_shifted_timeseries_ids[i][valid_mask[i]], valid_timeseries_ids)
-                            expanded_bwd_comparable_booleans = bwd_comparable_booleans.unsqueeze(2)
-                            expanded_bwd_comparable_booleans = expanded_bwd_comparable_booleans.expand(-1, -1, num_features)
-
-                        masked_aligned_prior_tensor_fwd = aligned_prior_tensor_fwd * expanded_fwd_comparable_booleans.float()
-                        
-                        masked_aligned_prior_tensor_bwd = aligned_prior_tensor_bwd * expanded_bwd_comparable_booleans.float()
-
-                        masked_current_fwd_output = fwd_output[step-1] * expanded_fwd_comparable_booleans.float()
-                        masked_current_bwd_output = bwd_output[step-1] * expanded_bwd_comparable_booleans.float()
-                        
-                        valid_loss_fwd_temp_cons = criterion(masked_aligned_prior_tensor_fwd, masked_current_fwd_output)
-                        valid_loss_bwd_temp_cons = criterion(masked_aligned_prior_tensor_bwd, masked_current_bwd_output)
-
-                        total_temp_cons += valid_loss_fwd_temp_cons
-                        total_temp_cons += valid_loss_bwd_temp_cons
-                        
-                        # Save step consistency fwd losses for multi-step analysis
-                        if (step,prior_step) not in fwd_temp_cons_dict:
-                            fwd_temp_cons_dict[(step,prior_step)] = valid_loss_fwd_temp_cons.item()
-                        else:
-                            fwd_temp_cons_dict[(step,prior_step)] += valid_loss_bwd_temp_cons.item()
-
-                        # Save step consistency bwd losses for multi-step analysis
-                        if (step,prior_step) not in bwd_temp_cons_dict:
-                            bwd_temp_cons_dict[(step,prior_step)] = valid_loss_bwd_temp_cons.item()
-                        else:
-                            bwd_temp_cons_dict[(step,prior_step)] += valid_loss_bwd_temp_cons.item()                    
-
-
-        total_avg_fwd_loss = total_fwd_loss/ (num_batches * max_Kstep)
-        total_avg_bwd_loss = total_bwd_loss/ (num_batches * max_Kstep)
-        total_avg_inv_cons = total_inv_cons/ (num_batches)
-        if num_temp_comparisons != 0:
-            total_avg_temp_cons = total_temp_cons/ num_temp_comparisons
-        else:
-            total_avg_temp_cons = total_temp_cons
-        
-        for key in fwd_loss_dict:
-            fwd_loss_dict[key] /= num_batches
-        for key in bwd_loss_dict:
-            bwd_loss_dict[key] /= num_batches
-        for key in fwd_temp_cons_dict:
-            fwd_temp_cons_dict[key] /= num_batches
-        for key in bwd_temp_cons_dict:
-            bwd_temp_cons_dict[key] /= num_batches
-
-    return {
-        'test_fwd_loss': total_avg_fwd_loss,
-        'test_bwd_loss': total_avg_bwd_loss,
-        'test_temp_cons_loss': total_avg_temp_cons,
-        'test_inv_cons_loss': total_avg_inv_cons,
-        'dict_fwd_step_loss': fwd_loss_dict,
-        'dict_fwd_step_tempcons_loss': fwd_temp_cons_dict,
-        'dict_bwd_step_loss': bwd_loss_dict,
-        'dict_bwd_step_tempcons_loss': bwd_temp_cons_dict
-    }
-
-def predict_dataloader(model, dataloader, mode='latent'):
-    
-    output = []
-    time_idx = []
-    with torch.no_grad():  # No gradients needed during validation
-        for b, batch in enumerate(dataloader):
-            inputs = batch['input_data']  
-            timeseries_tensor = batch['timeseries_tensor']
-            current_time_idx = batch['current_time_idx']
-            timeseries_ids = batch['timeseries_ids'] 
-            row_ids = batch['current_row_idx']
-            
-            feature_list = batch['feature_list']
-            replicate_id = batch['replicate_id']
-            time_id = batch['time_id']
-            # ------------------- Embedding Identity prediction ------------------                     
-            embedded_output, identity_output = model.embed(inputs) 
-            
-            if mode == 'latent':
-                time_idx.append(torch.mean(current_time_idx.float(), dim=1))
-                output.append(embedded_output)
-    
-    time_idx = torch.cat(time_idx, dim=0)
-    output = torch.cat(output, dim=0)  # Concatenate along the batch dimension
-
-        
-    return output, time_idx        
-           
 

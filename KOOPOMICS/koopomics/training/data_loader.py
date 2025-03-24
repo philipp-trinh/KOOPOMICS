@@ -6,6 +6,11 @@ import numpy as np
 from torch.utils.data import DataLoader
 import torch
 
+import logging
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 class PermutedDataLoader(DataLoader):
     def __init__(self, mask_value, permute_dims, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -30,7 +35,7 @@ class PermutedDataLoader(DataLoader):
 class OmicsDataloader:
     def __init__(self, df, feature_list, replicate_id, batch_size=5, max_Kstep=10,
                  dl_structure='random', shuffle=True, mask_value=-2, train_ratio=0, delay_size=3, dfs=False,
-                random_seed=42):
+                 concat_delays=False, random_seed=42):
         '''
         df = Temporally and replicate sorted DataFrame with uniform timeseries (gaps are filled with mask values)
         '''
@@ -44,9 +49,12 @@ class OmicsDataloader:
         self.mask_value = mask_value
         self.train_ratio = train_ratio
         self.delay_size = delay_size
+        self.concat_delays = concat_delays
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.random_seed = random_seed
         self.perm_indices = None  # To store permutation indices for later reconstruction
+        self.data_shape = None
 
         torch.manual_seed(self.random_seed)
         np.random.seed(self.random_seed)
@@ -142,7 +150,7 @@ class OmicsDataloader:
                 self.perm_indices = torch.randperm(overlapping_segments.size(0))
                 # Shuffle the tensor along the sample dimension
                 overlapping_segments = overlapping_segments[self.perm_indices]
-                print(f'Permuted indices: {self.perm_indices}')
+                logger.info(f'Permuted indices: {self.perm_indices}')
             
             if not samplewise:
                 overlapping_segments = overlapping_segments.permute(0, 2, 1, 3, 4).reshape(
@@ -230,10 +238,11 @@ class OmicsDataloader:
             self.train_indices = train_dataset.indices
             self.test_indices = test_dataset.indices
             
-            print("Shape of dataset:", self.train_tensor.shape)
+            logger.info(f"Shape of dataset: {self.train_tensor.shape}")
+            self.data_shape = self.train_tensor.shape
 
-            print("Train Size:", train_size)
-            print("Test Size:", test_size)
+            logger.info(f"Train Size: {train_size}")
+            logger.info(f"Test Size: {test_size}")
 
         else:
             self.permuted_loader = PermutedDataLoader(dataset=full_dataset, batch_size=self.batch_size,
@@ -255,17 +264,23 @@ class OmicsDataloader:
                 num_segments = ((num_timepoints - segment_size) // delay) + 1
                 feature_dim = self.train_tensor.shape[-1]
                 
-                # Now reshape to the format needed for the dataloader
-                final_segments = overlapping_segments.permute(0, 2, 1, 3, 4).reshape(
-                    -1, self.max_Kstep + 1, segment_size, feature_dim
-                )
+                if self.concat_delays:
+                    final_segments = overlapping_segments.permute(0, 2, 1, 3, 4).reshape(
+                        -1, self.max_Kstep + 1, 1, segment_size * feature_dim
+                    )
+                else:
+                    final_segments = overlapping_segments.permute(0, 2, 1, 3, 4).reshape(
+                        -1, self.max_Kstep + 1, segment_size, feature_dim
+                    )
                 
                 full_dataset = TensorDataset(final_segments)
                 
                 # Store the dataframe representation
                 self.dataset_df = self.tensor_to_df(final_segments)
                 
-                print("Shape of dataset:", final_segments.shape)
+                logger.info(f"Shape of dataset: {final_segments.shape}")
+                self.data_shape = final_segments.shape
+
                 
                 # Split and create the dataloaders
                 self.split_and_load(full_dataset, final_segments, permute_dims=(1, 0, 2, 3))
@@ -274,7 +289,7 @@ class OmicsDataloader:
                 overlapping_segments = self.to_temp_delay(samplewise=False, shuffle_samples=False)
                 full_dataset = TensorDataset(overlapping_segments)
                 self.dataset_df = self.tensor_to_df(overlapping_segments)
-                print("Shape of dataset:", overlapping_segments.shape)
+                logger.info(f"Shape of dataset: {overlapping_segments.shape}")
                 self.permuted_loader = PermutedDataLoader(
                     dataset=full_dataset,
                     mask_value=self.mask_value,
@@ -311,7 +326,8 @@ class OmicsDataloader:
 
             self.dataset_df = self.tensor_to_df(segm_tensor)
             
-            print("Shape of dataset:", segm_tensor.shape)
+            logger.info(f"Shape of dataset: {segm_tensor.shape}")
+            self.data_shape = segm_tensor.shape
 
     
             if self.train_ratio > 0:
@@ -333,7 +349,8 @@ class OmicsDataloader:
         full_dataset = TensorDataset(random_tensor)
         self.dataset_df = self.tensor_to_df(random_tensor)
 
-        print("Shape of dataset:", random_tensor.shape)
+        logger.info(f"Shape of dataset: {random_tensor.shape}")
+        self.data_shape = random_tensor.shape
             
         if self.train_ratio > 0:
             self.split_and_load(full_dataset, random_tensor, permute_dims=(1, 0, 2, 3))
@@ -359,10 +376,10 @@ class OmicsDataloader:
 
         self.train_indices = valid_indices[train_dataset.indices]
         self.test_indices = valid_indices[test_dataset.indices]
-        print("Shape of unmasked dataset:", valid_data.shape)
+        logger.info(f"Shape of unmasked dataset: {valid_data.shape}")
             
-        print("Train Size:", train_size)
-        print("Test Size:", test_size)
+        logger.info(f"Train Size: {train_size}")
+        logger.info(f"Test Size: {test_size}")
 
     def tensor_to_df(self, tensor):
         # Helper method to convert tensor to DataFrame for `temp_delay` structure

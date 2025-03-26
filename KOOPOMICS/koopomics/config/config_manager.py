@@ -96,7 +96,6 @@ class ConfigManager:
                 "backpropagation_mode": "full",  # Options: full, step
                 "max_Kstep": 1,  # Maximum K-step for multi-step training
                 "loss_weights": "1,1,1,1,1,1",  # Weights for different loss components
-                "mask_value": -2,  # Value to mask missing data
                 
                 "learning_rate": 0.001,  # Initial learning rate
                 "weight_decay": 0.01,  # Weight decay for L2 regularization
@@ -116,7 +115,9 @@ class ConfigManager:
                 "train_ratio": 1,  # Ratio of training data
                 "delay_size": 5,  # Size of delay for temp_delay structure
                 "random_seed": 42,  # Random seed for reproducibility
-                "concat_delays": False
+                "concat_delays": False,
+                'augment_by': None,
+                'num_augmentations': None
             }
         }
     
@@ -180,11 +181,12 @@ class ConfigManager:
                          'activation_fn', 'operator', 'op_reg', 'op_bandwidth', 'linE_layer_dims', 
                          'lin_act_fn']:
                     structured_config['model'][k] = v
-                elif k in ['training_mode', 'backpropagation_mode', 'max_Kstep', 'loss_weights', 'mask_value',
+                elif k in ['training_mode', 'backpropagation_mode', 'max_Kstep', 'loss_weights',
                            'learning_rate', 'weight_decay', 'learning_rate_change', 'num_epochs',
                            'num_decays', 'early_stop', 'patience', 'E_overfit_limit', 'batch_size', 'verbose']:
                     structured_config['training'][k] = v
-                elif k in ['dl_structure', 'train_ratio', 'delay_size', 'random_seed', 'concat_delays']:
+                elif k in ['dl_structure', 'train_ratio', 'delay_size', 'random_seed', 'concat_delays', 'mask_value'
+                           'augment_by', 'num_augmentations']:
                     structured_config['data'][k] = v
                 else:
                     # For any other keys, put them in the root
@@ -285,7 +287,6 @@ class ConfigManager:
         self.loss_weights = self._parse_float_list(
             self.config['training'].get('loss_weights', "1,1,1,1,1,1")
         )
-        self.mask_value = self.config['training'].get('mask_value', -2)
         
         self.learning_rate = self.config['training'].get('learning_rate', 0.001)
         self.weight_decay = self.config['training'].get('weight_decay', 0.01)
@@ -306,7 +307,10 @@ class ConfigManager:
         self.delay_size = self.config['data'].get('delay_size', 5)
         self.random_seed = self.config['data'].get('random_seed', 42)
         self.concat_delays = self.config['data'].get('concat_delays', False)
-    
+        self.augment_by = self.config['data'].get('augment_by', None)
+        self.num_augmentations = self.config['data'].get('num_augmentations', None)
+        self.mask_value = self.config['data'].get('mask_value', None)
+
     def _parse_layer_dims(self, layer_dims_str: Optional[str]) -> Optional[List[int]]:
         """
         Parse layer dimensions from string to list of integers.
@@ -398,7 +402,6 @@ class ConfigManager:
             'backpropagation_mode': self.backpropagation_mode,
             'max_Kstep': self.max_Kstep,
             'loss_weights': self.loss_weights,
-            'mask_value': self.mask_value,
             'learning_rate': self.learning_rate,
             'weight_decay': self.weight_decay,
             'learning_rate_change': self.learning_rate_change,
@@ -426,8 +429,10 @@ class ConfigManager:
             'delay_size': self.delay_size,
             'random_seed': self.random_seed,
             'batch_size': self.batch_size,
-            'mask_value': self.mask_value,
-            'concat_delays': self.concat_delays
+            'concat_delays': self.concat_delays,
+            'augment_by': self.augment_by,
+            'num_augmentations': self.num_augmentations,
+            'mask_value': self.mask_value
         }
     
     def save_config(self, file_path: str) -> None:

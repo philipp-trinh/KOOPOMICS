@@ -363,7 +363,7 @@ class DataManagementMixin:
                  replicate_id: Optional[str] = None,
                  time_id: Optional[str] = None,
                  condition_id: Optional[str] = None,
-                 mask_value: Optional[float] = None,
+                 mask_value: Optional[float] = None
                 ) -> None:
         """
         Load OMICS data for training and testing.
@@ -400,13 +400,7 @@ class DataManagementMixin:
                                         time_id=time_id, mask_value=mask_value, output_dir=registry_dir)
             self._load_from_yaml(yaml_path)
 
-        # Set mask value
-        if mask_value is not None:
-            self.mask_value = mask_value
-            logger.info(f"Custom mask value set: {mask_value}")
-        else:
-            self.mask_value = data_config.get('mask_value')
-            logger.info(f"Using default mask value from config: {self.mask_value}")
+        self.config.mask_value = self.mask_value
 
         # Log completion of data loading
         logger.info("Data loading completed successfully.")
@@ -433,7 +427,7 @@ class DataManagementMixin:
                 batch_size=data_config['batch_size'],
                 shuffle=False,
                 permute_dims=(1, 0, 2, 3),
-                mask_value=data_config['mask_value']
+                mask_value=self.mask_value
             )
             
             self.test_loader = PermutedDataLoader(
@@ -441,7 +435,7 @@ class DataManagementMixin:
                 batch_size=600,
                 shuffle=False,
                 permute_dims=(1, 0, 2, 3),
-                mask_value=data_config['mask_value']
+                mask_value=self.mask_value
             )
             
             # Set data_loader to None to indicate custom data loaders
@@ -463,23 +457,27 @@ class DataManagementMixin:
                 max_Kstep=self.config.max_Kstep,
                 dl_structure=data_config['dl_structure'],
                 shuffle=True,
-                mask_value=data_config['mask_value'],
+                mask_value=self.mask_value,
                 train_ratio=data_config['train_ratio'],
                 delay_size=data_config['delay_size'],
                 random_seed=data_config['random_seed'],
-                concat_delays=data_config['concat_delays']
+                concat_delays=data_config['concat_delays'],
+                augment_by=data_config['augment_by'],
+                num_augmentations=data_config['num_augmentations']
             )
             logger.info("Creating OmicsDataloader with the following parameters:")
             logger.info(f"  - batch_size: {data_config['batch_size']}")
             logger.info(f"  - max_Kstep: {self.config.max_Kstep}")
             logger.info(f"  - dl_structure: {data_config['dl_structure']}")
             logger.info(f"  - shuffle: {True}")
-            logger.info(f"  - mask_value: {data_config['mask_value']}")
+            logger.info(f"  - mask_value: {self.mask_value}")
             logger.info(f"  - train_ratio: {data_config['train_ratio']}")
             logger.info(f"  - delay_size: {data_config['delay_size']}")
             logger.info(f"  - random_seed: {data_config['random_seed']}")
             logger.info(f"  - concat_delays: {data_config['concat_delays']}")
-                    
+            logger.info(f"  - augment_by: {data_config['augment_by']}")
+            logger.info(f"  - num_augmentations: {data_config['num_augmentations']}")
+                                       
             # Get data loaders
             self.train_loader, self.test_loader = self.data_loader.get_dataloaders()
             logger.info(f"Data loaded: {len(self.train_loader)} training batches, {len(self.test_loader)} testing batches")
@@ -683,9 +681,8 @@ class TrainingMixin:
             raise ValueError("Data not loaded. Call load_data() first or provide data to train().")
         
         # Build model if not already built
-        if self.model is None:
-            logger.info("Building model")
-            self.build_model()
+        logger.info("Building model")
+        self.build_model()
         
         # Create baseline model for comparison
         logger.info("Creating baseline model")

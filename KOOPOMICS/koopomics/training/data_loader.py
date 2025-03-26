@@ -2,6 +2,8 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset, random_split, Subset
 import pandas as pd
 import numpy as np
+from typing import List, Union, Optional, Dict, Any, Literal
+
 
 import logging
 # Configure logging
@@ -19,10 +21,11 @@ class PermutedDataLoader(DataLoader):
     often needs to be transposed with other dimensions.
     
     Args:
-        mask_value (float): Value used for masking invalid or missing data points
-        permute_dims (tuple): Tuple specifying the new order of dimensions for permutation
-        *args: Variable length argument list passed to the parent DataLoader
-        **kwargs: Arbitrary keyword arguments passed to the parent DataLoader
+        mask_value (float): Value for masking invalid data
+        permute_dims (tuple): Dimension permutation order
+        track_indices (bool): Whether to store shuffled indices (default: False)
+        *args: Arguments for DataLoader  
+        **kwargs: Keyword arguments for DataLoader
     """
     def __init__(self, mask_value, permute_dims, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -58,8 +61,18 @@ class PermutedDataLoader(DataLoader):
 class OmicsDataloaderBase:
     """Base class for Omics dataloaders with common functionality"""
     
-    def __init__(self, df, feature_list, replicate_id, batch_size=5, max_Kstep=10,
-                 shuffle=True, mask_value=-2, train_ratio=0, random_seed=42, **kwargs):
+
+    def __init__(self, 
+                df: pd.DataFrame,
+                feature_list: List[str],
+                replicate_id: str,
+                batch_size: int = 5,
+                max_Kstep: int = 10,
+                shuffle: bool = True,
+                mask_value: float = -2.0,
+                train_ratio: float = 0.0,
+                random_seed: int = 42,
+                **kwargs: Dict[str, Any]) -> None:
         """
         Base initialization for all Omics dataloaders
         
@@ -73,6 +86,18 @@ class OmicsDataloaderBase:
             mask_value: Value to use for masking
             train_ratio: Ratio of data to use for training (0 for no split)
             random_seed: Random seed for reproducibility
+            **kwargs: Additional arguments including:
+                augment_by: Optional[List[str]] - Augmentation methods (e.g., ['noise', 'scale'])
+                num_augmentations: Optional[Union[int, List[int]]] - Number of augmentations per method
+                
+        Example:
+            >>> dataloader = OmicsDataloader(
+            ...     df=data,
+            ...     feature_list=['gene1', 'gene2'],
+            ...     replicate_id='sample_id',
+            ...     augment_by=['noise', 'scale'],
+            ...     num_augmentations=[2, 1]
+            ... )
         """
         self.df = df
         self.feature_list = feature_list
@@ -83,7 +108,6 @@ class OmicsDataloaderBase:
         self.mask_value = mask_value
         self.train_ratio = train_ratio
         
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.random_seed = random_seed
         self.perm_indices = None
         self.data_shape = None
@@ -99,12 +123,86 @@ class OmicsDataloaderBase:
         self.train_indices = None
         self.test_indices = None
         
+        # Handle data augmentation
+        if 'augment_by' in kwargs and kwargs['augment_by'] is not None:
+            augment_methods = kwargs['augment_by']
+            num_augmentations = kwargs.get('num_augmentations', 2)  # Default 2 if not specified
+            
+            # Perform augmentation before preparing tensors
+            self.augment_data(augmentation_methods=augment_methods,
+                            num_augmentations=num_augmentations)
+            
         # Load data into tensor
-        self.train_tensor = self.prepare_data()
+        self.train_tensor, self.index_tensor = self.prepare_data()
         
-        # Structure Tensor - will be implemented by subclasses
+        # Structure Tensors - will be implemented by subclasses
         self.structured_train_tensor = torch.empty(0)
-    
+        self.structured_index_tensor = torch.empty(0)
+
+    def augment_data(self, augmentation_methods: List[str], num_augmentations: Union[int, List[int]]) -> pd.DataFrame:
+        """
+        Optimized augmentation without DataFrame fragmentation.
+        
+        Args:
+            augmentation_methods: List of augmentation methods
+            num_augmentations: Either int (all methods) or list (per method)
+            
+        Returns:
+            Augmented DataFrame with original + synthetic samples
+        """
+        # Input validation
+        if isinstance(num_augmentations, int):
+            num_augmentations = [num_augmentations] * len(augmentation_methods)
+        
+        # Pre-compute feature stds if needed
+        feature_stds = (self.df[self.feature_list].std().to_dict() 
+                    if 'noise' in augmentation_methods else None)
+        
+        # Collect all augmented data in a list
+        augmented_chunks = [self.df.copy()]
+        
+        for method, num_augs in zip(augmentation_methods, num_augmentations):
+            for orig_id in self.df[self.replicate_id].unique():
+                # Get original data for this replicate
+                orig_mask = self.df[self.replicate_id] == orig_id
+                original_data = self.df.loc[orig_mask].copy()
+                
+                # Generate all augmented versions at once
+                aug_versions = []
+                for aug_num in range(1, num_augs + 1):
+                    # Create new DataFrame with all modifications in one operation
+                    aug_df = pd.DataFrame({
+                        **{f: self._apply_augmentation(original_data[f], method, feature_stds.get(f) if feature_stds else None)
+                            for f in self.feature_list},
+                        **{
+                            self.replicate_id: f"{orig_id}_aug{method}_{aug_num}",
+                            'augmentation_method': method,
+                            'augmentation_number': aug_num,
+                            'original_replicate': orig_id
+                        }
+                    })
+                    aug_versions.append(aug_df)
+                
+                # Combine all augmented versions for this replicate
+                augmented_chunks.extend(aug_versions)
+        
+        # Single concatenation at the end
+        self.df = pd.concat(augmented_chunks, ignore_index=True)
+        return self.df
+
+    def _apply_augmentation(self, series: pd.Series, method: str, feature_std: float = None) -> pd.Series:
+        """Apply single augmentation to a feature series"""
+        if method == 'noise':
+            return series + np.random.normal(0, 0.05 * feature_std, size=len(series))
+        elif method == 'scale':
+            return series * np.random.uniform(0.9, 1.1)
+        elif method == 'shift':
+            return series + np.random.uniform(-0.1, 0.1)
+        elif method == 'time_warp':
+            warp_factor = np.random.uniform(0.9, 1.1)
+            return series.interpolate() * warp_factor
+
+        return series
     def prepare_data(self):
         """
         Convert DataFrame to tensor based on feature_list and replicate_id.
@@ -123,35 +221,54 @@ class OmicsDataloaderBase:
         """
         # Step 1: Group data by replicate_id and extract features
         tensor_list = []
+        index_list = []
+
         for replicate, group in self.df.groupby(self.replicate_id):
             # Extract only the selected features for each replicate group
             metabolite_data = group[self.feature_list].values
+            original_indices = group.index.values
+
             tensor_list.append(metabolite_data)
-        
+            index_list.append(original_indices)
+
         # Step 2: Convert to PyTorch tensor with shape [num_replicates, num_timepoints, num_features]
         df_tensor = torch.tensor(np.stack(tensor_list), dtype=torch.float32)
-        
+        index_base = torch.tensor(np.stack(index_list), dtype=torch.long)
+
         # Step 3: Create K-step prediction windows for each sample
         sample_data = []
+        sample_indices = []
+
         for sample in range(df_tensor.shape[0]):
-            train_data = []
+            data_windows = []
+            index_windows = []
+
+
             start = 0
             # Loop from max_Kstep down to 0 to create windows for different prediction horizons
             for i in np.arange(self.max_Kstep, -1, -1):
                 if i == 0:
                     # For K=0 (last step), use all remaining timepoints
-                    train_data.append(df_tensor[sample, start:].float())
+                    data_windows.append(df_tensor[sample, start:].float())
+                    index_windows.append(index_base[sample, start:])
+
+
                 else:
                     # For K>0, exclude the last i timepoints and shift window by 1
-                    train_data.append(df_tensor[sample, start:-i].float())
+                    data_windows.append(df_tensor[sample, start:-i].float())
+                    index_windows.append(index_base[sample, start:-i])
                     start += 1
+
             # Stack the K-step windows to create a tensor of shape [K+1, window_size, num_features]
-            sample_tensor = torch.stack(train_data)
-            sample_data.append(sample_tensor)
-        
-        # Step 4: Stack all samples to create final tensor with shape [num_samples, K+1, window_size, num_features]
-        return torch.stack(sample_data)
+            sample_data.append(torch.stack(data_windows))
+            sample_indices.append(torch.stack(index_windows))
     
+            # Final tensors
+            data_tensor = torch.stack(sample_data)  # [samples, K+1, window, features]
+            index_tensor = torch.stack(sample_indices)  # [samples, K+1, window]
+            
+        return data_tensor, index_tensor  
+
     def structure_data(self):
         """To be implemented by subclasses"""
         raise NotImplementedError("Subclasses must implement structure_data()")
@@ -167,24 +284,6 @@ class OmicsDataloaderBase:
         else:
             return self.permuted_loader
     
-    def tensor_to_df(self, tensor):
-        """Convert tensor to DataFrame"""
-        flat_segments = tensor.view(tensor.shape[0], -1)
-        num_steps, segment_size, num_features = tensor.shape[1:]
-        column_names = [f"step_{i}_seg_{j}_feat_{k}" for i in range(num_steps) for j in range(segment_size) for k in range(num_features)]
-        return pd.DataFrame(flat_segments.detach().cpu().numpy(), columns=column_names)
-    
-    def get_original_indices(self, indices):
-        """Maps indices from the shuffled dataset back to their original positions"""
-        if self.perm_indices is not None:
-            # Create a mapping from new positions to original positions
-            inverse_mapping = torch.empty_like(self.perm_indices)
-            inverse_mapping[self.perm_indices] = torch.arange(self.perm_indices.size(0))
-            
-            # Map the provided indices to their original positions
-            return inverse_mapping[indices]
-        return indices
-    
     def split_and_load(self, full_dataset, tensor, permute_dims):
         """Helper function to split the dataset and create loaders"""
         mask_tensor = torch.all(tensor == self.mask_value, dim=-1)
@@ -198,8 +297,8 @@ class OmicsDataloaderBase:
         test_size = valid_data.shape[0] - train_size
         train_dataset, test_dataset = random_split(valid_dataset, [train_size, test_size])
         
-        self.train_loader = PermutedDataLoader(dataset=train_dataset, batch_size=self.batch_size, shuffle=False, permute_dims=permute_dims, mask_value=self.mask_value)
-        self.test_loader = PermutedDataLoader(dataset=test_dataset, batch_size=600, shuffle=self.shuffle, permute_dims=permute_dims, mask_value=self.mask_value)
+        self.train_loader = PermutedDataLoader(dataset=train_dataset, batch_size=self.batch_size, shuffle=self.shuffle, permute_dims=permute_dims, mask_value=self.mask_value)
+        self.test_loader = PermutedDataLoader(dataset=test_dataset, batch_size=600, shuffle=False, permute_dims=permute_dims, mask_value=self.mask_value)
 
         self.train_indices = valid_indices[train_dataset.indices]
         self.test_indices = valid_indices[test_dataset.indices]
@@ -208,128 +307,67 @@ class OmicsDataloaderBase:
         logger.info(f"Train Size: {train_size}")
         logger.info(f"Test Size: {test_size}")
     
-    def get_dfs(self):
-        """Get the full dataset DataFrame and the train/test split DataFrames"""
-        if self.perm_indices is not None and self.train_ratio > 0:
-            # Get original indices for train and test splits
-            original_train_indices = self.get_original_indices(self.train_indices)
-            original_test_indices = self.get_original_indices(self.test_indices)
-            
-            # Use the original indices to get the correct data
-            train_df = self.dataset_df.iloc[original_train_indices].sort_index()
-            test_df = self.dataset_df.iloc[original_test_indices].sort_index()
-        else:
-            # Regular case without permutation
-            train_df = self.dataset_df.iloc[self.train_indices].sort_index()
-            test_df = self.dataset_df.iloc[self.test_indices].sort_index()
-            
-        return self.dataset_df, train_df, test_df
-    
-    def reconstruct_original_dataframe(self, indices=None):
-        """Reconstruct the original pandas DataFrame with replicate_id, time_id, and features"""
-        # Start with a copy of the original dataframe
-        original_df = self.df.copy()
+    def index_tensor_to_df(self, index_tensor, original_df):
+        """
+        Convert index tensor into list of DataFrames grouped by Kstep with full indexing information.
         
-        # If indices are provided, filter the original data
-        # This handles both the train/test split and any shuffling
-        if indices is not None and self.train_ratio > 0:
-            # Map the indices back to their original positions if needed
-            if self.perm_indices is not None:
-                indices = self.get_original_indices(indices)
+        Args:
+            index_tensor: torch.Tensor of shape [samples, Ksteps, segment_size]
+                Contains row indices referencing original_df
+            original_df: pd.DataFrame
+                The original DataFrame containing the data to be indexed
                 
-            # For temp_delay and temp_segm, we need to map from tensor indices to df rows
-            replicate_ids = sorted(original_df[self.replicate_id].unique())
-            if len(indices) < len(replicate_ids):
-                # Map tensor indices to replicate IDs
-                selected_replicates = [replicate_ids[i % len(replicate_ids)] for i in indices]
-                selected_mask = original_df[self.replicate_id].isin(selected_replicates)
-                original_df = original_df[selected_mask]
+        Returns:
+            list: List of DataFrames, one for each Kstep, with columns:
+                - All original columns from original_df
+                - sample_id: The sample number from the tensor's first dimension
+                - kstep: The prediction horizon from the tensor's second dimension
+                - position_in_segment: Position within the delay segment
+                - original_tensor_sample_idx: First dim index from tensor
+                - original_tensor_kstep_idx: Second dim index from tensor
+                - original_tensor_segment_idx: Third dim index from tensor
+        """
+        # Convert tensor to numpy and get dimensions
+        indices = index_tensor.numpy()  # shape [samples, Ksteps, segment_size]
+        num_samples, num_ksteps, segment_size = indices.shape
+        
+        kstep_dfs = []
+        
+        for k in range(num_ksteps):
+            # Initialize list to hold all rows for this Kstep
+            kstep_rows = []
+            
+            for sample_id in range(num_samples):
+                # Get indices for this sample and Kstep
+                sample_indices = indices[sample_id, k, :]
                 
-        return original_df
-    
-    def reconstruct_df_from_loader(self, loader, is_test=False):
-        """
-        Base method to reconstruct a DataFrame from a dataloader.
-        This should be overridden by subclasses to provide structure-specific implementations.
-        
-        Args:
-            loader: The dataloader (train_loader or test_loader) to reconstruct from
-            is_test: Whether the loader is a test loader
-            
-        Returns:
-            pd.DataFrame: DataFrame reconstructed from the loader
-        """
-        raise NotImplementedError("Subclasses must implement reconstruct_df_from_loader()")
-        
-    def reconstruct_df_by_kstep(self, kstep=0):
-        """
-        Base method to reconstruct a list of DataFrames by K-step.
-        This should be overridden by subclasses to provide structure-specific implementations.
-        
-        Args:
-            kstep: The K-step to reconstruct for
-            
-        Returns:
-            List[pd.DataFrame]: List of DataFrames, one for each K-step
-        """
-        raise NotImplementedError("Subclasses must implement reconstruct_df_by_kstep()")
-    
-    def _tensor_to_original_df(self, tensor, indices=None):
-        """
-        Helper method to convert a tensor back to a DataFrame with original column names.
-        
-        Args:
-            tensor: The tensor to convert
-            indices: Optional indices to use for filtering
-            
-        Returns:
-            pd.DataFrame: DataFrame with original feature names
-        """
-        # Get the original dataframe for metadata
-        original_df = self.reconstruct_original_dataframe(indices)
-        
-        # If tensor is on GPU, move to CPU
-        if tensor.device.type != 'cpu':
-            tensor = tensor.cpu()
-        
-        # Convert tensor to numpy array
-        tensor_data = tensor.detach().numpy()
-        
-        # Create a dataframe with the tensor data
-        if len(tensor_data.shape) == 2:  # [samples, features]
-            df = pd.DataFrame(tensor_data, columns=self.feature_list)
-        elif len(tensor_data.shape) == 3:  # [samples, timepoints, features]
-            # Flatten the samples and timepoints
-            reshaped_data = tensor_data.reshape(-1, tensor_data.shape[-1])
-            df = pd.DataFrame(reshaped_data, columns=self.feature_list)
-            
-            # Add replicates and timepoints
-            replicate_ids = []
-            time_ids = []
-            
-            for i in range(tensor_data.shape[0]):  # For each sample
-                for j in range(tensor_data.shape[1]):  # For each timepoint
-                    replicate_ids.append(i)
-                    time_ids.append(j)
-                    
-            df[self.replicate_id] = replicate_ids
-            df['timepoint'] = time_ids
-        else:
-            raise ValueError(f"Unexpected tensor shape: {tensor_data.shape}")
-            
-        return df
-    
-    def get_indices(self):
-        """Get the indices for the train and test splits"""
-        if self.perm_indices is not None and self.train_ratio > 0:
-            # Map to original indices if data was shuffled
-            original_train_indices = self.get_original_indices(self.train_indices)
-            original_test_indices = self.get_original_indices(self.test_indices)
-            return original_train_indices, original_test_indices
-        else:
-            # Regular case without permutation
-            return self.train_indices, self.test_indices
+                # Get corresponding rows from original DataFrame
+                segment_df = original_df.iloc[sample_indices].copy()
+                
+                # Add metadata columns
+                segment_df['sample_id'] = sample_id
+                segment_df['kstep'] = k
+                segment_df['position_in_segment'] = range(segment_size)
+                segment_df['original_tensor_sample_idx'] = sample_indices
 
+                kstep_rows.append(segment_df)
+            
+            # Combine all samples for this Kstep
+            kstep_df = pd.concat(kstep_rows, ignore_index=True)
+
+            kstep_dfs.append(kstep_df)
+        
+        return kstep_dfs
+
+    def get_dfs(self):
+
+        if self.train_ratio < 1:
+            self.train_df = self.index_tensor_to_df(self.train_index_tensor, self.df)
+            self.test_df = self.index_tensor_to_df(self.test_index_tensor, self.df)
+
+        self.structured_dataset_df = self.index_tensor_to_df(self.structured_index_tensor, self.df)
+
+        return self.structured_dataset_df, self.train_df, self.test_df
 
 class TemporalDataloader(OmicsDataloaderBase):
     """
@@ -359,7 +397,9 @@ class TemporalDataloader(OmicsDataloaderBase):
     def structure_data(self):
         """Structure data for temporal processing"""
         self.structured_train_tensor = self.train_tensor.clone()
-        return self.structured_train_tensor
+        self.structured_index_tensor = self.index_tensor.clone()
+
+        return self.structured_train_tensor, self.structured_index_tensor
     
     def create_dataloaders(self):
         """
@@ -375,14 +415,11 @@ class TemporalDataloader(OmicsDataloaderBase):
         # This simply wraps the tensor in a dataset without additional processing
         full_dataset = TensorDataset(self.structured_train_tensor)
         
-        # Step 2: Convert to DataFrame for easier inspection and debugging
-        self.dataset_df = self.tensor_to_df(self.structured_train_tensor)
-        
-        # Step 3: Log information about the dataset dimensions
+        # Step 2: Log information about the dataset dimensions
         logger.info(f"Shape of dataset: {self.structured_train_tensor.shape}")
         self.data_shape = self.structured_train_tensor.shape
         
-        # Step 4: Handle dataset splitting for train/test if requested
+        # Step 3: Handle dataset splitting for train/test if requested
         if self.train_ratio > 0:
             # Calculate sample counts for training and testing
             num_samples = self.structured_train_tensor.shape[0]
@@ -415,6 +452,9 @@ class TemporalDataloader(OmicsDataloaderBase):
             self.train_indices = train_dataset.indices
             self.test_indices = test_dataset.indices
             
+            self.train_index_tensor = self.index_tensor[self.train_indices]
+            self.test_index_tensor = self.index_tensor[self.test_indices] 
+
             # Log the split sizes
             logger.info(f"Train Size: {train_size}")
             logger.info(f"Test Size: {test_size}")
@@ -428,81 +468,6 @@ class TemporalDataloader(OmicsDataloaderBase):
                 mask_value=self.mask_value
             )
     
-    def reconstruct_df_from_loader(self, loader, is_test=False):
-        """
-        Reconstruct a DataFrame from a temporal dataloader.
-        
-        For temporal dataloaders, the reconstruction is straightforward as we preserve
-        the complete replicate timelines without segmentation or windowing.
-        
-        Args:
-            loader: The dataloader (train_loader or test_loader)
-            is_test: Whether the loader is a test loader
-            
-        Returns:
-            pd.DataFrame: Reconstructed DataFrame with the original structure
-        """
-        # Get the loader data
-        all_data = []
-        loader_indices = []
-        batch_start_idx = 0
-        
-        for batch in loader:
-            # Permute back to original dimensions
-            batch_tensor = batch.permute(1, 0, 2, 3)
-            all_data.append(batch_tensor)
-            
-            # Track indices in the order they appear in the loader (to handle shuffling)
-            batch_size = batch_tensor.shape[0]
-            indices_to_use = self.test_indices if is_test and self.test_indices is not None else self.train_indices
-            
-            if indices_to_use is not None:
-                for i in range(batch_size):
-                    if batch_start_idx + i < len(indices_to_use):
-                        loader_indices.append(indices_to_use[batch_start_idx + i])
-            
-            batch_start_idx += batch_size
-        
-        # Concatenate all batches
-        if all_data:
-            full_tensor = torch.cat(all_data, dim=0)
-            
-            # Get indices with correct ordering based on loader
-            indices = torch.tensor(loader_indices) if loader_indices else None
-            
-            # Map indices back to original positions if shuffled
-            if indices is not None and self.perm_indices is not None:
-                indices = self.get_original_indices(indices)
-            
-            # Reconstruction is straightforward since temporal preserves the original structure
-            return self.reconstruct_original_dataframe(indices)
-            
-        return pd.DataFrame()  # Return empty dataframe if no data
-    
-    def reconstruct_df_by_kstep(self, kstep=0):
-        """
-        Reconstruct DataFrames for a specific K-step.
-        
-        For temporal dataloaders, we simply return the original dataframe as
-        the complete timeline is preserved without segmentation or windowing.
-        
-        Args:
-            kstep: The K-step to reconstruct for (0 to max_Kstep)
-            
-        Returns:
-            List[pd.DataFrame]: List containing a single DataFrame with the complete timeline
-        """
-        if kstep < 0 or kstep > self.max_Kstep:
-            raise ValueError(f"kstep must be between 0 and {self.max_Kstep}")
-        
-        # For temporal, the reconstruction is simplest - just the original dataframe
-        # adjusted for the specified k-step if needed
-        original_df = self.reconstruct_original_dataframe()
-        
-        # Depending on the k-step, we might need to adjust how many timepoints to include
-        # For temporal, often we just return the entire timeline
-        return [original_df]
-
 
 class TempDelayDataloader(OmicsDataloaderBase):
     """
@@ -540,51 +505,94 @@ class TempDelayDataloader(OmicsDataloaderBase):
     def structure_data(self):
         """Structure data for temporal delay processing"""
         if self.train_ratio > 0:
-            self.structured_train_tensor = self.to_temp_delay(samplewise=True)
+            self.structured_train_tensor, self.structured_index_tensor = self.to_temp_delay(shuffle_samples=True, samplewise=True)
         else:
-            self.structured_train_tensor = self.to_temp_delay(samplewise=False)
-        return self.structured_train_tensor
-    
+            self.structured_train_tensor, self.structured_index_tensor = self.to_temp_delay(samplewise=False)
+
+        return self.structured_train_tensor, self.structured_index_tensor
+        
     def to_temp_delay(self, samplewise=False, shuffle_samples=False):
         """
-        Convert tensor to temporal delay format using a sliding window approach.
+        Convert tensors to temporal delay format using a sliding window approach.
         
-        Creates overlapping segments to increase sample size while preserving local
-        temporal context. This is a key method for data augmentation in time series.
+        Processes both data tensor and index tensor simultaneously to create overlapping 
+        temporal segments while maintaining perfect alignment between data and indices.
+        This method is particularly useful for time series data augmentation when working 
+        with limited datasets.
+
+        Parameters
+        ----------
+        samplewise : bool, optional
+            If True, maintains segments grouped by their original sample.
+            If False (default), treats each segment as an independent sample,
+            flattening the sample and segment dimensions.
+            
+        shuffle_samples : bool, optional
+            If True and samplewise is True, shuffles samples along the sample dimension
+            to randomize batch composition while preserving temporal structure within samples.
+            Default is False.
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            Returns (data_tensor, index_tensor) pair where:
+            - data_tensor shape depends on samplewise:
+            * samplewise=False: [num_samples*num_segments, K_steps+1, segment_size, num_features]
+            * samplewise=True: [num_samples, K_steps+1, num_segments, segment_size, num_features]
+            - index_tensor has corresponding shape without the feature dimension
+
+        Raises
+        ------
+        ValueError
+            If the number of available timepoints is insufficient to create segments
+            with the specified segment_size (requires at least 3 timepoints).
+
+        Notes
+        -----
+        - The sliding window moves with step size=1 (maximum overlap) by default
+        - Both data and index tensors undergo identical transformations to maintain alignment
+        - When shuffle_samples=True, the same permutation is applied to both tensors
+        - Permutation indices are stored in self.perm_indices when shuffling
         """
         if self.train_tensor.shape[-2] >= 3:
             # Step 1: Calculate sliding window parameters
-            num_timepoints = self.train_tensor.shape[2]  # Total number of timepoints
-            segment_size = self.delay_size  # Size of each window segment
-            delay = 1  # Step size between windows (for overlapping)
-            # Calculate total number of windows possible given timepoints and overlap
+            num_timepoints = self.train_tensor.shape[2] # Total number of timepoints
+            segment_size = self.delay_size # Size of each window segment
+            delay = 1 # Step size between windows (for overlapping)
             num_segments = ((num_timepoints - segment_size) // delay) + 1
             feature_dim = self.train_tensor.shape[-1]  # Number of features
             
-            # Step 2: Initialize empty tensor to hold all segmented data
+            # Step 2: Initialize tensors for both data and indices to hold all segmented data
             # Shape: [num_samples, num_K_steps, num_segments, segment_size, num_features]
             overlapping_segments = torch.empty(
                 (self.train_tensor.shape[0], self.max_Kstep + 1, num_segments, segment_size, feature_dim),
-                dtype=self.train_tensor.dtype, device=self.device
+                dtype=self.train_tensor.dtype
+            )
+            
+            overlapping_indices = torch.empty(
+                (self.index_tensor.shape[0], self.max_Kstep + 1, num_segments, segment_size),
+                dtype=self.index_tensor.dtype
             )
 
-            # Step 3: Create sliding windows by iterating through segments
+            # Step 3: Create sliding windows for both tensors
             start = 0  # Starting index for the current window
             end = segment_size  # Ending index for the current window
             for seg_idx in range(num_segments):
                 # Copy the current window for all samples and K-steps
                 overlapping_segments[:, :, seg_idx] = self.train_tensor[:, :, start:end].clone()
+                overlapping_indices[:, :, seg_idx] = self.index_tensor[:, :, start:end].clone()
                 # Slide the window forward by 'delay' steps (typically 1 for maximum overlap)
                 start += delay
-                end = start + segment_size  # Update end index of window
+                end = start + segment_size # Update end index of window
             
-            # Step 4: Optional shuffling for better randomization during training
+            # Step 4: Optional shuffling for better randomization during training (applied to both tensors)
             if shuffle_samples and samplewise:
                 # Generate a random permutation of indices for the sample dimension
                 self.perm_indices = torch.randperm(overlapping_segments.size(0))
                 # Shuffle the tensor along the sample dimension (mix up different replicates)
                 # This helps prevent batch bias without losing temporal structure within each sample
                 overlapping_segments = overlapping_segments[self.perm_indices]
+                overlapping_indices = overlapping_indices[self.perm_indices]
                 logger.info(f'Permuted indices: {self.perm_indices}')
             
             # Step 5: Format data based on whether we want to keep samples grouped
@@ -593,18 +601,26 @@ class TempDelayDataloader(OmicsDataloaderBase):
                 # This treats each segment as a completely independent sample
                 # First permute dimensions to: [samples, segments, k_steps, window_size, features]
                 # Then reshape to: [samples*segments, k_steps, window_size, features]
-                overlapping_segments_tensor = overlapping_segments.permute(0, 2, 1, 3, 4).reshape(
+
+                data_tensor = overlapping_segments.permute(0, 2, 1, 3, 4).reshape(
                     -1, self.max_Kstep + 1, segment_size, feature_dim
                 )
-                return overlapping_segments_tensor
+                index_tensor = overlapping_indices.permute(0, 2, 1, 3).reshape(
+                    -1, self.max_Kstep + 1, segment_size
+                )
+                return data_tensor, index_tensor
             
             # Return with samples preserved - segments from the same sample stay together
             # Shape: [num_samples, num_k_steps, num_segments, segment_size, num_features]
-            return overlapping_segments
+            return overlapping_segments, overlapping_indices
         
         # Validation check - can't create segments if we don't have enough timepoints
-        raise ValueError("Number of timepoints too small to create overlapping segments; increase timepoints or adjust segment size.")
-    
+        raise ValueError(
+            "Number of timepoints too small to create overlapping segments; "
+            "requires at least 3 timepoints. Either increase timepoints or "
+            "adjust segment size using delay_size parameter."
+        )
+
     def create_dataloaders(self):
         """
         Create dataloaders with overlapping sliding window segments.
@@ -639,10 +655,16 @@ class TempDelayDataloader(OmicsDataloaderBase):
                     final_segments = overlapping_segments.permute(0, 2, 1, 3, 4).reshape(
                         -1, self.max_Kstep + 1, 1, segment_size * feature_dim
                     )
+                    self.structured_index_tensor = self.structured_index_tensor.permute(0, 2, 1, 3).reshape(
+                        -1, self.max_Kstep + 1, 1, segment_size
+                    )
                 else:
                     # Standard reshaping that preserves the sequence nature of each window
                     final_segments = overlapping_segments.permute(0, 2, 1, 3, 4).reshape(
                         -1, self.max_Kstep + 1, segment_size, feature_dim
+                    )
+                    self.structured_index_tensor = self.structured_index_tensor.permute(0, 2, 1, 3).reshape(
+                        -1, self.max_Kstep + 1, segment_size
                     )
                 
                 # Step 4: Create dataset and store representations
@@ -657,6 +679,9 @@ class TempDelayDataloader(OmicsDataloaderBase):
                 # Using the utility function to handle masking and dataset splitting
                 self.split_and_load(full_dataset, final_segments, permute_dims=(1, 0, 2, 3))
                 
+                self.train_index_tensor = self.structured_index_tensor[self.train_indices] 
+                self.test_index_tensor = self.structured_index_tensor[self.test_indices]
+
                 # Store segment mapping information for reconstruction
                 num_replicates = len(self.df[self.replicate_id].unique())
                 num_timepoints = self.df.groupby(self.replicate_id).size().max()
@@ -695,138 +720,6 @@ class TempDelayDataloader(OmicsDataloaderBase):
             # Not enough timepoints to create meaningful segments
             raise ValueError("Number of timepoints too small to create overlapping segments; increase timepoints or adjust segment size.")
     
-    def reconstruct_df_from_loader(self, loader, is_test=False):
-        """
-        Reconstruct a DataFrame from a temporal delay dataloader.
-        
-        This method reconstructs a DataFrame with segment indexing to show which
-        rows were together in one segment, as required for tracking purposes.
-        
-        Args:
-            loader: The dataloader (train_loader or test_loader)
-            is_test: Whether the loader is a test loader
-            
-        Returns:
-            pd.DataFrame: Reconstructed DataFrame with additional segment information
-        """
-        # Get the loader data as a single tensor
-        all_data = []
-        for batch in loader:
-            # Permute back to the original dimensions
-            # (time_steps, batch, seq_len, features) -> (batch, time_steps, seq_len, features)
-            batch_tensor = batch.permute(1, 0, 2, 3)
-            all_data.append(batch_tensor)
-        
-        # Concatenate all batches
-        if all_data:
-            full_tensor = torch.cat(all_data, dim=0)
-            
-            # Get the appropriate indices based on whether this is a train or test loader
-            indices = self.train_indices if not is_test and self.train_indices is not None else \
-                     self.test_indices if is_test and self.test_indices is not None else None
-            
-            # Reconstruct the original dataframe structure from the tensor
-            original_df = self.reconstruct_original_dataframe(indices)
-            
-            # Calculate the number of unique replicates
-            replicate_ids = sorted(original_df[self.replicate_id].unique())
-            
-            # Calculate the number of timepoints in original data
-            num_timepoints = original_df.groupby(self.replicate_id).size().max()
-            
-            # Calculate how many segments we created with the sliding window approach
-            num_segments = ((num_timepoints - self.delay_size) // 1) + 1
-            
-            # Create a list to hold all segment dataframes
-            segment_dfs = []
-            
-            # Process each replicate
-            for replicate_idx, replicate_id in enumerate(replicate_ids):
-                # Get the data for this replicate
-                replicate_data = original_df[original_df[self.replicate_id] == replicate_id]
-                
-                # Process each segment for this replicate
-                for seg_idx in range(num_segments):
-                    # Get the timepoints for this segment (sliding window)
-                    start_timepoint = seg_idx
-                    end_timepoint = start_timepoint + self.delay_size
-                    
-                    # Select rows for this segment
-                    if start_timepoint < len(replicate_data) and end_timepoint <= len(replicate_data):
-                        seg_df = replicate_data.iloc[start_timepoint:end_timepoint].copy()
-                        
-                        # Add segment index column to track which rows were together
-                        seg_df['segment_idx'] = seg_idx
-                        
-                        segment_dfs.append(seg_df)
-            
-            # Combine all segment dataframes
-            if segment_dfs:
-                result_df = pd.concat(segment_dfs, ignore_index=True)
-                return result_df
-                
-        return pd.DataFrame()  # Return empty DataFrame if no data
-    
-    def reconstruct_df_by_kstep(self, kstep=0):
-        """
-        Reconstruct DataFrames for a specific K-step, preserving the temporal delay structure.
-        
-        This method returns a list of DataFrames, each corresponding to a window segment
-        in the same order as in the dataloader, with segment indices to show which
-        rows were part of the same sliding window.
-        
-        Args:
-            kstep: The K-step to reconstruct for (0 to max_Kstep)
-            
-        Returns:
-            List[pd.DataFrame]: List of DataFrames, one for each segment, with segment indices
-        """
-        if kstep < 0 or kstep > self.max_Kstep:
-            raise ValueError(f"kstep must be between 0 and {self.max_Kstep}")
-        
-        # Get the original dataframe
-        original_df = self.reconstruct_original_dataframe()
-        
-        # Create a list to hold the segment DataFrames
-        segment_dfs = []
-        
-        # Calculate the number of timepoints in original data
-        replicate_groups = original_df.groupby(self.replicate_id)
-        num_timepoints = replicate_groups.size().max()
-        
-        # Calculate how many segments we created with the sliding window approach
-        num_segments = ((num_timepoints - self.delay_size) // 1) + 1
-        
-        # Get all replicate IDs
-        replicate_ids = sorted(original_df[self.replicate_id].unique())
-        
-        # Process each replicate
-        for replicate_id in replicate_ids:
-            replicate_df = replicate_groups.get_group(replicate_id)
-            
-            # For the given K-step, adjust the window size based on the K-step
-            # K-step affects how many timepoints we can include
-            adjusted_window_start = kstep
-            
-            # Loop through each possible segment for this replicate
-            for seg_idx in range(num_segments):
-                # Calculate start and end indices for this segment
-                start_idx = seg_idx + adjusted_window_start
-                end_idx = start_idx + self.delay_size
-                
-                # Make sure we don't go beyond the available timepoints
-                if end_idx <= len(replicate_df):
-                    # Extract this segment
-                    segment_data = replicate_df.iloc[start_idx:end_idx].copy()
-                    
-                    # Add segment index for tracking
-                    segment_data['segment_idx'] = seg_idx
-                    
-                    # Add this segment to our list
-                    segment_dfs.append(segment_data)
-        
-        return segment_dfs
-
 
 class TempSegmDataloader(OmicsDataloaderBase):
     """
@@ -862,8 +755,8 @@ class TempSegmDataloader(OmicsDataloaderBase):
     
     def structure_data(self):
         """Structure data for temporal segmentation"""
-        self.structured_train_tensor = self.to_temp_segm()
-        return self.structured_train_tensor
+        self.structured_train_tensor, self.structured_index_tensor = self.to_temp_segm()
+        return self.structured_train_tensor, self.structured_index_tensor
     
     def find_valid_slice_size(self):
         """
@@ -919,11 +812,16 @@ class TempSegmDataloader(OmicsDataloaderBase):
                     (self.train_tensor.shape[0], self.train_tensor.shape[1], padding_needed, self.train_tensor.shape[-1]),
                     fill_value=self.mask_value,
                     dtype=self.train_tensor.dtype,
-                    device=self.device
+                )
+                mask_value_index_tensor = torch.full(
+                    (self.train_tensor.shape[0], self.train_tensor.shape[1], padding_needed),
+                    fill_value=self.mask_value,
+                    dtype=self.train_tensor.dtype,
                 )
                 # Append the padding to the end of the timeseries
                 self.train_tensor = torch.cat((self.train_tensor, mask_value_tensor), dim=2)
-            
+                self.index_tensor = torch.cat((self.index_tensor, mask_value_index_tensor), dim=2)
+
             # Step 3: Calculate how many non-overlapping segments we can create
             num_segments = self.train_tensor.shape[2] // valid_slice_size
             feature_dim = self.train_tensor.shape[-1]
@@ -937,13 +835,23 @@ class TempSegmDataloader(OmicsDataloaderBase):
                 valid_slice_size,
                 feature_dim
             )
+            index_segm_tensor = self.index_tensor.view(
+                self.index_tensor.shape[0],
+                self.max_Kstep+1,
+                num_segments,
+                valid_slice_size
+            )
+
             # Then permute and reshape to get [samples*num_segments, K-steps, segment_size, features]
             # This treats each segment as an independent sample regardless of which timeseries it came from
             segm_tensor = segm_tensor.permute(0, 2, 1, 3, 4).reshape(
                 -1, self.max_Kstep+1, valid_slice_size, feature_dim
             )
+            index_segm_tensor = index_segm_tensor.permute(0, 2, 1, 3).reshape(
+                -1, self.max_Kstep+1, valid_slice_size
+            )
 
-            return segm_tensor
+            return segm_tensor, index_segm_tensor
         
         raise ValueError("Number of timepoints too small to segment; use temporal=True instead and specify a small batch_size!")
     
@@ -976,26 +884,9 @@ class TempSegmDataloader(OmicsDataloaderBase):
                 # and create separate dataloaders for each
                 self.split_and_load(full_dataset, segm_tensor, permute_dims=(1, 0, 2, 3))
                 
-                # Store segment mapping information for reconstruction
-                # This helps map from tensor indices to original sample and segment indices
-                num_samples = self.train_tensor.shape[0]  # Number of original samples (replicates)
-                num_segments = self.train_tensor.shape[2] // self.slice_size  # Segments per sample
-                
-                # Create mappings for training and test indices
-                if self.train_indices is not None:
-                    for i, idx in enumerate(self.train_indices):
-                        # Map each tensor index back to its original replicate and segment
-                        sample_idx = idx // num_segments
-                        segment_idx = idx % num_segments
-                        self.segment_mapping[i] = (sample_idx, segment_idx)
-                
-                if self.test_indices is not None:
-                    for i, idx in enumerate(self.test_indices):
-                        # Map each tensor index back to its original replicate and segment
-                        sample_idx = idx // num_segments
-                        segment_idx = idx % num_segments
-                        self.segment_mapping[i + len(self.train_indices)] = (sample_idx, segment_idx)
-                
+                self.train_index_tensor = self.structured_index_tensor[self.train_indices] 
+                self.test_index_tensor = self.structured_index_tensor[self.test_indices]
+
             else:
                 # Otherwise, create a single loader for all data
                 self.permuted_loader = PermutedDataLoader(
@@ -1009,157 +900,6 @@ class TempSegmDataloader(OmicsDataloaderBase):
             # Not enough timepoints to create meaningful segments
             raise ValueError("Number of timepoints too small to segment; use temporal=True instead and specify a small batch_size!")
     
-    def reconstruct_df_from_loader(self, loader, is_test=False):
-        """
-        Reconstruct a DataFrame from a temporal segmentation dataloader.
-        
-        This method reconstructs a DataFrame with segment indexing to show which
-        rows were together in one non-overlapping segment, for improved tracking and analysis.
-        The reconstruction preserves the original order even with shuffled data.
-        
-        Args:
-            loader: The dataloader (train_loader or test_loader)
-            is_test: Whether the loader is a test loader
-            
-        Returns:
-            pd.DataFrame: Reconstructed DataFrame with additional segment information
-        """
-        # Get the loader data and track the order of indices as they appear in the loader
-        all_data = []
-        loader_indices = []
-        batch_start_idx = 0
-        
-        for batch in loader:
-            # Permute back to original dimensions: (time_steps, batch, seq_len, features) -> (batch, time_steps, seq_len, features)
-            batch_tensor = batch.permute(1, 0, 2, 3)
-            all_data.append(batch_tensor)
-            
-            # Track indices in the order they appear in the loader (handles shuffling)
-            batch_size = batch_tensor.shape[0]
-            indices_to_use = self.test_indices if is_test and self.test_indices is not None else self.train_indices
-            
-            if indices_to_use is not None:
-                for i in range(batch_size):
-                    if batch_start_idx + i < len(indices_to_use):
-                        loader_indices.append(indices_to_use[batch_start_idx + i])
-            
-            batch_start_idx += batch_size
-        
-        # Concatenate all batches
-        if all_data:
-            full_tensor = torch.cat(all_data, dim=0)
-            
-            # Get indices with correct ordering based on loader
-            indices = torch.tensor(loader_indices) if loader_indices else None
-            
-            # Map indices back to original positions if shuffled
-            if indices is not None and self.perm_indices is not None:
-                indices = self.get_original_indices(indices)
-            
-            # Reconstruct the original dataframe structure
-            original_df = self.reconstruct_original_dataframe(indices)
-            
-            # Calculate number of replicates
-            replicate_ids = sorted(original_df[self.replicate_id].unique())
-            
-            # Create a list to hold all segment dataframes
-            segment_dfs = []
-            
-            # Process each replicate
-            for replicate_idx, replicate_id in enumerate(replicate_ids):
-                # Get data for this replicate
-                replicate_data = original_df[original_df[self.replicate_id] == replicate_id]
-                
-                # Calculate how many timepoints we have for this replicate
-                timepoints = len(replicate_data)
-                
-                # Calculate how many complete segments we can create
-                num_segments = timepoints // self.slice_size
-                
-                # Create each segment
-                for seg_idx in range(num_segments):
-                    # Calculate start and end indices for this segment
-                    start_idx = seg_idx * self.slice_size
-                    end_idx = start_idx + self.slice_size
-                    
-                    # Extract the segment data
-                    segment_data = replicate_data.iloc[start_idx:end_idx].copy()
-                    
-                    # Add segment index for tracking
-                    segment_data['segment_idx'] = seg_idx
-                    
-                    # Add to our collection
-                    segment_dfs.append(segment_data)
-            
-            # Combine all segments into one dataframe
-            if segment_dfs:
-                result_df = pd.concat(segment_dfs, ignore_index=True)
-                return result_df
-        
-        return pd.DataFrame()  # Return empty dataframe if no data
-    
-    def reconstruct_df_by_kstep(self, kstep=0):
-        """
-        Reconstruct DataFrames for a specific K-step, preserving the segmentation structure.
-        
-        This method returns a list of DataFrames, one for each non-overlapping segment
-        in the same order as in the dataloader, with segment indices to show which rows
-        were part of the same segment.
-        
-        Args:
-            kstep: The K-step to reconstruct for (0 to max_Kstep)
-            
-        Returns:
-            List[pd.DataFrame]: List of DataFrames, one for each segment, with segment indices
-        """
-        if kstep < 0 or kstep > self.max_Kstep:
-            raise ValueError(f"kstep must be between 0 and {self.max_Kstep}")
-        
-        # Get the original dataframe
-        original_df = self.reconstruct_original_dataframe()
-        
-        # Create a list to hold the segment DataFrames
-        segment_dfs = []
-        
-        # Group by replicate_id to process each replicate separately
-        replicate_groups = original_df.groupby(self.replicate_id)
-        
-        # Get all replicate IDs
-        replicate_ids = sorted(original_df[self.replicate_id].unique())
-        
-        # Process each replicate
-        for replicate_id in replicate_ids:
-            # Get data for this replicate
-            replicate_df = replicate_groups.get_group(replicate_id)
-            
-            # For the given K-step, adjust the window size
-            adjusted_window_start = kstep
-            
-            # Calculate number of timepoints for this replicate
-            num_timepoints = len(replicate_df)
-            
-            # Calculate how many complete segments we can create
-            num_segments = num_timepoints // self.slice_size
-            
-            # Create each segment
-            for seg_idx in range(num_segments):
-                # Calculate adjusted start and end indices for this segment with K-step
-                start_idx = seg_idx * self.slice_size + adjusted_window_start
-                end_idx = start_idx + self.slice_size
-                
-                # Make sure we don't go past the end of the dataframe
-                if end_idx <= num_timepoints:
-                    # Extract the segment data
-                    segment_data = replicate_df.iloc[start_idx:end_idx].copy()
-                    
-                    # Add segment index for tracking
-                    segment_data['segment_idx'] = seg_idx
-                    
-                    # Add to our collection
-                    segment_dfs.append(segment_data)
-        
-        return segment_dfs
-
 
 class RandomDataloader(OmicsDataloaderBase):
     """
@@ -1194,8 +934,8 @@ class RandomDataloader(OmicsDataloaderBase):
         Returns:
             torch.Tensor: Restructured tensor with randomized format
         """
-        self.structured_train_tensor = self.to_random()
-        return self.structured_train_tensor
+        self.structured_train_tensor, self.structured_index_tensor = self.to_random()
+        return self.structured_train_tensor, self.structured_index_tensor
     
     def to_random(self):
         """
@@ -1214,7 +954,8 @@ class RandomDataloader(OmicsDataloaderBase):
         """
         feature_dim = self.train_tensor.shape[-1]
         random_tensor = self.train_tensor.permute(0, 2, 1, 3).reshape(-1, self.max_Kstep+1, 1, feature_dim)
-        return random_tensor
+        random_index_tensor = self.index_tensor.permute(0, 2, 1).reshape(-1, self.max_Kstep+1, 1)
+        return random_tensor, random_index_tensor
     
     def create_dataloaders(self):
         """
@@ -1249,25 +990,9 @@ class RandomDataloader(OmicsDataloaderBase):
             # using the utility function that handles masking and indices
             self.split_and_load(full_dataset, random_tensor, permute_dims=(1, 0, 2, 3))
             
-            # Create mapping from tensor indices to original replicate and timepoint
-            # This mapping is crucial for reconstruction
-            num_replicates = self.train_tensor.shape[0]
-            num_timepoints = self.train_tensor.shape[2]
-            
-            # Create mappings for training and test indices
-            if self.train_indices is not None:
-                for i, idx in enumerate(self.train_indices):
-                    # Calculate which replicate and timepoint this flattened index corresponds to
-                    replicate_idx = idx // num_timepoints
-                    timepoint_idx = idx % num_timepoints
-                    self.timepoint_mapping[i] = (replicate_idx, timepoint_idx)
-                    
-            if self.test_indices is not None:
-                for i, idx in enumerate(self.test_indices):
-                    replicate_idx = idx // num_timepoints
-                    timepoint_idx = idx % num_timepoints
-                    self.timepoint_mapping[i + len(self.train_indices)] = (replicate_idx, timepoint_idx)
-                
+            self.train_index_tensor = self.structured_index_tensor[self.train_indices]
+            self.test_index_tensor = self.structured_index_tensor[self.test_indices]
+
         else:
             # Otherwise, create a single loader for all data
             self.permuted_loader = PermutedDataLoader(
@@ -1278,117 +1003,6 @@ class RandomDataloader(OmicsDataloaderBase):
                 mask_value=self.mask_value
             )
     
-    def reconstruct_df_from_loader(self, loader, is_test=False):
-        """
-        Reconstruct a DataFrame from a random dataloader.
-        
-        For the random dataloader, each sample is a single timepoint from the original
-        dataset. This method tracks which timepoints came from which replicates.
-        
-        Args:
-            loader: The dataloader (train_loader or test_loader)
-            is_test: Whether the loader is a test loader
-            
-        Returns:
-            pd.DataFrame: Reconstructed DataFrame that maps back to original data structure
-        """
-        # Get the loader data and track indices
-        all_data = []
-        loader_indices = []
-        batch_start_idx = 0
-        
-        for batch in loader:
-            # Permute back to original dimensions
-            batch_tensor = batch.permute(1, 0, 2, 3)
-            all_data.append(batch_tensor)
-            
-            # Track indices in the order they appear in the loader (to handle shuffling)
-            batch_size = batch_tensor.shape[0]
-            indices_to_use = self.test_indices if is_test and self.test_indices is not None else self.train_indices
-            
-            if indices_to_use is not None:
-                for i in range(batch_size):
-                    if batch_start_idx + i < len(indices_to_use):
-                        loader_indices.append(indices_to_use[batch_start_idx + i])
-            
-            batch_start_idx += batch_size
-        
-        # Concatenate all batches
-        if all_data:
-            full_tensor = torch.cat(all_data, dim=0)
-            
-            # Get indices with correct ordering based on loader
-            indices = torch.tensor(loader_indices) if loader_indices else None
-            
-            # Map indices back to original positions if shuffled
-            if indices is not None and self.perm_indices is not None:
-                indices = self.get_original_indices(indices)
-            
-            # Reconstruct the original dataframe structure
-            original_df = self.reconstruct_original_dataframe(indices)
-            
-            # Since each row of the random tensor is a single timepoint,
-            # we need to add a timepoint index to track which timepoint it came from
-            if indices is not None:
-                # Create a DataFrame with the timepoint information
-                result_df = original_df.copy()
-                result_df['timepoint_idx'] = [self.timepoint_mapping.get(i, (0, 0))[1] for i in range(len(indices))]
-                return result_df
-            else:
-                return original_df
-        
-        return pd.DataFrame()  # Return empty dataframe if no data
-    
-    def reconstruct_df_by_kstep(self, kstep=0):
-        """
-        Reconstruct DataFrames for a specific K-step.
-        
-        For the random dataloader, each timepoint is an independent sample,
-        so we reconstruct to show which timepoints came from which original replicate.
-        
-        Args:
-            kstep: The K-step to reconstruct for (0 to max_Kstep)
-            
-        Returns:
-            List[pd.DataFrame]: List of DataFrames, one for each replicate's timepoints
-        """
-        if kstep < 0 or kstep > self.max_Kstep:
-            raise ValueError(f"kstep must be between 0 and {self.max_Kstep}")
-        
-        # Get the original dataframe
-        original_df = self.reconstruct_original_dataframe()
-        
-        # For random dataloader, we need to extract each timepoint as a separate sample
-        # Group the dataframe by replicate_id
-        replicate_groups = original_df.groupby(self.replicate_id)
-        
-        # Get all replicate IDs
-        replicate_ids = sorted(original_df[self.replicate_id].unique())
-        
-        # Create a list to hold timepoint DataFrames
-        timepoint_dfs = []
-        
-        # Process each replicate
-        for replicate_id in replicate_ids:
-            # Get data for this replicate
-            replicate_df = replicate_groups.get_group(replicate_id)
-            
-            # For each timepoint, create a separate DataFrame
-            for timepoint_idx in range(len(replicate_df)):
-                # Extract this timepoint's data
-                timepoint_data = replicate_df.iloc[timepoint_idx:timepoint_idx+1].copy()
-                
-                # Add timepoint index for tracking
-                timepoint_data['timepoint_idx'] = timepoint_idx
-                
-                # For kstep adjustment, we might need additional logic here
-                # depending on how the k-steps are used in the model
-                
-                # Add to our collection
-                timepoint_dfs.append(timepoint_data)
-        
-        return timepoint_dfs
-
 
 class OmicsDataloader:
     """
@@ -1421,25 +1035,59 @@ class OmicsDataloader:
     approaches without changing their code, simply by specifying a different dl_structure.
     """
     
-    def __init__(self, df, feature_list, replicate_id, batch_size=5, max_Kstep=10,
-                 dl_structure='random', shuffle=True, mask_value=-2, train_ratio=0,
-                 delay_size=3, concat_delays=False, random_seed=42):
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        feature_list: List[str],
+        replicate_id: str,
+        batch_size: int = 5,
+        max_Kstep: int = 10,
+        dl_structure: Literal['random', 'temporal', 'temp_delay', 'temp_segm'] = 'random',
+        shuffle: bool = True,
+        mask_value: float = -2.0,
+        train_ratio: float = 0.0,
+        delay_size: int = 3,
+        concat_delays: bool = False,
+        random_seed: int = 42,
+        augment_by: Optional[List[str]] = None,
+        num_augmentations: Optional[Union[int, List[int]]] = None
+    ) -> None:
         """
-        Initialize the appropriate dataloader based on dl_structure
+        Initialize a Koopman operator-compatible dataloader with configurable temporal structure.
         
         Args:
-            df: Temporally and replicate sorted DataFrame with uniform timeseries
-            feature_list: List of features to use
-            replicate_id: Column name for replicate ID
-            batch_size: Batch size for dataloader
-            max_Kstep: Maximum K-step for prediction
-            dl_structure: Data loading structure ('random', 'temporal', 'temp_delay', 'temp_segm')
-            shuffle: Whether to shuffle the data
-            mask_value: Value to use for masking
-            train_ratio: Ratio of data to use for training (0 for no split)
-            delay_size: Size of delay window for temp_delay structure
-            concat_delays: Whether to concatenate delays for temp_delay structure
-            random_seed: Random seed for reproducibility
+            df: Input DataFrame containing time series data with consistent sampling intervals.
+                Must be pre-sorted by replicate_id and time.
+            feature_list: Column names of features to use for modeling.
+            replicate_id: Column name identifying individual time series replicates.
+            batch_size: Number of samples per training batch.
+            max_Kstep: Maximum prediction horizon steps (K) for multi-step forecasting.
+            dl_structure: Determines how temporal data is structured:
+                'random' - Treats each time point independently
+                'temporal' - Preserves full original sequences
+                'temp_delay' - Sliding window with overlap (delay embedding)
+                'temp_segm' - Non-overlapping temporal segments
+            shuffle: Whether to shuffle samples during training.
+            mask_value: Special value indicating masked/invalid data points.
+            train_ratio: Proportion (0-1) of data to use for training (rest for validation).
+            delay_size: Window length for 'temp_delay' structure.
+            concat_delays: Whether to concatenate delay windows along feature axis.
+            random_seed: Seed for all random number generators.
+            augment_by: List of augmentation methods to apply. Options:
+                'noise', 'scale', 'shift', 'time_warp'
+            num_augmentations: Either:
+                - Single integer (applies to all augmentation methods)
+                - List matching augment_by length (specifies counts per method)
+        
+        Example:
+            >>> loader = KoopmanDataLoader(
+            ...     df=timeseries_data,
+            ...     feature_list=['gene1', 'gene2'],
+            ...     replicate_id='sample_id',
+            ...     dl_structure='temp_delay',
+            ...     augment_by=['noise', 'scale'],
+            ...     num_augmentations=[3, 1]
+            ... )
         """
         self.dl_structure = dl_structure
         self.delay_size = delay_size
@@ -1455,7 +1103,9 @@ class OmicsDataloader:
             'shuffle': shuffle,
             'mask_value': mask_value,
             'train_ratio': train_ratio,
-            'random_seed': random_seed
+            'random_seed': random_seed,
+            'augment_by': augment_by,
+            'num_augmentations': num_augmentations
         }
         
         # Select the appropriate dataloader implementation
@@ -1502,15 +1152,6 @@ class OmicsDataloader:
     def get_dfs(self):
         """Forward to the underlying dataloader's get_dfs method"""
         return self.dataloader.get_dfs()
-    
-    def get_indices(self):
-        """Forward to the underlying dataloader's get_indices method"""
-        return self.dataloader.get_indices()
-    
-    def reconstruct_original_dataframe(self, indices=None):
-        """Forward to the underlying dataloader's reconstruct_original_dataframe method"""
-        return self.dataloader.reconstruct_original_dataframe(indices)
-    
     # Structure-specific methods with validation
     
     def structure_data(self):

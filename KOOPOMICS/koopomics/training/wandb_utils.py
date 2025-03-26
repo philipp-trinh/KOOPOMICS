@@ -528,7 +528,160 @@ class SweepManager:
                                             outer_num_folds=outer_num_folds, inner_num_folds=inner_num_folds)
                 self.init_sweep()
 
+
     def prepare_nested_CV_data(self,
+                            data: Optional[Union[pd.DataFrame, torch.Tensor]] = None,
+                            condition_id: Optional[str] = None,
+                            time_id: Optional[str] = None,
+                            replicate_id: Optional[str] = None,
+                            feature_list: Optional[List[str]] = None,
+                            mask_value: Optional[float] = None,
+                            dl_structure: str = 'random',
+                            max_Kstep: int = 1,
+                            outer_num_folds: int = 5,
+                            inner_num_folds: int = 4,
+                            force_rebuild: bool = False) -> None:
+        """
+        Prepares nested CV data with outer splits saved as DataFrames and inner splits
+        calculated on-the-fly for validation.
+        
+        Args:
+            data: Input data (DataFrame or Tensor)
+            condition_id: Column name for conditions
+            time_id: Column name for timepoints
+            replicate_id: Column name for replicates
+            feature_list: List of feature names
+            mask_value: Value for masking missing data
+            dl_structure: Inner CV data structure
+            max_Kstep: Maximum prediction horizon steps
+            outer_num_folds: Number of outer CV folds
+            inner_num_folds: Number of inner CV folds
+            force_rebuild: Whether to rebuild splits if files exist
+        """
+        # Setup directory
+        cv_dir = f"{self.CV_save_dir}/nested_cv_{dl_structure}"
+        os.makedirs(cv_dir, exist_ok=True)
+        
+        # Load/validate data
+        if data is not None:
+            self.data = data
+            self.initialize_data_attributes(condition_id, time_id, replicate_id, feature_list, mask_value)
+        elif self.data is None:
+            raise ValueError("No data loaded. Provide data or call load_data() first.")
+
+        # Outer CV preparation - saved as DataFrames
+        outer_cv_dir = f"{cv_dir}/outer_splits"
+        os.makedirs(outer_cv_dir, exist_ok=True)
+        
+        # Check for existing outer splits
+        outer_splits_exist = all(
+            os.path.exists(f"{outer_cv_dir}/split_{i}/train.h5") and
+            os.path.exists(f"{outer_cv_dir}/split_{i}/test.h5")
+            for i in range(outer_num_folds)
+        )
+        
+        if not force_rebuild and outer_splits_exist:
+            logger.info("Loading existing outer CV splits")
+            outer_splits = []
+            for i in range(outer_num_folds):
+                train_df = pd.read_hdf(f"{outer_cv_dir}/split_{i}/train.h5", key='data')
+                test_df = pd.read_hdf(f"{outer_cv_dir}/split_{i}/test.h5", key='data')
+                outer_splits.append((train_df, test_df))
+        else:
+            logger.info("Creating new outer CV splits")
+            # Create temporal dataloader for outer splits
+            temporal_dl = OmicsDataloader(
+                self.data,
+                feature_list=self.feature_list,
+                replicate_id=self.replicate_id,
+                dl_structure='temporal',
+                max_Kstep=1,
+                mask_value=self.mask_value
+            )
+            
+            full_df = temporal_dl.dataset_df
+            outer_splits = []
+            
+            kf_outer = KFold(n_splits=outer_num_folds, shuffle=True, random_state=42)
+            for i, (train_idx, test_idx) in enumerate(kf_outer.split(full_df)):
+                train_df = full_df.iloc[train_idx]
+                test_df = full_df.iloc[test_idx]
+                
+                # Save outer split
+                split_dir = f"{outer_cv_dir}/split_{i}"
+                os.makedirs(split_dir, exist_ok=True)
+                
+                train_df.to_hdf(f"{split_dir}/train.h5", key='data')
+                test_df.to_hdf(f"{split_dir}/test.h5", key='data')
+                
+                # Create config files
+                self.create_data_input_file(
+                    condition_id=condition_id,
+                    time_id=time_id,
+                    replicate_id=replicate_id,
+                    feature_list=feature_list,
+                    mask_value=mask_value,
+                    input=train_df,
+                    output_dir=split_dir
+                )
+                
+                outer_splits.append((train_df, test_df))
+                
+                logger.info(f"Created outer split {i}:")
+                logger.info(f"  Train samples: {len(train_df)} ({len(train_df)/len(full_df):.1%})")
+                logger.info(f"  Test samples: {len(test_df)} ({len(test_df)/len(full_df):.1%})")
+
+        # Inner CV validation - calculated on-the-fly
+        for outer_idx, (train_df, _) in enumerate(outer_splits):
+            logger.info(f"\nValidating inner splits for outer fold {outer_idx}")
+            
+            # Create inner dataloader with specified structure
+            inner_dl = OmicsDataloader(
+                train_df,
+                feature_list=self.feature_list,
+                replicate_id=self.replicate_id,
+                dl_structure=dl_structure,
+                max_Kstep=max_Kstep,
+                mask_value=self.mask_value
+            )
+            
+            # Get structured data
+            if dl_structure == 'temp_delay':
+                X_inner = inner_dl.to_temp_delay(samplewise=True)
+                X_inner = X_inner.permute(0, 2, 1, 3, 4).reshape(-1, *X_inner.shape[-3:])
+            else:
+                X_inner = inner_dl.structured_train_tensor
+            
+            # Calculate inner splits
+            kf_inner = KFold(n_splits=inner_num_folds, shuffle=True, random_state=42)
+            for inner_idx, (train_idx, val_idx) in enumerate(kf_inner.split(X_inner)):
+                n_train = len(train_idx)
+                n_val = len(val_idx)
+                total = n_train + n_val
+                
+                logger.info(
+                    f"Inner fold {inner_idx}: "
+                    f"Train {n_train} samples ({n_train/total:.1%}), "
+                    f"Val {n_val} samples ({n_val/total:.1%})"
+                )
+                
+                # Optional: Add detailed sample counts per replicate/condition
+                if inner_idx == 0:  # Just show for first fold to avoid clutter
+                    train_indices = inner_dl.index_tensor[train_idx].unique().tolist()
+                    val_indices = inner_dl.index_tensor[val_idx].unique().tolist()
+                    
+                    train_reps = train_df.loc[train_df.index.isin(train_indices)][self.replicate_id].nunique()
+                    val_reps = train_df.loc[train_df.index.isin(val_indices)][self.replicate_id].nunique()
+                    
+                    logger.debug(
+                        f"  Replicates - Train: {train_reps}, Val: {val_reps}\n"
+                        f"  Sample distribution validated"
+                    )
+
+        logger.info(f"\nNested CV preparation complete. Outer splits saved to: {outer_cv_dir}")
+
+
+    def _prepare_nested_CV_data(self,
                               data: Optional[Union[pd.DataFrame, torch.Tensor]] = None,
                               condition_id: Optional[str] = None,
                               time_id: Optional[str] = None,

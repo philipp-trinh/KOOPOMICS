@@ -30,9 +30,17 @@ conda env create -f environment.yml
 conda activate koopomics
 ```
 
-3. Install KOOPOMICS in development mode:
+3. Install KOOPOMICS:
 ```bash
 pip install -e .
+```
+
+4. Create Kernel for jupyter notebooks:
+```bash
+conda activate koopomics
+conda install ipykernel -y
+python -m ipykernel install --user --name=koopomics --display-name "KOOPOMICS"
+
 ```
 
 The package will install all dependencies automatically.

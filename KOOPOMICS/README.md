@@ -18,7 +18,9 @@ KOOPOMICS requires Python 3.10. The installation process is automated using cond
 
 1. Clone the repository and navigate to the directory:
 ```bash
-git clone https://github.com/yourusername/KOOPOMICS.git
+git clone git@bitbucket.org:mosys-univie/philipp-trinh.git
+(Needs reading and writing rights of mosys-univie.)
+
 cd KOOPOMICS
 ```
 
@@ -46,8 +48,15 @@ model = KOOP()
 
 # Load your data
 data = pd.read_csv("your_data.csv")
+data_path = "folder/your_data.csv"
+data = pd.read_csv(data_path)
 feature_columns = [col for col in data.columns if col != "sample_id"]
-model.load_data(data, feature_list=feature_columns, replicate_id="sample_id")
+condition_id = 'Treatment'
+time_id = 'Dpi'
+replicate_id = 'Plant_ID'
+mask_value = 9999
+
+model.load_data(data_path, feature_list=feature_columns, replicate_id=replicate_id, condition_id=condition_id, time_id=time_id, mask_value=mask_value)
 
 # Train the model
 model.train()

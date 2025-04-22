@@ -35,21 +35,30 @@ class KoopmanMetricsMixin:
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def masked_criterion(self, criterion, mask_value=-1):
-    # Inner function that applies the mask and then computes the loss
+        """Creates a masked version of the given criterion with robust type handling"""
         def compute_loss(predictions, targets):
-            mask = targets != mask_value  
+            # Ensure we're working with tensors
+            if not isinstance(targets, torch.Tensor):
+                targets = torch.tensor(targets, device=predictions.device)
 
-            if not mask.any():  # Check if all values are masked
+            # Create mask (always returns tensor)
+            mask = targets != mask_value
+
+            # Handle case where mask is a single boolean (convert to tensor)
+            if isinstance(mask, bool):
+                mask = torch.tensor([mask], device=predictions.device)
+            
+            # Check if any elements are unmasked
+            if not mask.any():
                 return torch.tensor(0.0, device=predictions.device)
-
-            masked_targets = torch.where(mask, targets, torch.tensor(0.0, device=targets.device))
-
-            masked_predictions = torch.where(mask, predictions, torch.tensor(0.0, device=targets.device))
-
-            # Calculate the loss with the given criterion
+            
+            # Apply mask safely
+            masked_targets = targets.masked_fill(~mask, 0)
+            masked_predictions = predictions.masked_fill(~mask, 0)
+            
             return criterion(masked_predictions, masked_targets)
-    
-        return compute_loss  
+        
+        return compute_loss
 
     def compute_forward_loss_(self, input_fwd, target_fwd, fwd=1):
         # Print the step and forward parameter to track which iteration is being processed

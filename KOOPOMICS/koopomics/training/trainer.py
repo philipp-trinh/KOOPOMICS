@@ -9,7 +9,7 @@ from typing import Dict, List, Union, Optional, Any, Tuple
 
 from .train_utils import Koop_Full_Trainer, Koop_Step_Trainer, Embedding_Trainer
 from ..test.test_utils import NaiveMeanPredictor, Evaluator
-from .wandb_utils import WandbManager
+from ..wandb_utils.wandb_utils import WandbManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -30,9 +30,9 @@ class BaseTrainer:
         wandb_manager (WandbManager): Weights & Biases manager
     """
     
-    def __init__(self, model: nn.Module, train_loader, test_loader, config, 
+    def __init__(self, model: nn.Module, train_loader, test_loader, config, mask_value, 
                  use_wandb: bool = False, print_losses: bool = False,
-                 model_dict_save_dir = None, group=None):
+                 model_dict_save_dir = None, group=None, project_name: str = 'KOOPOMICS'):
         """
         Initialize the BaseTrainer.
         
@@ -53,6 +53,7 @@ class BaseTrainer:
         self.train_loader = train_loader
         self.test_loader = test_loader
         self.config = config
+        self.mask_value = mask_value
         self.device = config.device
         self.use_wandb = use_wandb
         self.group = group
@@ -66,7 +67,7 @@ class BaseTrainer:
         self.training_config = config.get_training_config()
         
         # Create baseline model
-        self.baseline = NaiveMeanPredictor(train_loader, mask_value=config.mask_value)
+        self.baseline = NaiveMeanPredictor(train_loader, mask_value=self.mask_value)
         
         # Initialize metrics storage
         self.metrics = {
@@ -80,7 +81,7 @@ class BaseTrainer:
         if self.use_wandb:
             self.wandb_manager = WandbManager(
                 config=config.config,
-                project_name="KOOPOMICS",
+                project_name=project_name,
                 train_loader=train_loader,
                 test_loader=test_loader,
                 model_dict_save_dir=self.model_dict_save_dir,
@@ -252,9 +253,9 @@ class FullTrainer(BaseTrainer):
     This trainer trains the entire model (embedding and operator) at once.
     """
     
-    def __init__(self, model: nn.Module, train_loader, test_loader, config, 
+    def __init__(self, model: nn.Module, train_loader, test_loader, config, mask_value,
                  use_wandb: bool = False, print_losses: bool = True,
-                 model_dict_save_dir = None, group=None):
+                 model_dict_save_dir = None, group=None, project_name: str = 'KOOPOMICS'):
         """
         Initialize the FullTrainer.
         
@@ -273,7 +274,7 @@ class FullTrainer(BaseTrainer):
         print_losses : bool, default=False
             Wheter to print all losses per epoch
         """
-        super().__init__(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir, group)
+        super().__init__(model, train_loader, test_loader, config, mask_value, use_wandb, print_losses, model_dict_save_dir, group, project_name)
     
     def train(self) -> float:
         """
@@ -310,7 +311,7 @@ class FullTrainer(BaseTrainer):
                     num_epochs=self.config.num_epochs,
                     decayEpochs=self.config.decay_epochs,
                     loss_weights=self.config.loss_weights,
-                    mask_value=self.config.mask_value,
+                    mask_value=self.mask_value,
                     early_stop=self.config.early_stop,
                     patience=self.config.patience,
                     baseline=self.baseline,
@@ -333,7 +334,7 @@ class FullTrainer(BaseTrainer):
                     num_epochs=self.config.num_epochs,
                     decayEpochs=self.config.decay_epochs,
                     loss_weights=self.config.loss_weights,
-                    mask_value=self.config.mask_value,
+                    mask_value=self.mask_value,
                     early_stop=self.config.early_stop,
                     patience=self.config.patience,
                     baseline=self.baseline,
@@ -368,9 +369,9 @@ class ModularTrainer(BaseTrainer):
     This trainer first trains the embedding module, then freezes it and trains the operator module.
     """
     
-    def __init__(self, model: nn.Module, train_loader, test_loader, config, 
+    def __init__(self, model: nn.Module, train_loader, test_loader, config, mask_value,
                  use_wandb: bool = False, print_losses: bool = True,
-                 model_dict_save_dir=None, group=None):
+                 model_dict_save_dir=None, group=None, project_name: str = 'KOOPOMICS'):
         """
         Initialize the ModularTrainer.
         
@@ -389,7 +390,7 @@ class ModularTrainer(BaseTrainer):
         print_losses : bool, default=False
             Wheter to print all losses per epoch
         """
-        super().__init__(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir, group)
+        super().__init__(model, train_loader, test_loader, config, mask_value, use_wandb, print_losses, model_dict_save_dir, group, project_name)
         
         # Paths for saving intermediate models
         self.embedding_path = f"{self.model.__class__.__name__}_embedding.pth"
@@ -424,7 +425,7 @@ class ModularTrainer(BaseTrainer):
                 learning_rate_change=self.config.learning_rate_change,
                 num_epochs=self.config.num_epochs,
                 decayEpochs=self.config.decay_epochs,
-                mask_value=self.config.mask_value,
+                mask_value=self.mask_value,
                 early_stop=self.config.early_stop,
                 patience=self.config.patience,
                 E_overfit_limit = self.config.E_overfit_limit,
@@ -469,7 +470,7 @@ class ModularTrainer(BaseTrainer):
                     num_epochs=self.config.num_epochs,
                     decayEpochs=self.config.decay_epochs,
                     loss_weights=self.config.loss_weights,
-                    mask_value=self.config.mask_value,
+                    mask_value=self.mask_value,
                     early_stop=self.config.early_stop,
                     patience=self.config.patience,
                     baseline=self.baseline,
@@ -492,7 +493,7 @@ class ModularTrainer(BaseTrainer):
                     num_epochs=self.config.num_epochs,
                     decayEpochs=self.config.decay_epochs,
                     loss_weights=self.config.loss_weights,
-                    mask_value=self.config.mask_value,
+                    mask_value=self.mask_value,
                     early_stop=self.config.early_stop,
                     patience=self.config.patience,
                     baseline=self.baseline,
@@ -534,9 +535,9 @@ class ModularShiftTrainer(BaseTrainer):
     7. If better, save parameters and train shift 3, and so on
     """
     
-    def __init__(self, model: nn.Module, train_loader, test_loader, config, 
+    def __init__(self, model: nn.Module, train_loader, test_loader, config, mask_value,
                  use_wandb: bool = False, print_losses: bool = True,
-                 model_dict_save_dir=None, group=None):
+                 model_dict_save_dir=None, group=None, project_name: str = 'KOOPOMICS'):
         """
         Initialize the ModularShiftTrainer.
         
@@ -557,7 +558,7 @@ class ModularShiftTrainer(BaseTrainer):
         model_dict_save_dir : str, default=None
             Directory to save model dictionaries
         """
-        super().__init__(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir, group)
+        super().__init__(model, train_loader, test_loader, config, mask_value, use_wandb, print_losses, model_dict_save_dir, group, project_name)
 
         self.num_shifts = self.config.max_Kstep
         
@@ -588,7 +589,7 @@ class ModularShiftTrainer(BaseTrainer):
             learning_rate_change=self.config.learning_rate_change,
             num_epochs=self.config.num_epochs,
             decayEpochs=self.config.decay_epochs,
-            mask_value=self.config.mask_value,
+            mask_value=self.mask_value,
             early_stop=self.config.early_stop,
             patience=self.config.patience,
             E_overfit_limit=self.config.E_overfit_limit,
@@ -790,9 +791,9 @@ class EmbeddingTrainer(BaseTrainer):
     This trainer only trains the embedding module (autoencoder).
     """
     
-    def __init__(self, model: nn.Module, train_loader, test_loader, config, 
+    def __init__(self, model: nn.Module, train_loader, test_loader, config, mask_value,
                  use_wandb: bool = False, print_losses: bool = False,
-                 model_dict_save_dir=None, group=None):
+                 model_dict_save_dir=None, group=None, project_name: str = 'KOOPOMICS'):
         """
         Initialize the EmbeddingTrainer.
         
@@ -811,7 +812,7 @@ class EmbeddingTrainer(BaseTrainer):
         print_losses : bool, default=False
             Wheter to print all losses per epoch
         """
-        super().__init__(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir)
+        super().__init__(model, train_loader, test_loader, config, mask_value, use_wandb, print_losses, model_dict_save_dir, project_name)
     
     def train(self) -> float:
         """
@@ -841,7 +842,7 @@ class EmbeddingTrainer(BaseTrainer):
                 learning_rate_change=self.config.learning_rate_change,
                 num_epochs=self.config.num_epochs,
                 decayEpochs=self.config.decay_epochs,
-                mask_value=self.config.mask_value,
+                mask_value=self.mask_value,
                 early_stop=self.config.early_stop,
                 patience=self.config.patience,
                 baseline=self.baseline,
@@ -870,10 +871,10 @@ class EmbeddingTrainer(BaseTrainer):
             if self.use_wandb and self.wandb_manager is not None:
                 self.wandb_manager.finish_run()
 
-def create_trainer(model: nn.Module, train_loader, test_loader, config, 
+def create_trainer(model: nn.Module, train_loader, test_loader, config, mask_value,
                    use_wandb: bool = False, print_losses: bool = False,
                     baseline=None, model_dict_save_dir: Optional[str] = None,
-                    group: Optional[str] = None) -> BaseTrainer:
+                    group: Optional[str] = None, project_name: Optional[str] = 'KOOPOMICS') -> BaseTrainer:
     """
     Create a trainer based on the training mode.
     
@@ -887,6 +888,8 @@ def create_trainer(model: nn.Module, train_loader, test_loader, config,
         Testing data loader
     config : ConfigManager
         Configuration manager
+    mask_value : Int
+        Mask_value
     use_wandb : bool, default=False
         Whether to use Weights & Biases for logging
     baseline : nn.Module, default=None
@@ -900,13 +903,13 @@ def create_trainer(model: nn.Module, train_loader, test_loader, config,
     training_mode = config.training_mode
     
     if training_mode == 'full':
-        trainer = FullTrainer(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir, group)
+        trainer = FullTrainer(model, train_loader, test_loader, config, mask_value, use_wandb, print_losses, model_dict_save_dir, group, project_name)
     elif training_mode == 'modular':
-        trainer = ModularTrainer(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir, group)
+        trainer = ModularTrainer(model, train_loader, test_loader, config, mask_value, use_wandb, print_losses, model_dict_save_dir, group, project_name)
     elif training_mode == 'modular_shift':
-        trainer = ModularShiftTrainer(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir, group)
+        trainer = ModularShiftTrainer(model, train_loader, test_loader, config, mask_value, use_wandb, print_losses, model_dict_save_dir, group, project_name)
     elif training_mode == 'embedding':
-        trainer = EmbeddingTrainer(model, train_loader, test_loader, config, use_wandb, print_losses, model_dict_save_dir, group)
+        trainer = EmbeddingTrainer(model, train_loader, test_loader, config, mask_value, use_wandb, print_losses, model_dict_save_dir, group, project_name)
     else:
         raise ValueError(f"Unknown training mode: {training_mode}")
     

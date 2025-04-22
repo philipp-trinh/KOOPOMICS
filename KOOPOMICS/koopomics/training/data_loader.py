@@ -5,6 +5,7 @@ import numpy as np
 from typing import List, Union, Optional, Dict, Any, Literal
 
 
+
 import logging
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -66,12 +67,16 @@ class OmicsDataloaderBase:
                 df: pd.DataFrame,
                 feature_list: List[str],
                 replicate_id: str,
+                time_id: str,
+                condition_id: str,
                 batch_size: int = 5,
                 max_Kstep: int = 10,
                 shuffle: bool = True,
                 mask_value: float = -2.0,
                 train_ratio: float = 0.0,
                 random_seed: int = 42,
+                train_idx: List[int] = None,
+                test_idx: List[int] = None, 
                 **kwargs: Dict[str, Any]) -> None:
         """
         Base initialization for all Omics dataloaders
@@ -102,6 +107,8 @@ class OmicsDataloaderBase:
         self.df = df
         self.feature_list = feature_list
         self.replicate_id = replicate_id
+        self.time_id = time_id
+        self.condition_id = condition_id
         self.batch_size = batch_size
         self.max_Kstep = max_Kstep
         self.shuffle = shuffle
@@ -120,26 +127,152 @@ class OmicsDataloaderBase:
         self.test_loader = None
         self.permuted_loader = None
         self.dataset_df = None
-        self.train_indices = None
-        self.test_indices = None
+        self.train_idx = train_idx
+        self.test_idx = test_idx
+
+        # Load data into tensor
+        self.data_tensor, self.index_tensor = self.prepare_data()
         
+        self.train_tensor, self.test_tensor = self.split_tensor_data(data_tensor=self.data_tensor,
+                                                                     train_ratio=self.train_ratio,
+                                                                     train_idx=self.train_idx,
+                                                                     test_idx = self.test_idx)
+        
+        self.train_index_tensor, self.test_index_tensor = self.split_tensor_data(data_tensor=self.index_tensor,
+                                                                     train_ratio=self.train_ratio,
+                                                                     train_idx=self.train_idx,
+                                                                     test_idx = self.test_idx)
+
         # Handle data augmentation
         if 'augment_by' in kwargs and kwargs['augment_by'] is not None:
             augment_methods = kwargs['augment_by']
             num_augmentations = kwargs.get('num_augmentations', 2)  # Default 2 if not specified
             
             # Perform augmentation before preparing tensors
-            self.augment_data(augmentation_methods=augment_methods,
+            self.augment_train_tensor(augmentation_methods=augment_methods,
                             num_augmentations=num_augmentations)
             
-        # Load data into tensor
-        self.train_tensor, self.index_tensor = self.prepare_data()
-        
+
         # Structure Tensors - will be implemented by subclasses
         self.structured_train_tensor = torch.empty(0)
         self.structured_index_tensor = torch.empty(0)
+    
+    def split_tensor_data(self, data_tensor, train_ratio=1.0, train_idx=None, test_idx=None):
+        """
+        Splits the input tensor into training and testing sets.
+        Default: train_ratio=1 (all data in training set, empty test set).
+        
+        Args:
+            data_tensor: Input tensor to split (along dim=0).
+            train_ratio: If provided, randomly splits data (default=1.0 → all train).
+            train_idx: Optional precomputed train indices (list/tuple/tensor).
+            test_idx: Optional precomputed test indices (list/tuple/tensor).
+        
+        Returns:
+            train_tensor, test_tensor
+        """
+        if train_idx is not None and test_idx is not None:
+            # Case 1: Predefined indices (ignore train_ratio)
+            if not isinstance(train_idx, torch.Tensor):
+                train_idx = torch.tensor(train_idx, dtype=torch.long)
+            if not isinstance(test_idx, torch.Tensor):
+                test_idx = torch.tensor(test_idx, dtype=torch.long)
+            
+        else:
+            # Case 2: Split by train_ratio (default: train_ratio=1 → all train)
+            num_samples = data_tensor.size(0)
+            train_size = int(train_ratio * num_samples)
+            indices = torch.randperm(num_samples)
+            train_idx = indices[:train_size]
+            test_idx = indices[train_size:]  # Empty if train_ratio=1
+        
+        # Perform the split
+        train_tensor = data_tensor[train_idx]
+        test_tensor = data_tensor[test_idx] if len(test_idx) > 0 else torch.tensor([])
+        
+        # Store the ratio
+        self.train_ratio = len(train_idx) / max(1, (len(train_idx) + len(test_idx)))  # Avoid division by zero
+        
+        return train_tensor, test_tensor
 
-    def augment_data(self, augmentation_methods: List[str], num_augmentations: Union[int, List[int]]) -> pd.DataFrame:
+    def augment_train_tensor(self, augmentation_methods: Union[str, List[str]], num_augmentations: Union[int, List[int]]) -> None:
+        """
+        Augments ONLY the training tensor after splitting, preserving time-series structure.
+        Modifies self.train_tensor in-place by concatenating augmented versions.
+        
+        Args:
+            augmentation_methods: List or comma-separated string of augmentation methods (e.g., 'noise, scale')
+            num_augmentations: Either int (applies to all methods) or list (per-method counts)
+        """
+        # Input validation
+
+        if isinstance(augmentation_methods, str):
+            # Convert "noise, scale" → ['noise', 'scale']
+            augmentation_methods = [m.strip() for m in augmentation_methods.split(",") if m.strip()]
+
+        if not isinstance(augmentation_methods, list) or not all(isinstance(m, str) for m in augmentation_methods):
+            raise ValueError("augmentation_methods must be a string or a list of strings.")
+
+
+        if not hasattr(self, 'train_tensor') or len(self.train_tensor) == 0:
+            raise ValueError("Training tensor not initialized - call split_tensor_data() first")
+        
+        if isinstance(num_augmentations, int):
+            num_augmentations = [num_augmentations] * len(augmentation_methods)
+        
+        original_shape = self.train_tensor.shape
+        logger.info(f"Original training tensor shape: {original_shape}")
+
+
+        # Calculate feature stds if noise augmentation is needed
+        feature_stds = None
+        if 'noise' in augmentation_methods:
+            feature_stds = self.train_tensor.std(dim=0, keepdim=True) * 0.05  # 5% noise level
+        
+        # Collect original + augmented samples
+        augmented_samples = [self.train_tensor]
+        
+        for method, n_aug in zip(augmentation_methods, num_augmentations):
+            for _ in range(n_aug):
+                # Apply augmentation to entire training tensor
+                aug_tensor = self._apply_tensor_augmentation(
+                    self.train_tensor.clone(), 
+                    method, 
+                    feature_stds
+                )
+                augmented_samples.append(aug_tensor)
+        
+        # Update training tensor with augmented data
+        self.train_tensor = torch.cat(augmented_samples, dim=0)
+
+         # Log shape after augmentation
+        new_shape = self.train_tensor.shape
+        total_added = new_shape[0] - original_shape[0]
+        logger.info(f"Augmented training tensor shape: {new_shape} (added {total_added} samples)")
+    
+        # If using index tracking, update those too
+        if hasattr(self, 'train_index_tensor'):
+            original_indices = self.train_index_tensor
+            replicated_indices = torch.cat([
+                original_indices 
+                for _ in range(sum(num_augmentations) + 1)
+            ], dim=0)
+            self.train_index_tensor = replicated_indices
+
+    def _apply_tensor_augmentation(self, tensor: torch.Tensor, method: str, noise_stds: torch.Tensor = None) -> torch.Tensor:
+        """Applies augmentation directly to structured time-series tensor"""
+        if method == 'noise' and noise_stds is not None:
+            return tensor + torch.randn_like(tensor) * noise_stds
+        elif method == 'scale':
+            return tensor * torch.empty_like(tensor).uniform_(0.9, 1.1)
+        elif method == 'shift':
+            return tensor + torch.empty_like(tensor).uniform_(-0.1, 0.1)
+        elif method == 'time_warp':
+            warp_factors = torch.empty(tensor.size(0), 1, 1).uniform_(0.9, 1.1).to(tensor.device)
+            return tensor * warp_factors
+        return tensor
+
+    def _augment_data(self, augmentation_methods: List[str], num_augmentations: Union[int, List[int]]) -> pd.DataFrame:
         """
         Optimized augmentation without DataFrame fragmentation.
         
@@ -166,25 +299,32 @@ class OmicsDataloaderBase:
                 # Get original data for this replicate
                 orig_mask = self.df[self.replicate_id] == orig_id
                 original_data = self.df.loc[orig_mask].copy()
-                
+
                 # Generate all augmented versions at once
                 aug_versions = []
                 for aug_num in range(1, num_augs + 1):
-                    # Create new DataFrame with all modifications in one operation
-                    aug_df = pd.DataFrame({
-                        **{f: self._apply_augmentation(original_data[f], method, feature_stds.get(f) if feature_stds else None)
-                            for f in self.feature_list},
-                        **{
-                            self.replicate_id: f"{orig_id}_aug{method}_{aug_num}",
-                            'augmentation_method': method,
-                            'augmentation_number': aug_num,
-                            'original_replicate': orig_id
-                        }
-                    })
-                    aug_versions.append(aug_df)
-                
-                # Combine all augmented versions for this replicate
-                augmented_chunks.extend(aug_versions)
+                    # Create augmented features
+                    aug_features = {
+                        f: self._apply_augmentation(original_data[f], method, feature_stds.get(f))
+                        for f in self.feature_list
+                    }
+                    
+                    # Create metadata (preserve all original columns except features)
+                    metadata = original_data.drop(columns=self.feature_list).copy()
+                    
+                    # Update augmentation-specific columns
+                    metadata[self.replicate_id] = f"{orig_id}_aug{method}_{aug_num}"
+                    metadata['augmentation_method'] = method
+                    metadata['augmentation_number'] = aug_num
+                    metadata['original_replicate'] = orig_id
+                    
+                    # Combine features and metadata
+                    aug_df = pd.concat([
+                        pd.DataFrame(aug_features),
+                        metadata.reset_index(drop=True)
+                    ], axis=1)
+                    
+                    augmented_chunks.append(aug_df)
         
         # Single concatenation at the end
         self.df = pd.concat(augmented_chunks, ignore_index=True)
@@ -203,6 +343,7 @@ class OmicsDataloaderBase:
             return series.interpolate() * warp_factor
 
         return series
+    
     def prepare_data(self):
         """
         Convert DataFrame to tensor based on feature_list and replicate_id.
@@ -273,9 +414,9 @@ class OmicsDataloaderBase:
         """To be implemented by subclasses"""
         raise NotImplementedError("Subclasses must implement structure_data()")
     
-    def create_dataloaders(self):
+    def create_dataloader(self, dataset_tensor: torch.Tensor):
         """To be implemented by subclasses"""
-        raise NotImplementedError("Subclasses must implement create_dataloaders()")
+        raise NotImplementedError("Subclasses must implement create_dataloader()")
     
     def get_dataloaders(self):
         """Return train and test dataloaders or full dataloader"""
@@ -307,7 +448,7 @@ class OmicsDataloaderBase:
         logger.info(f"Train Size: {train_size}")
         logger.info(f"Test Size: {test_size}")
     
-    def index_tensor_to_df(self, index_tensor, original_df):
+    def index_tensor_to_df(self, index_tensor, original_df, collapse=False):
         """
         Convert index tensor into list of DataFrames grouped by Kstep with full indexing information.
         
@@ -316,56 +457,62 @@ class OmicsDataloaderBase:
                 Contains row indices referencing original_df
             original_df: pd.DataFrame
                 The original DataFrame containing the data to be indexed
-                
+            collapse: bool (default=False)
+                If True, collapses index_tensor to unique values per training and test set,
+                resulting in one DataFrame per set instead of per Kstep.
+
         Returns:
-            list: List of DataFrames, one for each Kstep, with columns:
-                - All original columns from original_df
-                - sample_id: The sample number from the tensor's first dimension
-                - kstep: The prediction horizon from the tensor's second dimension
-                - position_in_segment: Position within the delay segment
-                - original_tensor_sample_idx: First dim index from tensor
-                - original_tensor_kstep_idx: Second dim index from tensor
-                - original_tensor_segment_idx: Third dim index from tensor
+            list: List of DataFrames (one per Kstep if collapse=False, one per set if collapse=True)
         """
         # Convert tensor to numpy and get dimensions
         indices = index_tensor.numpy()  # shape [samples, Ksteps, segment_size]
         num_samples, num_ksteps, segment_size = indices.shape
-        
+
+        if collapse:
+            # Reduce indices to unique values across all Ksteps
+            unique_indices = np.unique(indices)
+            # Create a single DataFrame for the entire set
+            df = original_df.loc[unique_indices].copy()
+
+            return [df]  # Return as a list to keep output consistent
+
         kstep_dfs = []
         
         for k in range(num_ksteps):
-            # Initialize list to hold all rows for this Kstep
             kstep_rows = []
-            
+
             for sample_id in range(num_samples):
-                # Get indices for this sample and Kstep
                 sample_indices = indices[sample_id, k, :]
-                
+
                 # Get corresponding rows from original DataFrame
                 segment_df = original_df.iloc[sample_indices].copy()
-                
+
                 # Add metadata columns
-                segment_df['sample_id'] = sample_id
-                segment_df['kstep'] = k
-                segment_df['position_in_segment'] = range(segment_size)
-                segment_df['original_tensor_sample_idx'] = sample_indices
+                segment_df["sample_id"] = sample_id
+                segment_df["kstep"] = k
+                segment_df["position_in_segment"] = range(segment_size)
+                segment_df["original_tensor_sample_idx"] = sample_indices
 
                 kstep_rows.append(segment_df)
-            
+
             # Combine all samples for this Kstep
             kstep_df = pd.concat(kstep_rows, ignore_index=True)
-
             kstep_dfs.append(kstep_df)
-        
+
         return kstep_dfs
 
-    def get_dfs(self):
+    def get_dfs(self, collapse_kstep=False):
 
         if self.train_ratio < 1:
-            self.train_df = self.index_tensor_to_df(self.train_index_tensor, self.df)
-            self.test_df = self.index_tensor_to_df(self.test_index_tensor, self.df)
 
-        self.structured_dataset_df = self.index_tensor_to_df(self.structured_index_tensor, self.df)
+            self.train_df = self.index_tensor_to_df(self.structured_train_index_tensor, self.df, collapse=collapse_kstep)
+            self.test_df = self.index_tensor_to_df(self.structured_test_index_tensor, self.df, collapse=collapse_kstep)
+        else:
+            self.train_df: pd.DataFrame = [self.df.copy()]
+            self.test_df: pd.DataFrame = [pd.DataFrame()]
+            logger.info("Created full dataset as training set (no test split)")
+            
+        self.structured_dataset_df = self.index_tensor_to_df(self.structured_index_tensor, self.df, collapse=collapse_kstep)
 
         return self.structured_dataset_df, self.train_df, self.test_df
 
@@ -391,83 +538,52 @@ class TemporalDataloader(OmicsDataloaderBase):
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
         self.structure_data()
-        self.create_dataloaders()
-    
+        self.train_loader = self.create_dataloader(self.structured_train_tensor)
+        self.test_loader = self.create_dataloader(self.structured_test_tensor)
+
     def structure_data(self):
         """Structure data for temporal processing"""
         self.structured_train_tensor = self.train_tensor.clone()
+        self.structured_test_tensor = self.test_tensor.clone()
+
         self.structured_index_tensor = self.index_tensor.clone()
+        self.structured_train_index_tensor = self.train_index_tensor.clone()
+        self.structured_test_index_tensor = self.test_index_tensor.clone()
 
-        return self.structured_train_tensor, self.structured_index_tensor
-    
-    def create_dataloaders(self):
+        return (self.structured_train_tensor, 
+                self.structured_test_tensor,
+                self.structured_index_tensor,
+                self.structured_train_index_tensor,
+                self.structured_test_index_tensor
+                )
+        
+    def create_dataloader(self, dataset_tensor: torch.Tensor) -> Union[DataLoader, List]:
+        """Create a dataloader from a tensor, returning empty list if tensor is empty.
+        
+        Args:
+            data_tensor: Input tensor with shape [samples, timesteps, seq_len, features]
+                        or empty tensor (torch.tensor([]))
+            
+        Returns:
+            DataLoader for non-empty tensors, empty list [] for empty input
         """
-        Create dataloaders that preserve the original temporal structure.
+        if dataset_tensor.numel() == 0:  # Check if tensor is empty
+            return []
         
-        This method is the simplest of all dataloader creation methods since it
-        maintains the original structure without segmentation or windowing. It:
-        1. Creates a TensorDataset from the cloned tensor
-        2. Optionally splits into train and test sets
-        3. Creates appropriate PermutedDataLoaders with dimension reordering
-        """
-        # Step 1: Create a TensorDataset from the preserved temporal structure
-        # This simply wraps the tensor in a dataset without additional processing
-        full_dataset = TensorDataset(self.structured_train_tensor)
+        if dataset_tensor.dim() != 4:
+            raise ValueError(f"Expected 4D tensor (got {dataset_tensor.dim()}D)")
         
-        # Step 2: Log information about the dataset dimensions
-        logger.info(f"Shape of dataset: {self.structured_train_tensor.shape}")
-        self.data_shape = self.structured_train_tensor.shape
+        dataset = TensorDataset(dataset_tensor)
         
-        # Step 3: Handle dataset splitting for train/test if requested
-        if self.train_ratio > 0:
-            # Calculate sample counts for training and testing
-            num_samples = self.structured_train_tensor.shape[0]
-            train_size = int(self.train_ratio * num_samples)
-            test_size = num_samples - train_size
-            
-            # Split the dataset randomly into train and test subsets
-            train_dataset, test_dataset = random_split(full_dataset, [train_size, test_size])
-
-            # Create dataloaders with dimension permutation (1, 0, 2, 3) to put time steps first
-            # This helps the model focus on the temporal dimension first during processing
-            self.train_loader = PermutedDataLoader(
-                dataset=train_dataset,
-                batch_size=self.batch_size,
-                shuffle=self.shuffle,  # Shuffle training data if requested
-                permute_dims=(1, 0, 2, 3),  # Permute to (time_steps, batch, seq_len, features)
-                mask_value=self.mask_value
-            )
-            
-            # Test loader uses a larger batch size (600) for faster evaluation
-            self.test_loader = PermutedDataLoader(
-                dataset=test_dataset,
-                batch_size=600,  # Larger batch size for testing
-                shuffle=False,   # Don't shuffle test data
-                permute_dims=(1, 0, 2, 3),
-                mask_value=self.mask_value
-            )
-            
-            # Store indices for tracking
-            self.train_indices = train_dataset.indices
-            self.test_indices = test_dataset.indices
-            
-            self.train_index_tensor = self.index_tensor[self.train_indices]
-            self.test_index_tensor = self.index_tensor[self.test_indices] 
-
-            # Log the split sizes
-            logger.info(f"Train Size: {train_size}")
-            logger.info(f"Test Size: {test_size}")
-        else:
-            # If no train/test split is requested, create a single dataloader for all data
-            self.permuted_loader = PermutedDataLoader(
-                dataset=full_dataset,
-                batch_size=self.batch_size,
-                shuffle=self.shuffle,
-                permute_dims=(1, 0, 2, 3),
-                mask_value=self.mask_value
-            )
-    
+        return PermutedDataLoader(
+            dataset=dataset,
+            batch_size=self.batch_size,
+            shuffle=self.shuffle,
+            permute_dims=(1, 0, 2, 3),  # Output as [timesteps, batch, seq_len, features]
+            mask_value=self.mask_value
+        )
 
 class TempDelayDataloader(OmicsDataloaderBase):
     """
@@ -500,18 +616,40 @@ class TempDelayDataloader(OmicsDataloaderBase):
         self.segment_mapping = {}  # Store mapping from indices to segments for reconstruction
         super().__init__(*args, **kwargs)
         self.structure_data()
-        self.create_dataloaders()
-    
-    def structure_data(self):
-        """Structure data for temporal delay processing"""
-        if self.train_ratio > 0:
-            self.structured_train_tensor, self.structured_index_tensor = self.to_temp_delay(shuffle_samples=True, samplewise=True)
-        else:
-            self.structured_train_tensor, self.structured_index_tensor = self.to_temp_delay(samplewise=False)
+        self.train_loader = self.create_dataloader(self.structured_train_tensor)
+        self.test_loader = self.create_dataloader(self.structured_test_tensor)
 
-        return self.structured_train_tensor, self.structured_index_tensor
+    def structure_data(self):
+        """Structure data for temporal delay processing while handling empty test tensors.
         
-    def to_temp_delay(self, samplewise=False, shuffle_samples=False):
+        Returns
+        -------
+        tuple
+            Returns (structured_train_tensor, structured_train_index_tensor) pair
+            If test tensors are non-empty, also structures them as instance attributes
+        """
+        # Process training data
+        self.structured_train_tensor, self.structured_train_index_tensor = \
+            self.to_temp_delay(self.train_tensor, self.train_index_tensor)
+        self.structured_index_tensor = self.structured_train_index_tensor.clone()
+
+        # Process test data only if non-empty
+        if self.test_tensor.numel() > 0:
+            self.structured_test_tensor, self.structured_test_index_tensor = \
+                self.to_temp_delay(self.test_tensor, self.test_index_tensor)
+        
+            # Concatenate train and test indices
+            self.structured_index_tensor = torch.cat([
+                self.structured_train_index_tensor,
+                self.structured_test_index_tensor
+            ], dim=0)
+
+        else:
+            self.structured_test_tensor = torch.tensor([])
+            self.structured_test_index_tensor = torch.tensor([])
+            logger.debug("Empty test tensor detected - skipping temporal structuring")
+        
+    def to_temp_delay(self, data_tensor: torch.Tensor, index_tensor: torch.Tensor, samplewise: bool = False, shuffle_samples: bool = False):
         """
         Convert tensors to temporal delay format using a sliding window approach.
         
@@ -554,24 +692,24 @@ class TempDelayDataloader(OmicsDataloaderBase):
         - When shuffle_samples=True, the same permutation is applied to both tensors
         - Permutation indices are stored in self.perm_indices when shuffling
         """
-        if self.train_tensor.shape[-2] >= 3:
+        if data_tensor.shape[-2] >= 2:
             # Step 1: Calculate sliding window parameters
-            num_timepoints = self.train_tensor.shape[2] # Total number of timepoints
+            num_timepoints = data_tensor.shape[2] # Total number of timepoints
             segment_size = self.delay_size # Size of each window segment
             delay = 1 # Step size between windows (for overlapping)
             num_segments = ((num_timepoints - segment_size) // delay) + 1
-            feature_dim = self.train_tensor.shape[-1]  # Number of features
+            feature_dim = data_tensor.shape[-1]  # Number of features
             
             # Step 2: Initialize tensors for both data and indices to hold all segmented data
             # Shape: [num_samples, num_K_steps, num_segments, segment_size, num_features]
             overlapping_segments = torch.empty(
-                (self.train_tensor.shape[0], self.max_Kstep + 1, num_segments, segment_size, feature_dim),
-                dtype=self.train_tensor.dtype
+                (data_tensor.shape[0], self.max_Kstep + 1, num_segments, segment_size, feature_dim),
+                dtype=data_tensor.dtype
             )
             
             overlapping_indices = torch.empty(
-                (self.index_tensor.shape[0], self.max_Kstep + 1, num_segments, segment_size),
-                dtype=self.index_tensor.dtype
+                (index_tensor.shape[0], self.max_Kstep + 1, num_segments, segment_size),
+                dtype=index_tensor.dtype
             )
 
             # Step 3: Create sliding windows for both tensors
@@ -579,8 +717,8 @@ class TempDelayDataloader(OmicsDataloaderBase):
             end = segment_size  # Ending index for the current window
             for seg_idx in range(num_segments):
                 # Copy the current window for all samples and K-steps
-                overlapping_segments[:, :, seg_idx] = self.train_tensor[:, :, start:end].clone()
-                overlapping_indices[:, :, seg_idx] = self.index_tensor[:, :, start:end].clone()
+                overlapping_segments[:, :, seg_idx] = data_tensor[:, :, start:end].clone()
+                overlapping_indices[:, :, seg_idx] = index_tensor[:, :, start:end].clone()
                 # Slide the window forward by 'delay' steps (typically 1 for maximum overlap)
                 start += delay
                 end = start + segment_size # Update end index of window
@@ -617,11 +755,11 @@ class TempDelayDataloader(OmicsDataloaderBase):
         # Validation check - can't create segments if we don't have enough timepoints
         raise ValueError(
             "Number of timepoints too small to create overlapping segments; "
-            "requires at least 3 timepoints. Either increase timepoints or "
+            "requires at least 2 timepoints. Either increase timepoints or "
             "adjust segment size using delay_size parameter."
         )
 
-    def create_dataloaders(self):
+    def _create_dataloader(self):
         """
         Create dataloaders with overlapping sliding window segments.
         
@@ -669,7 +807,6 @@ class TempDelayDataloader(OmicsDataloaderBase):
                 
                 # Step 4: Create dataset and store representations
                 full_dataset = TensorDataset(final_segments)
-                self.dataset_df = self.tensor_to_df(final_segments)
                 
                 # Step 5: Log information
                 logger.info(f"Shape of dataset: {final_segments.shape}")
@@ -682,44 +819,89 @@ class TempDelayDataloader(OmicsDataloaderBase):
                 self.train_index_tensor = self.structured_index_tensor[self.train_indices] 
                 self.test_index_tensor = self.structured_index_tensor[self.test_indices]
 
-                # Store segment mapping information for reconstruction
-                num_replicates = len(self.df[self.replicate_id].unique())
-                num_timepoints = self.df.groupby(self.replicate_id).size().max()
-                num_segments = ((num_timepoints - self.delay_size) // 1) + 1
-                
-                # Create mapping from tensor indices to segment information
-                for i in range(len(self.train_indices)):
-                    sample_idx = self.train_indices[i] // num_segments
-                    segment_idx = self.train_indices[i] % num_segments
-                    self.segment_mapping[i] = (sample_idx, segment_idx)
-                    
-                if self.test_indices is not None:
-                    for i in range(len(self.test_indices)):
-                        sample_idx = self.test_indices[i] // num_segments
-                        segment_idx = self.test_indices[i] % num_segments
-                        self.segment_mapping[i + len(self.train_indices)] = (sample_idx, segment_idx)
-                
+
             else:
                 # If not splitting into train/test, create a single dataloader
                 # The overlapping_segments already have the right shape from structure_data()
                 full_dataset = TensorDataset(overlapping_segments)
-                self.dataset_df = self.tensor_to_df(overlapping_segments)
                 
                 # Log information
                 logger.info(f"Shape of dataset: {overlapping_segments.shape}")
                 
                 # Create a single permuted loader for all data
-                self.permuted_loader = PermutedDataLoader(
+                self.train_loader = PermutedDataLoader(
                     dataset=full_dataset,
                     mask_value=self.mask_value,
                     permute_dims=(1, 0, 2, 3),  # Put time steps first in the batch
                     batch_size=self.batch_size,
                     shuffle=self.shuffle
                 )
+
+                self.test_loader = []
         else:
             # Not enough timepoints to create meaningful segments
             raise ValueError("Number of timepoints too small to create overlapping segments; increase timepoints or adjust segment size.")
     
+    def create_dataloader(self, dataset_tensor: torch.Tensor) -> DataLoader:
+        """
+        Create a dataloader with overlapping sliding window segments.
+        
+        Processes the overlapping segments and creates an appropriate dataloader.
+        Handles both regular sequential processing and concatenated delays mode,
+        where each window is flattened into a single feature vector.
+
+        Parameters
+        ----------
+        dataset_tensor : torch.Tensor
+            Input tensor of shape [samples, K_steps, num_segments, segment_size, features]
+            or [samples, K_steps, segment_size, features] depending on processing stage
+
+        Returns
+        -------
+        DataLoader
+            Configured dataloader with temporal segments
+        
+        Raises
+        ------
+        ValueError
+            If the number of available timepoints is insufficient to create segments
+            (requires at least 3 timepoints).
+        """
+        if dataset_tensor.numel() == 0:  # Check if tensor is empty
+            return []
+
+        if dataset_tensor.shape[-2] < 2:  # Check segment_size dimension
+            raise ValueError(
+                "Number of timepoints too small to create overlapping segments; "
+                "requires at least 2 timepoints. Either increase timepoints or "
+                "adjust segment size using delay_size parameter."
+            )
+
+        if dataset_tensor.dim() != 4:
+            raise ValueError(f"Expected 4D tensor (got {dataset_tensor.dim()}D)")
+    
+
+        # Reshape based on concat_delays setting
+        if self.concat_delays:
+            # Flatten window features into single vector
+            processed_tensor = dataset_tensor.reshape(
+                -1, self.max_Kstep + 1, 1, self.delay_size * dataset_tensor.shape[-1]
+            )
+        else:
+            # Maintain window sequence structure
+            processed_tensor = dataset_tensor.reshape(
+                -1, self.max_Kstep + 1, self.delay_size, dataset_tensor.shape[-1]
+            )
+
+        logger.info(f"Shape of processed dataset: {processed_tensor.shape}")
+        
+        return PermutedDataLoader(
+            dataset=TensorDataset(processed_tensor),
+            batch_size=self.batch_size,
+            shuffle=self.shuffle,
+            permute_dims=(1, 0, 2, 3),  # [time, batch, seq_len, features]
+            mask_value=self.mask_value
+        )
 
 class TempSegmDataloader(OmicsDataloaderBase):
     """
@@ -751,13 +933,39 @@ class TempSegmDataloader(OmicsDataloaderBase):
         self.slice_size = None  # Will be set in find_valid_slice_size
         super().__init__(*args, **kwargs)
         self.structure_data()
-        self.create_dataloaders()
-    
+        self.train_loader = self.create_dataloader(self.structured_train_tensor)
+        self.test_loader = self.create_dataloader(self.structured_test_tensor)
+
     def structure_data(self):
-        """Structure data for temporal segmentation"""
-        self.structured_train_tensor, self.structured_index_tensor = self.to_temp_segm()
-        return self.structured_train_tensor, self.structured_index_tensor
-    
+        """Structure data for temporal segmentation processing while handling empty test tensors.
+        
+        Returns
+        -------
+        tuple
+            Returns (structured_train_tensor, structured_train_index_tensor) pair
+            If test tensors are non-empty, also structures them as instance attributes
+        """
+        # Process training data
+        self.structured_train_tensor, self.structured_train_index_tensor = \
+            self.to_temp_segm(self.train_tensor, self.train_index_tensor)
+        self.structured_index_tensor = self.structured_train_index_tensor.clone()
+
+        # Process test data only if non-empty
+        if self.test_tensor.numel() > 0:
+            self.structured_test_tensor, self.structured_test_index_tensor = \
+                self.to_temp_segm(self.test_tensor, self.test_index_tensor)
+
+            # Concatenate train and test indices
+            self.structured_index_tensor = torch.cat([
+                self.structured_train_index_tensor,
+                self.structured_test_index_tensor
+            ], dim=0)
+
+        else:
+            self.structured_test_tensor = torch.tensor([])
+            self.structured_test_index_tensor = torch.tensor([])
+            logger.debug("Empty test tensor detected - skipping temporal structuring")
+        
     def find_valid_slice_size(self):
         """
         Helper method to find valid slice size for temporal segmentation.
@@ -786,7 +994,7 @@ class TempSegmDataloader(OmicsDataloaderBase):
         padding_needed = True
         return slice_sizes[-1], padding_needed  # Return smallest segment size (3)
     
-    def to_temp_segm(self):
+    def to_temp_segm(self, dataset_tensor, index_tensor):
         """
         Convert tensor to temporal segmentation format with non-overlapping segments.
         
@@ -795,7 +1003,9 @@ class TempSegmDataloader(OmicsDataloaderBase):
         - Automatically finds optimal segment size (3, 4, or 5 timepoints)
         - Pads the data if needed to ensure all segments have the same length
         """
-        if self.train_tensor.shape[-2] >= 3:
+
+
+        if dataset_tensor.shape[-2] >= 3:
             # Step 1: Find the optimal segment size and check if padding is needed
             # This attempts to find a segment size that divides the timeseries evenly
             valid_slice_size, padding_needed = self.find_valid_slice_size()
@@ -804,39 +1014,39 @@ class TempSegmDataloader(OmicsDataloaderBase):
             
             if padding_needed:
                 # Step 2: Add padding if needed to make the timeseries length divisible by the segment size
-                original_num_timepoints = self.train_tensor.shape[2]
+                original_num_timepoints = dataset_tensor.shape[2]
                 # Calculate how many additional timepoints are needed for even division
                 padding_needed = valid_slice_size - (original_num_timepoints % valid_slice_size)
                 # Create a tensor filled with mask values to use as padding
                 mask_value_tensor = torch.full(
-                    (self.train_tensor.shape[0], self.train_tensor.shape[1], padding_needed, self.train_tensor.shape[-1]),
+                    (dataset_tensor.shape[0], dataset_tensor.shape[1], padding_needed, self.train_tensor.shape[-1]),
                     fill_value=self.mask_value,
-                    dtype=self.train_tensor.dtype,
+                    dtype=dataset_tensor.dtype,
                 )
                 mask_value_index_tensor = torch.full(
-                    (self.train_tensor.shape[0], self.train_tensor.shape[1], padding_needed),
+                    (index_tensor.shape[0], index_tensor.shape[1], padding_needed),
                     fill_value=self.mask_value,
-                    dtype=self.train_tensor.dtype,
+                    dtype=index_tensor.dtype,
                 )
                 # Append the padding to the end of the timeseries
-                self.train_tensor = torch.cat((self.train_tensor, mask_value_tensor), dim=2)
-                self.index_tensor = torch.cat((self.index_tensor, mask_value_index_tensor), dim=2)
+                dataset_tensor = torch.cat((dataset_tensor, mask_value_tensor), dim=2)
+                index_tensor = torch.cat((index_tensor, mask_value_index_tensor), dim=2)
 
             # Step 3: Calculate how many non-overlapping segments we can create
-            num_segments = self.train_tensor.shape[2] // valid_slice_size
-            feature_dim = self.train_tensor.shape[-1]
+            num_segments = dataset_tensor.shape[2] // valid_slice_size
+            feature_dim = dataset_tensor.shape[-1]
             
             # Step 4: Reshape the tensor to create segmentation structure
             # First view: [samples, K-steps, num_segments, segment_size, features]
-            segm_tensor = self.train_tensor.view(
-                self.train_tensor.shape[0],
+            segm_tensor = dataset_tensor.view(
+                dataset_tensor.shape[0],
                 self.max_Kstep+1,
                 num_segments,
                 valid_slice_size,
                 feature_dim
             )
-            index_segm_tensor = self.index_tensor.view(
-                self.index_tensor.shape[0],
+            index_segm_tensor = index_tensor.view(
+                index_tensor.shape[0],
                 self.max_Kstep+1,
                 num_segments,
                 valid_slice_size
@@ -855,51 +1065,31 @@ class TempSegmDataloader(OmicsDataloaderBase):
         
         raise ValueError("Number of timepoints too small to segment; use temporal=True instead and specify a small batch_size!")
     
-    def create_dataloaders(self):
-        """
-        Create dataloaders for temporal segmentation data.
+    def create_dataloader(self, dataset_tensor: torch.Tensor) -> Union[DataLoader, List]:
+        """Create a dataloader from a temp_segm tensor, returning empty list if tensor is empty.
         
-        This method uses the pre-computed segmented tensor from structure_data()
-        and creates appropriate train/test dataloaders based on the training ratio.
+        Args:
+            data_tensor: Input tensor with shape [samples, timesteps, seq_len, features]
+                        or empty tensor (torch.tensor([]))
+            
+        Returns:
+            DataLoader for non-empty tensors, empty list [] for empty input
         """
-        if self.train_tensor.shape[-2] >= 3:
-            # Step 1: Use the already segmented tensor from structure_data()
-            # This avoids duplicating the padding and segmentation operations
-            # that were already performed in to_temp_segm()
-            segm_tensor = self.structured_train_tensor
-            
-            # Step 2: Create a TensorDataset from the segmented tensor
-            full_dataset = TensorDataset(segm_tensor)
-            
-            # Step 3: Store the dataframe representation for later reference
-            self.dataset_df = self.tensor_to_df(segm_tensor)
-            
-            # Step 4: Log information about the dataset shape
-            logger.info(f"Shape of dataset: {segm_tensor.shape}")
-            self.data_shape = segm_tensor.shape
-            
-            # Step 5: Create appropriate dataloaders based on train_ratio
-            if self.train_ratio > 0:
-                # If train_ratio is specified, split into train and test sets
-                # and create separate dataloaders for each
-                self.split_and_load(full_dataset, segm_tensor, permute_dims=(1, 0, 2, 3))
-                
-                self.train_index_tensor = self.structured_index_tensor[self.train_indices] 
-                self.test_index_tensor = self.structured_index_tensor[self.test_indices]
-
-            else:
-                # Otherwise, create a single loader for all data
-                self.permuted_loader = PermutedDataLoader(
-                    dataset=full_dataset,
-                    mask_value=self.mask_value,
-                    permute_dims=(1, 0, 2, 3),  # Prioritize time steps first, then samples
-                    batch_size=self.batch_size,
-                    shuffle=self.shuffle
-                )
-        else:
-            # Not enough timepoints to create meaningful segments
-            raise ValueError("Number of timepoints too small to segment; use temporal=True instead and specify a small batch_size!")
-    
+        if dataset_tensor.numel() == 0:  # Check if tensor is empty
+            return []
+        
+        if dataset_tensor.dim() != 4:
+            raise ValueError(f"Expected 4D tensor (got {dataset_tensor.dim()}D)")
+        
+        dataset = TensorDataset(dataset_tensor)
+        
+        return PermutedDataLoader(
+            dataset=dataset,
+            batch_size=self.batch_size,
+            shuffle=self.shuffle,
+            permute_dims=(1, 0, 2, 3),  # Output as [timesteps, batch, seq_len, features]
+            mask_value=self.mask_value
+        )
 
 class RandomDataloader(OmicsDataloaderBase):
     """
@@ -918,11 +1108,11 @@ class RandomDataloader(OmicsDataloaderBase):
     """
     
     def __init__(self, *args, **kwargs):
-        self.timepoint_mapping = {}  # Maps dataset indices to (replicate_id, timepoint)
         super().__init__(*args, **kwargs)
         self.structure_data()
-        self.create_dataloaders()
-    
+        self.train_loader = self.create_dataloader(self.structured_train_tensor)
+        self.test_loader = self.create_dataloader(self.structured_test_tensor)
+
     def structure_data(self):
         """
         Structure data for random processing.
@@ -934,10 +1124,31 @@ class RandomDataloader(OmicsDataloaderBase):
         Returns:
             torch.Tensor: Restructured tensor with randomized format
         """
-        self.structured_train_tensor, self.structured_index_tensor = self.to_random()
-        return self.structured_train_tensor, self.structured_index_tensor
+        self.structured_train_tensor, self.structured_train_index_tensor = self.to_random(self.train_tensor, self.train_index_tensor)
+        self.structured_index_tensor = self.structured_train_index_tensor.clone()
+
+        if self.test_tensor.numel() > 0:
+            self.structured_test_tensor, self.structured_test_index_tensor = self.to_random(self.test_tensor, self.test_index_tensor)
+
+            # Concatenate train and test indices
+            self.structured_index_tensor = torch.cat([
+                self.structured_train_index_tensor,
+                self.structured_test_index_tensor
+            ], dim=0)
+
+        else:
+            self.structured_test_tensor = torch.tensor([])
+            self.structured_test_index_tensor = torch.tensor([])
+            logger.debug("Empty test tensor detected - skipping temporal structuring")
+
+
+        return (self.structured_train_tensor, 
+                self.structured_test_tensor,
+                self.structured_train_index_tensor,
+                self.structured_test_index_tensor
+                )
     
-    def to_random(self):
+    def to_random(self, data_tensor: torch.Tensor, index_tensor: torch.Tensor):
         """
         Convert tensor to random format by flattening temporal structure.
         
@@ -952,56 +1163,36 @@ class RandomDataloader(OmicsDataloaderBase):
         Returns:
             torch.Tensor: Flattened tensor where each timepoint is treated as an independent sample
         """
-        feature_dim = self.train_tensor.shape[-1]
-        random_tensor = self.train_tensor.permute(0, 2, 1, 3).reshape(-1, self.max_Kstep+1, 1, feature_dim)
-        random_index_tensor = self.index_tensor.permute(0, 2, 1).reshape(-1, self.max_Kstep+1, 1)
+        feature_dim = data_tensor.shape[-1]
+        random_tensor = data_tensor.permute(0, 2, 1, 3).reshape(-1, self.max_Kstep+1, 1, feature_dim)
+        random_index_tensor = index_tensor.permute(0, 2, 1).reshape(-1, self.max_Kstep+1, 1)
         return random_tensor, random_index_tensor
     
-    def create_dataloaders(self):
-        """
-        Create dataloaders for random data structure.
+    def create_dataloader(self, dataset_tensor: torch.Tensor) -> Union[DataLoader, List]:
+        """Create a dataloader from a tensor, returning empty list if tensor is empty.
         
-        This method uses the pre-computed randomized tensor from structure_data()
-        and creates appropriate train/test dataloaders based on the training ratio.
-        This approach is the most efficient in terms of creating training samples,
-        but completely loses the temporal relationships between timepoints.
-        
-        Steps:
-        1. Uses the pre-computed tensor from structure_data() to avoid redundant operations
-        2. Creates a TensorDataset from the flattened tensor
-        3. Splits the dataset into train and test sets if train_ratio > 0
-        4. Creates appropriate PermutedDataLoader instances
-        """
-        # Step 1: Use the pre-computed randomized tensor from structure_data()
-        # This avoids repeating the expensive permutation and reshaping operations
-        random_tensor = self.structured_train_tensor
-        
-        # Step 2: Create a TensorDataset and store representations
-        full_dataset = TensorDataset(random_tensor)
-        self.dataset_df = self.tensor_to_df(random_tensor)
-
-        # Step 3: Log information about the dataset
-        logger.info(f"Shape of dataset: {random_tensor.shape}")
-        self.data_shape = random_tensor.shape
-        
-        # Step 4: Create appropriate dataloaders based on train_ratio
-        if self.train_ratio > 0:
-            # If train_ratio is specified, split into train and test sets
-            # using the utility function that handles masking and indices
-            self.split_and_load(full_dataset, random_tensor, permute_dims=(1, 0, 2, 3))
+        Args:
+            data_tensor: Input tensor with shape [samples, timesteps, seq_len, features]
+                        or empty tensor (torch.tensor([]))
             
-            self.train_index_tensor = self.structured_index_tensor[self.train_indices]
-            self.test_index_tensor = self.structured_index_tensor[self.test_indices]
-
-        else:
-            # Otherwise, create a single loader for all data
-            self.permuted_loader = PermutedDataLoader(
-                dataset=full_dataset,
-                batch_size=self.batch_size,
-                shuffle=self.shuffle,
-                permute_dims=(1, 0, 2, 3),  # Prioritize K-steps first
-                mask_value=self.mask_value
-            )
+        Returns:
+            DataLoader for non-empty tensors, empty list [] for empty input
+        """
+        if dataset_tensor.numel() == 0:  # Check if tensor is empty
+            return []
+        
+        if dataset_tensor.dim() != 4:
+            raise ValueError(f"Expected 4D tensor (got {dataset_tensor.dim()}D)")
+        
+        dataset = TensorDataset(dataset_tensor)
+        
+        return PermutedDataLoader(
+            dataset=dataset,
+            batch_size=self.batch_size,
+            shuffle=self.shuffle,
+            permute_dims=(1, 0, 2, 3),  # Output as [timesteps, batch, seq_len, features]
+            mask_value=self.mask_value
+        )
     
 
 class OmicsDataloader:
@@ -1040,12 +1231,16 @@ class OmicsDataloader:
         df: pd.DataFrame,
         feature_list: List[str],
         replicate_id: str,
+        time_id: str,
+        condition_id: str, 
         batch_size: int = 5,
         max_Kstep: int = 10,
         dl_structure: Literal['random', 'temporal', 'temp_delay', 'temp_segm'] = 'random',
         shuffle: bool = True,
         mask_value: float = -2.0,
-        train_ratio: float = 0.0,
+        train_ratio: float = 1,
+        train_idx: Optional[List[int]] = None,
+        test_idx: Optional[List[int]] = None,
         delay_size: int = 3,
         concat_delays: bool = False,
         random_seed: int = 42,
@@ -1098,11 +1293,15 @@ class OmicsDataloader:
             'df': df,
             'feature_list': feature_list,
             'replicate_id': replicate_id,
+            'time_id': time_id,
+            'condition_id': condition_id,
             'batch_size': batch_size,
             'max_Kstep': max_Kstep,
             'shuffle': shuffle,
             'mask_value': mask_value,
             'train_ratio': train_ratio,
+            'train_idx': train_idx,
+            'test_idx': test_idx,
             'random_seed': random_seed,
             'augment_by': augment_by,
             'num_augmentations': num_augmentations
@@ -1149,18 +1348,18 @@ class OmicsDataloader:
         """Forward to the underlying dataloader's get_dataloaders method"""
         return self.dataloader.get_dataloaders()
     
-    def get_dfs(self):
+    def get_dfs(self, collapse_kstep=False):
         """Forward to the underlying dataloader's get_dfs method"""
-        return self.dataloader.get_dfs()
+        return self.dataloader.get_dfs(collapse_kstep=collapse_kstep)
     # Structure-specific methods with validation
     
     def structure_data(self):
         """Forward to the underlying dataloader's structure_data method"""
         return self.dataloader.structure_data()
     
-    def create_dataloaders(self):
-        """Forward to the underlying dataloader's create_dataloaders method"""
-        return self.dataloader.create_dataloaders()
+    def create_dataloader(self, train_idx, test_idx):
+        """Forward to the underlying dataloader's create_dataloader method"""
+        return self.dataloader.create_dataloader(train_idx=train_idx, test_idx=test_idx)
     
     def to_temp_delay(self, samplewise=False, shuffle_samples=False):
         """

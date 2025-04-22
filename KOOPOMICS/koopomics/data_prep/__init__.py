@@ -1,1 +1,3 @@
-from .all_functions import *
+from .data_registry import DataRegistry
+
+__all__ = ['DataRegistry']

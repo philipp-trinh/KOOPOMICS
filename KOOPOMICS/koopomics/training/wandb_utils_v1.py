@@ -558,6 +558,8 @@ class SweepManager:
             inner_num_folds: Number of inner CV folds
             force_rebuild: Whether to rebuild splits if files exist
         """
+        import 
+
         # Setup directory
         cv_dir = f"{self.CV_save_dir}/nested_cv_{dl_structure}"
         os.makedirs(cv_dir, exist_ok=True)

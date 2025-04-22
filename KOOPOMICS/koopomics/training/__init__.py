@@ -8,7 +8,6 @@ from .trainer import (
 from .KoopmanMetrics import KoopmanMetricsMixin
 from .train_utils import Koop_Step_Trainer, Koop_Full_Trainer, Embedding_Trainer
 from .data_loader import OmicsDataloader, PermutedDataLoader
-from .wandb_utils import WandbManager, SweepManager
 
 __all__ = [
     'BaseTrainer',
@@ -22,6 +21,4 @@ __all__ = [
     'Embedding_Trainer',
     'OmicsDataloader',
     'PermutedDataLoader',
-    'WandbManager',
-    'SweepManager'
 ]

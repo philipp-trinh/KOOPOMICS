@@ -43,8 +43,8 @@ class ConfigManager:
         if config_source is not None:
             # Check if config_source is a wandb config and convert it
             if isinstance(config_source, wandb.sdk.wandb_config.Config):
-                config_source = dict(config_source)
-
+                config_source = {k: v for k, v in config_source.items()}
+                logger.info(f"Conversion of wandb config done.")
             if isinstance(config_source, dict):
                 self._update_config(config_source)
             elif isinstance(config_source, str):
@@ -61,6 +61,55 @@ class ConfigManager:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Using device: {self.device}")
     
+    def reload_config(self, config_source: Union[Dict[str, Any], str, wandb.sdk.wandb_config.Config, None] = None) -> None:
+        """
+        Reload and update the configuration while maintaining the current state.
+        
+        This method allows for dynamic reloading of configuration parameters during runtime,
+        which is particularly useful for hyperparameter tuning or when switching between
+        different experimental setups.
+        
+        Parameters:
+        -----------
+        config_source : Union[Dict[str, Any], str, wandb.sdk.wandb_config.Config, None]
+            The source of configuration parameters to reload, which can be:
+                - A dictionary containing new configuration settings
+                - A path (string) to a YAML or JSON file with new configuration
+                - A wandb configuration object
+                - None, which will reload the current configuration (useful for re-parsing)
+        """
+        # Store current device setting
+        current_device = self.device
+        
+        # If no new source provided, keep current config but re-parse it
+        if config_source is None:
+            current_config = self.config
+        else:
+            # Otherwise create a fresh default config
+            current_config = self._get_default_config()
+            
+            # Update with new configuration source
+            if isinstance(config_source, wandb.sdk.wandb_config.Config):
+                config_source = {k: v for k, v in config_source.items()}
+                logger.info("Converted wandb config to dictionary for reloading")
+            
+            if isinstance(config_source, dict):
+                self._update_config(config_source)
+            elif isinstance(config_source, str):
+                self._load_config_from_file(config_source)
+            else:
+                raise TypeError(f"Unsupported config_source type for reload: {type(config_source)}")
+        
+        # Reset and re-parse the configuration
+        self.config = current_config
+        self._correct_config()
+        self._parse_config()
+        
+        # Restore device setting (don't let reload change the device)
+        self.device = current_device
+        
+        logger.info("Configuration successfully reloaded and re-parsed")
+
 
     def _get_default_config(self) -> Dict[str, Any]:
         """
@@ -185,7 +234,7 @@ class ConfigManager:
                            'learning_rate', 'weight_decay', 'learning_rate_change', 'num_epochs',
                            'num_decays', 'early_stop', 'patience', 'E_overfit_limit', 'batch_size', 'verbose']:
                     structured_config['training'][k] = v
-                elif k in ['dl_structure', 'train_ratio', 'delay_size', 'random_seed', 'concat_delays', 'mask_value'
+                elif k in ['dl_structure', 'train_ratio', 'delay_size', 'random_seed', 'concat_delays',
                            'augment_by', 'num_augmentations']:
                     structured_config['data'][k] = v
                 else:
@@ -217,6 +266,15 @@ class ConfigManager:
         if op_reg != 'banded':
             logger.info(f"op_reg is not 'banded'. Setting op_bandwidth to 0.")
             self.config['model']['op_bandwidth'] = 0
+
+        # Correct banded related settings
+        op_reg = self.config['model']['op_reg']
+        if op_reg == 'banded':
+            logger.info(f"op_reg is 'banded'. Adjusting op_bandwidth to fit operator dim.")
+            E_layer_dims = self._parse_layer_dims(self.config['model'].get('E_layer_dims', "264,2000,2000,100"))
+            operator_dim = E_layer_dims[-1]
+            self.config['model']['op_bandwidth'] = min(self.config['model']['op_bandwidth'], operator_dim - 1)
+            logger.info(f"op_bandwidth adjusted to {self.config['model']['op_bandwidth']}.")
 
         # Correct training_mode related settings
         training_mode = self.config['training']['training_mode']
@@ -308,8 +366,8 @@ class ConfigManager:
         self.random_seed = self.config['data'].get('random_seed', 42)
         self.concat_delays = self.config['data'].get('concat_delays', False)
         self.augment_by = self.config['data'].get('augment_by', None)
+
         self.num_augmentations = self.config['data'].get('num_augmentations', None)
-        self.mask_value = self.config['data'].get('mask_value', None)
 
     def _parse_layer_dims(self, layer_dims_str: Optional[str]) -> Optional[List[int]]:
         """
@@ -432,7 +490,6 @@ class ConfigManager:
             'concat_delays': self.concat_delays,
             'augment_by': self.augment_by,
             'num_augmentations': self.num_augmentations,
-            'mask_value': self.mask_value
         }
     
     def save_config(self, file_path: str) -> None:

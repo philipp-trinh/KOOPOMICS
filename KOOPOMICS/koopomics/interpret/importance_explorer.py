@@ -256,13 +256,15 @@ class Importance_Explorer:
             self.norm_df,
             self.feature_list,
             self.replicate_id,
+            time_id = self.time_id,
+            condition_id = self.condition_id,
             batch_size=600,
             dl_structure='temporal',
             max_Kstep=1,
             mask_value=self.mask_value,
             shuffle=False
         )
-        test_loader = dataloader_test.get_dataloaders()
+        train_loader, test_loader = dataloader_test.get_dataloaders()
         
         # Collect all data
         all_data = []

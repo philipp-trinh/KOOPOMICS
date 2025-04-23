@@ -1,0 +1,5 @@
+- dl_structure: single_sweep
+  max_Kstep: 33
+  project: pregnancy_KOOP
+  timestamp: '2025-04-23T02:10:14.145920'
+  sweep_file: /lisc/user/trinh/KOOPOMICS/philipp-trinh/KOOPOMICS/examples/pregnancy_analysis/pregnancy_CV/nested_cv_single_sweep/outer_splits/pregnancy_KOOP_single_sweep_info.json

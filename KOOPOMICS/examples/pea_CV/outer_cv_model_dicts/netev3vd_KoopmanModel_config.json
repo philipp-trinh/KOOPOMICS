@@ -1,0 +1,44 @@
+{
+  "model": {
+    "embedding_type": "ff_ae",
+    "E_layer_dims": "247,500,500,10",
+    "E_dropout_rate_1": 0.06664674897616352,
+    "E_dropout_rate_2": 0.544782838680699,
+    "activation_fn": "gelu",
+    "operator": "linkoop",
+    "op_reg": "nondelay",
+    "op_bandwidth": 0,
+    "linE_layer_dims": "10,500,500,10",
+    "lin_act_fn": "leaky_relu"
+  },
+  "training": {
+    "training_mode": "modular",
+    "backpropagation_mode": "stepwise",
+    "max_Kstep": 1,
+    "loss_weights": "1,0.5,1,0,0.00001,0.01",
+    "learning_rate": 0.00011645756157426571,
+    "weight_decay": 3.227760178260203e-06,
+    "learning_rate_change": 0.24745626221045777,
+    "num_epochs": 2710,
+    "num_decays": 9,
+    "early_stop": true,
+    "patience": 10,
+    "E_overfit_limit": 0.5611472665042019,
+    "batch_size": 317,
+    "verbose": [
+      false,
+      false,
+      false
+    ]
+  },
+  "data": {
+    "dl_structure": "temporal",
+    "train_ratio": 1,
+    "delay_size": 0,
+    "random_seed": 42,
+    "concat_delays": false,
+    "augment_by": "noise",
+    "num_augmentations": 3
+  },
+  "sweep_name": 1
+}

@@ -99,6 +99,8 @@ class KoopmanDynamics:
             self.time_id = time_id
             
         # Extract sorted unique time values
+        print(self.time_id)
+        print(self.df.columns.tolist())
         self.time_values = sorted(self.df[self.time_id].unique(), reverse=False)
         self.replicate_id = replicate_id
 

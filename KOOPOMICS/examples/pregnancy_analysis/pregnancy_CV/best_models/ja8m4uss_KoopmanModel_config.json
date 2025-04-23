@@ -1,0 +1,44 @@
+{
+  "model": {
+    "embedding_type": "ff_ae",
+    "E_layer_dims": "264,100,100,3",
+    "E_dropout_rate_1": 0.96283776783984,
+    "E_dropout_rate_2": 0.0507112756644813,
+    "activation_fn": "swish",
+    "operator": "linkoop",
+    "op_reg": "None",
+    "op_bandwidth": 0,
+    "linE_layer_dims": "3,100,100,3",
+    "lin_act_fn": "leaky_relu"
+  },
+  "training": {
+    "training_mode": "modular",
+    "backpropagation_mode": "full",
+    "max_Kstep": 2,
+    "loss_weights": "1,1,1,1,1,1",
+    "learning_rate": 1.1796014678479723e-06,
+    "weight_decay": 1.121893622986324e-06,
+    "learning_rate_change": 0.4211081991268345,
+    "num_epochs": 3465,
+    "num_decays": 7,
+    "early_stop": true,
+    "patience": 10,
+    "E_overfit_limit": 0.22223251285414455,
+    "batch_size": 643,
+    "verbose": [
+      false,
+      false,
+      false
+    ]
+  },
+  "data": {
+    "dl_structure": "random",
+    "train_ratio": 1,
+    "delay_size": 0,
+    "random_seed": 42,
+    "concat_delays": false,
+    "augment_by": "noise, scale, shift",
+    "num_augmentations": 1
+  },
+  "sweep_name": 2
+}

@@ -1,0 +1,311 @@
+data_files:
+  hdf5: /lisc/user/trinh/KOOPOMICS/philipp-trinh/KOOPOMICS/examples/pea_CV/nested_cv_single_sweep/outer_splits/split_2/test.h5
+  original_source: Provided DataFrame
+  is_split: true
+notes: 'Split from /lisc/user/trinh/KOOPOMICS/philipp-trinh/KOOPOMICS/examples/input_data_registry/dataframe_input_config.yaml
+  with strategy: kfold_random'
+split_info:
+  parent_config: /lisc/user/trinh/KOOPOMICS/philipp-trinh/KOOPOMICS/examples/input_data_registry/dataframe_input_config.yaml
+  indices:
+    train:
+    - 0
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    test:
+    - 1
+    - 11
+  metadata:
+    split_ratio: 1.0
+    strategy: kfold_random
+    random_seed: 42
+    split_by: temporal_samples
+generated_on: '2025-04-23T01:55:26.282327'
+columns:
+  condition: Treatment
+  time: Dpi
+  replicate: Plant_ID
+  features_start: 0
+preprocessing:
+  interpolated: false
+  normalized: false
+  scaled: false
+  log_transformed: false
+metadata:
+  dimensions:
+    n_samples: 16
+    n_features: 247
+    n_timepoints: 8
+    n_conditions: 2
+    n_replicates: 2
+  mappings:
+    condition:
+      '0': MC
+      '1': PI
+    time:
+      '0': '0'
+      '1': '2'
+      '2': '4'
+      '3': '6'
+      '4': '8'
+      '5': '10'
+      '6': '12'
+      '7': '14'
+    replicate:
+      '0': MC_2
+      '1': PI_12
+  mask_value: 9999.0
+  feature_names:
+  - ep JA (oxo-phytodienoic acid)_[M+H]+_293.2086_52.21505
+  - Vanillic acid_[2M+H]+_337.0928_20.49838
+  - unknown_155.068_18.69884
+  - unknown_269.1113_25.8657
+  - unknown_229.116_18.376
+  - unknown_389.1678_26.55884
+  - (+)-Catechin_[M+H]+_291.0892_13.91104
+  - hydroxycinnamic acid_[2M+H]+_329.1006_18.10109
+  - unknown_337.1747_51.98288
+  - unknown_199.0573_19.08279
+  - unknown_279.0866_17.42771
+  - L-Proline_[M+H]+_116.0701_7.039677
+  - Indole-3-carboxaldehyde_[M]+_145.051_16.05855
+  - Dihydromaleimide beta-D-glucoside_[M]+_261.0843_13.19398
+  - unknown_297.16_30.65397
+  - Pinitol_[2M+H]+_389.1624_31.90646
+  - Phenylacetic acid_[2M+H]+_273.1122_14.57322
+  - ABA_[M+H]+_265.1429_35.82238
+  - (E)-Ferulic acid_[M+H]+_195.0641_25.08777
+  - phenylalanine_[2M+H]+_331.163_34.02259
+  - unknown_305.2449_67.89861
+  - Phenylacetic acid_[M+H]+_137.0592_33.26504
+  - unknown_431.1724_45.50681
+  - unknown_138.0522_7.755856
+  - Gibberellin A5_[M+H]+_331.1527_28.15717
+  - Dihydrochrysin_[M+H]+_257.0785_19.37716
+  - (3R)-3,4-Dihydro-3-(6-hydroxy-1,3-benzodioxol-5-yl)-2H-1-benzopyran-4,7-diol_[M+H]+_303.0855_3.343825
+  - unknown_315.1946_53.08273
+  - unknown_475.3536_74.68351
+  - Trigonelline_[M+H]+_138.0544_21.41126
+  - Trigonelline_[2M+H]+_275.1018_20.74318
+  - unknown_253.1174_8.36246
+  - unknown_152.0668_4.715895
+  - unknown_329.1483_23.39253
+  - Cinnamate_[M+H]+_149.0592_25.12905
+  - Benzoic acid_[M+H]+_123.0434_5.861516
+  - unknown_305.098_9.083259
+  - Afrormosin_[M+H]+_299.0933_47.15349
+  - unknown_287.1253_27.97125
+  - (-)-Jasmonic acid_[M+H]+_211.1316_51.83964
+  - unknown_331.2007_63.53427
+  - unknown_323.0739_4.774366
+  - unknown_305.0645_19.13618
+  - unknown_309.2196_64.60728
+  - unknown_277.1073_7.290372
+  - unknown_175.0591_2.65992
+  - unknown_227.078_7.118505
+  - unknown_309.1114_32.59032
+  - unknown_459.3558_76.44196
+  - unknown_329.0435_13.29091
+  - unknown_put FA_327.2284_68.29414
+  - leucine_[M+H]+_132.1016_2.98453
+  - ABA_[2M+H]+_529.2794_47.76084
+  - 3-Phenyl-2H-chromene_[M+H]+_209.0977_6.204473
+  - unknown_299.1268_60.95139
+  - unknown_471.1067_6.817751
+  - Indole-3-carboxaldehyde_[M+H]+_146.0596_25.50526
+  - unknown_126.0535_3.413721
+  - 2,6-Xylohydroquinone_[M+H]+_139.0751_41.17579
+  - (+)-Dihydrokaempferol_[M+H]+_289.0733_5.314562
+  - unknown_231.1552_55.89601
+  - unknown_325.2156_57.78611
+  - Salicylic acid_[M+H]+_139.0386_2.891978
+  - Methyl salicylate_[M+H]+_153.0542_41.23475
+  - Methyl salicylate_[2M+H]+_305.1018_5.784723
+  - L-Proline_[2M+H]+_231.1362_20.51846
+  - unknown_275.0887_31.03905
+  - Dihydromaleimide beta-D-glucoside_[M+H]+_262.0941_9.506431
+  - Adrenaline_[2M+H]+_367.1832_40.02665
+  - (-)-Maackiain_[M+H]+_285.0768_3.342737
+  - unknown_487.0811_3.293069
+  - unknown_187.0781_2.17289
+  - Vanillic acid_[M+H]+_169.0488_23.77238
+  - unknown_307.0992_45.24587
+  - unknown_411.1447_21.90224
+  - Gibberellin A5_[M]+_330.1451_40.80502
+  - unknown_337.1643_45.79052
+  - unknown_279.0617_13.44446
+  - unknown_297.0949_5.883179
+  - quercetin-3-O-rhamnoglucoside_[M+H]+_465.1066_32.33728
+  - unknown_129.0518_102.9284
+  - (3R)-3,4-Dihydro-3-(6-hydroxy-1,3-benzodioxol-5-yl)-2H-1-benzopyran-4,7-diol_[M]+_302.0813_3.517838
+  - unknown_255.0955_18.66341
+  - myo-inositol_[2M+H]+_361.1349_12.58036
+  - unknown_453.3679_76.16281
+  - unknown_307.0794_12.63608
+  - L-Tryptophan_[M+H]+_205.0964_21.04182
+  - unknown_249.0603_46.02397
+  - unknown_293.0642_2.800658
+  - Kaempferol_[M+H]+_287.0536_3.53496
+  - JA-Ile_[M]+_323.2064_64.57086
+  - Glutathione_[M]+_307.0862_17.9379
+  - unknown_263.0887_11.24638
+  - "BABA (D,L-\xDF-aminobutyric acid)_[M+H]+_104.0701_3.00588"
+  - Afrormosin_[M]+_298.0819_55.63798
+  - ABA_[M]+_264.1375_21.64742
+  - unknown_325.068_2.678529
+  - unknown_309.0959_25.0666
+  - unknown_353.1448_29.81855
+  - palmitic acid (16:0)_[M+H]+_257.2475_68.90779
+  - unknown_351.0858_3.398399
+  - unknown_607.3934_62.41629
+  - a-tocopherol_[M]+_430.3783_82.39827
+  - Tyramine_[M+H]+_138.0909_5.79162
+  - Trigonelline_[M]+_137.0458_12.58109
+  - Pisatin demethylated_[M+H]+_301.0698_40.10753
+  - unknown_291.0642_46.11434
+  - Coumestrol_[M+H]+_269.0449_54.18681
+  - unknown_203.0319_2.620444
+  - Caffeic acid_[M+H]+_181.0494_59.26732
+  - unknown_228.06_3.539689
+  - unknown_271.15_43.23726
+  - 2-Methoxymedicarpin_[M]+_300.0975_22.55732
+  - (E)-Ferulic acid_[2M+H]+_389.122_6.069116
+  - unknown_217.1432_37.30761
+  - stearic acid (18:0)_[M]+_284.2696_27.34182
+  - unknown_307.2633_43.97317
+  - stearic acid (18:0)_[M+H]+_285.2788_71.74791
+  - unknown_293.2473_64.73852
+  - myo-inositol_[M+H]+_181.0722_18.62774
+  - unknown_383.1156_2.172227
+  - linoleic acid (18:2)_[M+H]+_281.2476_56.56441
+  - hydroxycinnamic acid_[M+H]+_165.0554_5.89692
+  - a-tocopherol_[M+H]+_431.3852_82.40756
+  - unknown_160.0376_2.067364
+  - Spermidine_[M+H]+_146.1653_110.3042
+  - unknown_795.2308_25.8486
+  - Salicylic acid_[2M+H]+_277.0709_27.14374
+  - Quercetin_[M+H]+_303.049_40.17505
+  - unknown_811.1927_31.78148
+  - Quercetin-3-sophorotrioside_[M+H]+_789.2096_31.75448
+  - unknown_341.0268_23.95502
+  - Glutathione_[M+H]+_308.0922_3.634228
+  - Formononetin_[M+H]+_269.0827_3.402403
+  - unknown_545.1586_3.8414
+  - Dihydromaleimide beta-D-glucoside_[2M+H]+_523.1769_3.811584
+  - Dihydrochrysin_[M]+_256.0719_25.72902
+  - unknown_319.094_7.254197
+  - unknown_442.9762_4.323653
+  - unknown_321.0734_46.59196
+  - unknown_190.1064_13.37786
+  - 9-O-Methylcoumestrol_[M]+_282.0525_47.17014
+  - 2-Hydroxypseudobaptigenin_[M+H]+_299.0555_64.34122
+  - (-)-Pisatin_[M+H]+_315.0863_64.35699
+  - unknown_307.056_41.6667
+  - unknown_313.0709_64.35047
+  - oleic acid(18:1n9)_[M+H]+_283.2648_61.39968
+  - methyl Jasmonic acid_[M+H]+_225.148_44.55688
+  - Quercetin-3-sophorotrioside_[2M+H]+_1577.417_31.74173
+  - unknown_659.0618_4.488828
+  - Kaempferol_[M]+_286.0478_2.39528
+  - unknown_346.1976_70.84644
+  - unknown_683.2761_31.53995
+  - Coumestrol_[M]+_268.0383_4.413852
+  - unknown_323.0892_9.734726
+  - 2,6-Xylohydroquinone_[2M+H]+_277.1409_108.8854
+  - unknown_201.0718_28.90693
+  - (+)-Catechin_[M]+_290.0789_2.34069
+  - palmitic acid (16:0)_[M]+_256.2379_16.40389
+  - kaempferol-3-O-rhamnose_[M+H]+_433.1158_47.88103
+  - unknown_171.0626_7.446861
+  - Quercetin_[2M+H]+_605.0942_25.14126
+  - unknown_160.0948_20.15479
+  - unknown_225.0155_4.432354
+  - unknown_383.0744_64.34344
+  - 2-Methoxymedicarpin_[2M+H]+_601.2112_23.81382
+  - phenylalanine_[M+H]+_166.0861_4.022616
+  - unknown_289.2739_65.43459
+  - unknown_203.0531_40.40796
+  - unknown_617.1425_57.94861
+  - ep JA (oxo-phytodienoic acid)_[M]+_292.2021_14.18141
+  - unknown_431.0927_25.86627
+  - Scopoletin_[M+H]+_193.0503_20.43515
+  - Salicylic acid_[M]+_138.0312_41.24615
+  - unknown_325.0287_22.63253
+  - unknown_211.1071_3.177388
+  - Indole-3-carboxaldehyde_[2M+H]+_291.1142_25.4544
+  - Dopamine_[2M+H]+_307.1674_20.10488
+  - unknown_267.0651_42.83254
+  - unknown_305.0419_47.10506
+  - unknown_188.07_25.65146
+  - unknown303.2278_53.90124
+  - unknown_455.0967_5.225367
+  - kaempferol-3-O-rhamnoglucoside_[M+H]+_595.1688_9.750732
+  - "SGE (Salicyloyl glucose ester), SAG (Salicylic acid O-\xDF-glucoside)_[M]+_300.0862_42.74654"
+  - Pisatin demethylated_[M]+_300.0601_42.73049
+  - unknown_323.0526_41.48322
+  - Myricetin_[M]+_318.0398_17.1529
+  - unknown_197.0209_6.860356
+  - Cinnamate_[2M+H]+_297.1095_13.89943
+  - 2,6-Xylohydroquinone_[M+2Na-H]+_183.0404_3.054786
+  - (+)-Dihydrokaempferol_[2M+H]+_577.1351_61.19988
+  - oleic acid(18:1n9)_[2M+Na]+_587.5013_76.73204
+  - linoleic acid (18:2)_[2M+Na]+_583.4699_90.16138
+  - leucine_[M+Na]+_154.0835_6.340537
+  - Scopoletin_[M]+_192.0402_27.82373
+  - Quercetin-3-sophorotrioside_[M]+_788.2063_40.81058
+  - unknown_833.1761_34.20781
+  - unknown_143.0679_103.1301
+  - unknown_313.0971_17.24666
+  - Formononetin_[M]+_268.0706_50.79075
+  - unknown_307.1153_35.80298
+  - unknown_295.0763_6.799127
+  - unknown_297.082_112.7707
+  - Naringenin_[2M+H]+_545.149_14.90223
+  - unknown_330.2229_25.45115
+  - unknown_368.1821_31.63975
+  - unknown_352.0588_21.3136
+  - Glutathione_[2M+H]+_615.1716_37.51858
+  - unknown_353.1355_8.078859
+  - unknown_619.1624_23.27734
+  - Adrenaline_[M+H]+_184.0964_25.01614
+  - unknown_289.0656_6.755086
+  - unknown_439.1687_50.57361
+  - 2-Hydroxypseudobaptigenin_[M]+_298.0471_38.77246
+  - unknown_233.114_3.818988
+  - (-)-Jasmonic acid_[2M+H]+_421.2547_16.60869
+  - unknown_333.0368_60.41942
+  - unknown_247.1284_36.35047
+  - leucine_[2M+H]+_263.1969_4.960755
+  - "SGE (Salicyloyl glucose ester), SAG (Salicylic acid O-\xDF-glucoside)_[M+H]+_301.0943_6.100064"
+  - unknown_239.0536_15.44678
+  - unknown_295.0558_35.55639
+  - unknown_327.0849_54.09957
+  - unknown_669.4062_64.06629
+  - JA-Ile_[2M+H]+_647.4228_79.75163
+  - Gibberellin A5_[2M+H]+_661.3014_72.00197
+  - Formononetin_[2M+H]+_537.1549_28.92955
+  - Dopamine_[M+H]+_154.0861_17.40821
+  - Dihydrochrysin_[2M+H]+_513.1555_49.44472
+  - Afrormosin_[2M+H]+_597.1757_46.57666
+  - unknown_335.0526_47.6897
+  - retinol_[2M+H]+_573.4708_67.34506
+  - unknown_279.231_75.35976
+  - unknown_535.4643_101.7956
+  - medicarpin_[2M+H]+_541.1805_22.64951
+  - ep JA (oxo-phytodienoic acid)_[2M+H]+_585.4207_60.20451
+  - unknown_160.0747_20.59109
+  - Pinitol_[M+H]+_195.085_2.51289
+  - unknown_567.1281_46.79812
+  - unknown_559.1376_33.71508
+  - unknown_145.0257_4.955485
+  - unknown_551.2639_38.34596
+  - 9-O-Methylcoumestrol_[M+H]+_283.0596_44.62635
+  - unknown_587.0959_56.97522
+  - 9-O-Methylcoumestrol_[2M+H]+_565.1127_57.00353
+  - unknown_343.0177_8.272765

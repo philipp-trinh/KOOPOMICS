@@ -1,0 +1,37 @@
+data:
+  augment_by: null
+  concat_delays: false
+  delay_size: 5
+  dl_structure: temporal
+  num_augmentations: null
+  random_seed: 42
+  train_ratio: 1
+model:
+  E_dropout_rate_1: 0.0
+  E_dropout_rate_2: 0.0
+  E_layer_dims: 264,2000,2000,100
+  activation_fn: leaky_relu
+  embedding_type: ff_ae
+  linE_layer_dims: 100,2000,2000,100
+  lin_act_fn: leaky_relu
+  op_bandwidth: 2
+  op_reg: skewsym
+  operator: invkoop
+training:
+  E_overfit_limit: 0.0
+  backpropagation_mode: full
+  batch_size: 32
+  early_stop: true
+  learning_rate: 0.001
+  learning_rate_change: 0.8
+  loss_weights: 1,1,1,1,1,1
+  max_Kstep: 1
+  num_decays: 5
+  num_epochs: 1000
+  patience: 10
+  training_mode: full
+  verbose:
+  - false
+  - false
+  - false
+  weight_decay: 0.01

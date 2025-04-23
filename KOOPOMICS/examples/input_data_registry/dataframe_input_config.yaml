@@ -1,0 +1,360 @@
+data_files:
+  hdf5: /lisc/user/trinh/KOOPOMICS/philipp-trinh/KOOPOMICS/examples/input_data_registry/dataframe_input.h5
+  original_source: Provided DataFrame
+  is_split: false
+notes: null
+split_info: null
+generated_on: '2025-04-23T06:44:43.109548'
+columns:
+  condition: Condition
+  time: Gestational age (GA)/weeks
+  replicate: Subject ID
+  features_start: 7
+preprocessing:
+  interpolated: false
+  normalized: false
+  scaled: false
+  log_transformed: false
+metadata:
+  dimensions:
+    n_samples: 1050
+    n_features: 264
+    n_timepoints: 35
+    n_conditions: 1
+    n_replicates: 30
+  mappings:
+    condition:
+      '0': healthy
+    time:
+      '0': '7'
+      '1': '8'
+      '2': '9'
+      '3': '10'
+      '4': '11'
+      '5': '12'
+      '6': '13'
+      '7': '14'
+      '8': '15'
+      '9': '16'
+      '10': '17'
+      '11': '18'
+      '12': '19'
+      '13': '20'
+      '14': '21'
+      '15': '22'
+      '16': '23'
+      '17': '24'
+      '18': '25'
+      '19': '26'
+      '20': '27'
+      '21': '28'
+      '22': '29'
+      '23': '30'
+      '24': '31'
+      '25': '32'
+      '26': '33'
+      '27': '34'
+      '28': '35'
+      '29': '36'
+      '30': '37'
+      '31': '38'
+      '32': '39'
+      '33': '40'
+      '34': '41'
+    replicate:
+      '0': DP01
+      '1': DP02
+      '2': DP03
+      '3': DP04
+      '4': DP05
+      '5': DP06
+      '6': DP07
+      '7': DP08
+      '8': DP09
+      '9': DP10
+      '10': DP11
+      '11': DP12
+      '12': DP13
+      '13': DP14
+      '14': DP15
+      '15': DP16
+      '16': DP17
+      '17': DP18
+      '18': DP19
+      '19': DP20
+      '20': DP21
+      '21': DP22
+      '22': DP23
+      '23': DP24
+      '24': DP25
+      '25': DP26
+      '26': DP27
+      '27': DP28
+      '28': DP29
+      '29': DP30
+  mask_value: -1.0e-09
+  feature_names:
+  - (+)-.alpha.-Tocopherol
+  - (R)-2-Hydroxycaprylic acid
+  - 1,4-Dihydroxybenzene
+  - 1-Methylxanthine
+  - 1-Naphthylamine
+  - 1-Oleoyl-sn-glycero-3-phosphoethanolamin...
+  - 1-Palmitoyl-2-hydroxy-sn-glycero-3-phosp...
+  - 1-Stearoyl-sn-glycero-3-phosphocholine
+  - 1-Stearoyl-sn-glycerol
+  - 1-pentadecanoyl-2-hydroxy-sn-glycero-3-p...
+  - 11(Z),14(Z)-Eicosadienoic Acid
+  - 12,13-Dihydroxy-9Z-octadecenoic acid
+  - 13(S)-HODE
+  - 13-Keto-9Z,11E-octadecadienoic acid
+  - 16-Hydroxypalmitic acid
+  - 17,18-EpETE
+  - 17alpha-Hydroxyprogesterone
+  - 1H-Indole-3-propanoic acid
+  - 2-Ethyl-2-Hydroxybutyric acid
+  - 2-Furoylglycine
+  - 2-Linoleoylglycerol
+  - 2-Methylbutyroylcarnitine
+  - 2-Methylhippuric acid
+  - 2-Phenylbutyric acid
+  - 20-Hydroxyarachidonic acid
+  - 2E-Eicosenoic acid
+  - 3,4-Dimethylbenzaldehyde
+  - 3-(3-Hydroxyphenyl)propionic acid
+  - 3-Acetoxypyridine
+  - 3-Hydroxyoleylcarnitine
+  - 3-Indoleacetic acid
+  - 3-Indolepropionic acid
+  - 3-Methylindole
+  - 3-tert-Butyl-4-hydroxyanisole
+  - 4-Pyridoxic acid
+  - 5(S)-HETE
+  - 5-Hydroxyindole-3-acetic acid
+  - 5-Pregnane-3,17-diol-20-one 3-sulfate
+  - 7-Methylguanine
+  - 7.alpha.-Hydroxy-3-oxo-4-cholestenoic ac...
+  - 7.alpha.-Hydroxy-4-cholesten-3-one
+  - 7Z, 10Z, 13Z, 16Z, 19Z-Docosapentaenoic ...
+  - 7alpha,24-Dihydroxy-4-cholesten-3-one
+  - 8,9-DHET
+  - 9-OxoODE
+  - AZELAIC ACID
+  - Allocholic acid
+  - Allopurinol
+  - Alpha-Hydroxyisobutyric acid
+  - Androstane-3,17-diol
+  - Androsterone glucuronide
+  - Androsterone sulfate
+  - Bilirubin
+  - Butylparaben
+  - C10:0 AC (Decanoylcarnitine)
+  - C10:1 AC (Decenoylcarnitine)
+  - C10:2 AC (Decadienoylcarnitine)
+  - C11:0 AC (Undecanoylcarnitine)
+  - C11:0,DC FA (Undecanedioic acid)
+  - C11:1 FA (Undecenoic acid)
+  - C12:0 AC (Dodecanoylcarnitine)
+  - C12:0,OH FA (Hydroxydodecanoic acid)
+  - C12:1 AC (Dodecenoylcarnitine)
+  - C12:1 FA (Dodecenoic acid)
+  - C13:0,DC FA(2) (Tridecanedicarboxylic ac...
+  - C14:0 AC (Tetradecanoylcarnitine)
+  - C14:0 FA (Myristic acid)
+  - C14:0,OH AC (Hydroxymyristoylcarnitine)
+  - C14:1 AC (Tetradecenoylcarnitine)
+  - C14:1,OH AC (Hydroxy-tetradecenoylcarnit...
+  - C14:2 AC (Tetradecadiencarnitine)
+  - C15:1 FA (Pentadecenoic acid)
+  - C16 PAF (Platelet-activating factor)
+  - C16:0 AC (L-Palmitoylcarnitine)
+  - C16:1 AC (Hexadecenoyl carnitine)
+  - C16:1 FA (Palmitoleic acid)
+  - C16:2 FA (Hexadecadienoic acid)
+  - C17:1 FA(1) (Heptadecenoic acid)
+  - C18:0,DC FA (Octadecanedicarboxylic acid...
+  - C18:1 AC (Oleoylcarnitine)
+  - C18:1,3OH FA(1) (Trihydroxy-octadecenoic...
+  - C18:1,3OH FA(2) (Trihydroxy-octadecenoic...
+  - C19:0 FA (Nonadecanoic acid)
+  - C19:1 FA (Nonadecaenoic acid)
+  - C20:3,OH FA (Hydroxy-eicosatrienoic acid...
+  - C20:5 FA (Eicosapentanoic acid)
+  - C22:6,OH FA (Hydroxy-docosahexaenoic aci...
+  - C24:1 FA (Nervonic acid)
+  - C6:0 AC (Hexanoylcarnitine)
+  - C8:0 AC (L-Octanoylcarnitine)
+  - C8:0,OH FA(1) (Hydroxyoctanoic acid)
+  - C8:1 AC (Octenoylcarnitine)
+  - C9:0 AC (Nonanoylcarnitine)
+  - Caffeine
+  - Caprylic acid
+  - Chenodeoxycholate
+  - Chenodeoxycholic Acid
+  - Cholic acid
+  - Cinnamoylglycine
+  - Citric acid
+  - Corticosterone
+  - Cortisol
+  - Cortisone
+  - Cyclo(leucylprolyl)
+  - Cysteinylglycine
+  - DL-2-Aminooctanoic acid
+  - Dehydroisoandrosterone sulfate
+  - Diatrizoate
+  - Dibutyl phthalate
+  - Diglykokoll
+  - Dihomo-gamma-Linolenic Acid
+  - Docosadienoic acid
+  - Docosatrienoic Acid
+  - Dodecanedioic acid
+  - Dodecanoylcarnitine
+  - EDTA
+  - Enoxacin
+  - Epitestosterone
+  - Erucic acid
+  - Estriol-16-Glucuronide
+  - Estrone 3-sulfate
+  - Ethylparaben
+  - Glu-His
+  - Glycochenodeoxycholate
+  - Glycocholic acid
+  - Glycodeoxycholic acid
+  - Glycolithocholic acid
+  - Glycyrrhetinic acid
+  - Heptadecanoic acid
+  - Hexadecadienoylcarnitine
+  - Hexadecanedioic acid
+  - Hippuric acid
+  - Hydroxybupropion
+  - Hydroxyhippurate
+  - Hypoxanthine
+  - Indole
+  - Indole-3-carboxaldehyde
+  - Indoleacetic acid
+  - Indoxyl sulfate
+  - Inosine
+  - Irbesartan
+  - Isobutyryl-L-carnitine
+  - Isoleucyl-Isoleucine
+  - Jasmonic acid
+  - Ketoisovaleric acid
+  - Kynurenine
+  - L-Glutamine
+  - L-Phenylalanine
+  - L-Saccharopine
+  - L-Thyroxine
+  - L-Tryptophan
+  - LPC(14:1)
+  - LPC(17:0)
+  - LPC(18:2)
+  - LPC(20:2)
+  - LPC(20:5)
+  - LPC(22:4)
+  - LPC(22:5)
+  - LPC(24:0)
+  - LPC(24:1)
+  - LPC(P-16:0)
+  - LPC(P-18:0)
+  - LPC(P-18:1)
+  - LPE(14:0)
+  - LPE(15:0)
+  - PE(P-16:0e/0:0)
+  - LPE(16:1)
+  - LPE(18:1)
+  - LPE(20:0)
+  - LPE(20:1)
+  - LPE(20:3)
+  - LPE(22:1)
+  - LPE(22:2)
+  - LPE(22:4)
+  - LPE(22:5)
+  - Lauric acid
+  - Leu-Phe
+  - LysoPC(14:0)
+  - LysoPC(16:0)
+  - LysoPC(O-18:0)
+  - LysoPE(18:0/0:0)
+  - MG(14:1)
+  - MG(15:0)
+  - MG(16:0)
+  - MG(16:1)
+  - MG(18:1)
+  - MG(20:0)
+  - MG(20:5)
+  - MG(22:2)
+  - MG(24:0)
+  - MG(24:1)
+  - Monoisobutyl phthalate
+  - Myristoleic acid
+  - N,N,Diacetyl-Lys-DAla-DAla
+  - N-Acetyl-D-glucosamine
+  - N-Acetylleucine|N-Acetylisoleucine
+  - N-Acetylsphingosine
+  - N-Phenylacetamide
+  - Naproxen
+  - Nicotinamide
+  - Oleamide
+  - Oleic acid methyl ester
+  - Oleoylcarnitine
+  - PC(18:1(9Z)e/2:0)
+  - PC(22:1/22:1) (Lecithin)
+  - PS(28:2)
+  - Palmitamide
+  - Pantothenic acid
+  - Pentadecylic acid
+  - Perfluorooctanesulfonic acid
+  - Perfluorooctanoic acid
+  - Phe-Phe
+  - Phenylacetyl-L-glutamine
+  - Phenyllactate (PLA)
+  - Phenytoin
+  - Phosphorylcholine
+  - Phthalic acid
+  - Piperine
+  - THDOC
+  - Pregnenolone sulfate
+  - Progesterone
+  - Quinoline
+  - Reserpine
+  - Retinol (Vitamin A)
+  - SM(d32:1)
+  - Saccharin
+  - Salicylic acid
+  - Sebacic acid
+  - Sinapyl alcohol
+  - Sphinganine
+  - Sphinganine 1-phosphate
+  - Sphingosine
+  - Stearic acid
+  - Stearidonic Acid
+  - Taurochenodeoxycholate
+  - Tetracosahexaenoic acid
+  - Tetracosapentaenoic acid
+  - Tetracosatetraenoic acid
+  - Tetradecanedioic acid
+  - Theobromine
+  - Theophylline
+  - Thyroxine
+  - Tiapride
+  - Traumatic Acid
+  - Trazodone
+  - Tricosanoic acid
+  - Uric acid
+  - Valylhistidine
+  - Xanthine
+  - all cis-(6,9,12)-Linolenic acid
+  - all-trans-13,14-Dihydroretinol
+  - alpha-Linolenic acid
+  - beta-Glycyrrhetinic acid
+  - cis-4,10,13,16-Docosatetraenoic acid met...
+  - cis-5,8,11,14,17-Eicosapentaenoic acid
+  - cis-5-Dodecenoic acid
+  - cis-9-Palmitoleic acid
+  - d-LIMONENE
+  - gamma-CEHC
+  - gamma-Glutamylleucine
+  - ketoisocaproic acid
+  - p-Cresol
+  - phenylacetylglutamine
+  - trans-Vaccenic acid

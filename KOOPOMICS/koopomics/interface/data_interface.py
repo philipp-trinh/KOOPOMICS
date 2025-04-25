@@ -11,8 +11,9 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Import the DataRegistry class
+# Import the DataRegistry class and DataPreprocessor
 from ..data_prep.data_registry import DataRegistry
+from ..data_prep.data_prep import DataPreprocessor
 from ..training.data_loader import OmicsDataloader
 
 # ============= DATA MANAGEMENT MIXIN =============
@@ -29,6 +30,10 @@ class DataManagementMixin:
         # Ensure data registry exists
         self._ensure_data_registry()
         
+        # Initialize data preprocessor (will be properly set up when needed)
+        self.preprocessor = None
+        self.preprocessing_info = None
+        
         # Data loaders
         self.data_loader = None
         self.train_loader = None
@@ -41,6 +46,40 @@ class DataManagementMixin:
             self._data_registry = DataRegistry()
             logger.info("Data registry initialized")
     
+
+    def preprocess_data(self, data: pd.DataFrame, **kwargs) -> pd.DataFrame:
+        """
+        Preprocess data without loading it into dataloaders.
+        
+        Parameters:
+            data: DataFrame to preprocess
+            **kwargs: Preprocessing parameters (passed to DataPreprocessor.preprocess_data)
+            
+        Returns:
+            Preprocessed DataFrame
+        """
+        # Initialize preprocessor if needed
+        from ..data_prep.data_prep import DataPreprocessor
+        
+        # Use existing identifiers if available
+        time_id = kwargs.pop('time_id', getattr(self, 'time_id', None))
+        condition_id = kwargs.pop('condition_id', getattr(self, 'condition_id', None))
+        replicate_id = kwargs.pop('replicate_id', getattr(self, 'replicate_id', None))
+        
+        self.preprocessor = DataPreprocessor(
+            time_id=time_id,
+            condition_id=condition_id,
+            replicate_id=replicate_id
+        )
+        
+        # Apply preprocessing
+        processed_data, info = self.preprocessor.preprocess_data(data, **kwargs)
+        
+        # Store preprocessing info
+        self.preprocessing_info = info
+        
+        return processed_data
+
     def load_data(self,
                 data: Union[str, Path, pd.DataFrame, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]] = None,
                  yaml_path: Path = None,
@@ -111,11 +150,22 @@ class DataManagementMixin:
         logger.info("Data loading completed successfully.")
 
         
-        # Correct temporal parameters based on timepoints
+        # Correct config parameters based on timepoints
         num_timepoints = len(self.data[self.time_id].unique())
         max_Kstep = self.config.config['training'].get('max_Kstep', 0)
         delay_size = self.config.config['data'].get('delay_size', 0)
         current_dl_structure = self.config.config['data'].get('dl_structure', 'temporal')
+
+        num_features = len(self.feature_list)
+        E_layer_dim_str = self.config.config['model']['E_layer_dims']
+        e_dims_list = [int(x.strip()) for x in E_layer_dim_str.split(',')]
+        e_dims_list[0] = len(self.feature_list)
+        self.config.config['model']['E_layer_dims'] = ','.join(str(x) for x in e_dims_list)
+        logger.info(f"Input dimension {e_dims_list[0]} set to num_features {num_features}.")
+
+
+        self.config.save_config(self.config.file_path)
+        self.config.reload_config()
 
         # Calculate maximum possible Kstep (conservative estimate)
         max_possible_Kstep = num_timepoints - 2  

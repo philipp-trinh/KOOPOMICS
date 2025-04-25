@@ -102,6 +102,17 @@ class ModelManagementMixin:
         self.config.load_config(path)
         logger.info(f"Configuration loaded successfully from {path}.")
         print(self.config.config)
+    
+    def reload_config(self):
+        """
+        Reload configuration from file.
+        
+        Parameters:
+            path: Path to load the configuration from
+        """
+        logger.info(f"Reloading configuration.")
+        self.config.reload_config()
+
 
 
 # ============= TRAINING MIXIN =============
@@ -700,13 +711,13 @@ class InterpretationMixin:
         return self.model.eigen(plot=plot)
         
     def get_dynamics(self, dataset_df: Optional[pd.DataFrame] = None,
-                    test_set_df: Optional[pd.DataFrame] = None) -> KoopmanDynamics:
+                    test_df: Optional[pd.DataFrame] = None) -> KoopmanDynamics:
         """
         Create a KoopmanDynamics interpreter for analyzing and visualizing model dynamics.
         
         Parameters:
             dataset_df: Optional DataFrame for analysis (default: uses data from load_data())
-            test_set_df: Optional test set DataFrame for evaluation
+            test_df: Optional test set DataFrame for evaluation
             
         Returns:
             KoopmanDynamics: An interpreter object for analyzing Koopman dynamics
@@ -735,7 +746,7 @@ class InterpretationMixin:
             condition_id=self.condition_id,
             mask_value=self.mask_value,
             device=self.config.device,
-            test_set_df=test_set_df
+            test_df=test_df
         )
         
         logger.info("KoopmanDynamics interpreter created successfully")

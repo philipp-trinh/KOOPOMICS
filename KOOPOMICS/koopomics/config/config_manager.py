@@ -48,10 +48,13 @@ class ConfigManager:
             if isinstance(config_source, dict):
                 self._update_config(config_source)
             elif isinstance(config_source, str):
-                self._load_config_from_file(config_source)
+                self.file_path = config_source
+
+                self._load_config_from_file(self.file_path)
             else:
                 raise TypeError(f"Unsupported config_source type: {type(config_source)}")
         else:
+            self.file_path = 'KOOP.yaml'
             self.save_config(file_path='KOOP.yaml')
         
         # Parse and validate configuration
@@ -163,7 +166,7 @@ class ConfigManager:
             # Data parameters
             "data": {
                 "dl_structure": "temporal",  # Options: random, temporal, temp_delay, temp_segm
-                "train_ratio": 1,  # Ratio of training data
+                "train_ratio": 0.8,  # Ratio of training data
                 "delay_size": 5,  # Size of delay for temp_delay structure
                 "random_seed": 42,  # Random seed for reproducibility
                 "concat_delays": False,

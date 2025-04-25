@@ -18,7 +18,7 @@ KOOPOMICS requires Python 3.10. The installation process is automated using cond
 
 1. Clone the repository and navigate to the directory:
 ```bash
-git clone git@bitbucket.org:mosys-univie/philipp-trinh.git
+git clone git@bitbucket.org:mosys-univie/philipp-trinh/KOOPOMICS.git
 (Needs reading and writing rights of mosys-univie.)
 
 cd KOOPOMICS

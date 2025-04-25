@@ -9,30 +9,27 @@ import ipywidgets as widgets
 from IPython.display import display
 import plotly.graph_objects as go
 
-
-
 class Modes_Explorer():
     def __init__(self, model,
                  dataset_df, feature_list, mask_value=-1e-9, condition_id='', time_id='', replicate_id='',
                  device=None, **kwargs):
 
-        # Always default to CPU for consistency
-        self.device = torch.device('cpu')
-        if device is not None:
-            self.device = device
-            
-        # Ensure model is on CPU
-        self.model = model.to('cpu')
-        # Then move it to the specified device if needed
-        self.model = self.model.to(self.device)
+        self.model = model
+        self.device = next(model.parameters()).device if device is None else device
+        self.model.to(self.device)  # Ensure model is on correct device
+        
+        # Ensure embedding module is on correct device
+        if hasattr(self.model, 'embedding'):
+            self.model.embedding.to(self.device)
+        
         self.df = dataset_df
-
         self.feature_list = feature_list
         self.condition_id = condition_id
         self.time_id = time_id
         self.replicate_id = replicate_id
         self.mask_value = mask_value
 
+        # Get eigenvalues/eigenvectors 
         w_fwd, v_fwd, w_bwd, v_bwd = self.model.eigen(plot=False)
         
         self.fwd_eigvec = v_fwd if v_fwd is not None else None
@@ -43,77 +40,64 @@ class Modes_Explorer():
 
         self.test_set_df = kwargs.get("test_set_df", None)
 
-        dataloader_test = OmicsDataloader(self.df, self.feature_list, self.replicate_id,
-                                             batch_size=600, dl_structure='temporal',
-                                             max_Kstep = 1, mask_value=self.mask_value,
-                                              shuffle=False
-                                         )
-        self.test_loader = dataloader_test.get_dataloaders()
-
-
+        dataloader_test = OmicsDataloader(self.df, self.feature_list, self.replicate_id, 
+                                         time_id=self.time_id,
+                                         condition_id=self.condition_id,
+                                         batch_size=600, dl_structure='temporal',
+                                         max_Kstep=1, mask_value=self.mask_value,
+                                         shuffle=False)
+        self.test_loader, _ = dataloader_test.get_dataloaders()
 
     def calculate_latent_weights(self, encoded_test_data, eigenmodes, eigenvalues):
-        """
-        Calculate latent weights for the encoded test data by projecting onto DMD modes for each timepoint,
-        across all shifts and samples in the batch.
-        
-        Args:
-            encoded_test_data (torch.Tensor): Encoded test data of shape [num_shifts, num_samples, num_timepoints, num_features].
-            eigenmodes (torch.Tensor): DMD modes from training data of shape [num_features, n_modes].
-            
-        Returns:
-            latent_weights (torch.Tensor): Latent weights for each timepoint in the series, shape [num_shifts, num_samples, num_timepoints, n_modes].
-        """
-
+        """Calculate latent weights with device awareness"""
+        # Convert inputs to tensors if needed and move to correct device
         if not isinstance(encoded_test_data, torch.Tensor):
-            encoded_test_data = torch.tensor(encoded_test_data)
-        if not isinstance(eigenmodes, torch.Tensor):
-            eigenmodes = torch.tensor(eigenmodes)
-        if not isinstance(eigenvalues, torch.Tensor):
-            eigenvalues = torch.tensor(eigenvalues)
+            encoded_test_data = torch.tensor(encoded_test_data, device=self.device)
+        else:
+            encoded_test_data = encoded_test_data.to(self.device)
             
+        if not isinstance(eigenmodes, torch.Tensor):
+            eigenmodes = torch.tensor(eigenmodes, device=self.device)
+        else:
+            eigenmodes = eigenmodes.to(self.device)
+            
+        if not isinstance(eigenvalues, torch.Tensor):
+            eigenvalues = torch.tensor(eigenvalues, device=self.device)
+        else:
+            eigenvalues = eigenvalues.to(self.device)
+
         num_shifts, num_timepoints, num_features = encoded_test_data.shape
         n_modes = eigenmodes.shape[0]
         
-        # Ensure feature dimension compatibility
-        assert num_features == eigenmodes.shape[0], "Feature dimensions must match between encoded data and DMD modes."
+        assert num_features == eigenmodes.shape[0], "Feature dimensions must match"
         
-        # Initialize tensor to store weights, one weight per mode per timepoint for each shift and sample
-        self.latent_weights = torch.zeros(num_shifts, num_timepoints, n_modes,dtype=eigenmodes.dtype)
+        self.latent_weights = torch.zeros(num_shifts, num_timepoints, n_modes,
+                                        dtype=eigenmodes.dtype, device=self.device)
 
         with torch.no_grad():
-            # Loop over shifts and samples
             for shift in range(num_shifts):
                 for t in range(num_timepoints):
-    
-    
-                    exp_eigenvalue_matrix = torch.diag(np.exp(eigenvalues * shift))
-    
-                    # Current snapshot for each shift and sample at timepoint `t`
-                    snapshot = encoded_test_data[shift, t, :]
-                    snapshot = snapshot.to(eigenmodes.dtype)
-            
+                    exp_eigenvalue_matrix = torch.diag(torch.exp(eigenvalues * shift))
+                    snapshot = encoded_test_data[shift, t, :].to(eigenmodes.dtype)
                     scaled_eigenmodes = torch.matmul(eigenmodes, exp_eigenvalue_matrix)
-                    
-                    # Solve least-squares regression to get weights for this snapshot
                     result = torch.linalg.lstsq(scaled_eigenmodes, snapshot)
-                    weights = result.solution
-            
-                    self.latent_weights[shift, t, :] = weights.flatten()
+                    self.latent_weights[shift, t, :] = result.solution.flatten()
 
         return self.latent_weights
         
     def get_mode_time_evolution(self, eigenmodes, eigenvalues):
-        
-        if not isinstance(eigenmodes, torch.Tensor):
-            eigenmodes = torch.tensor(eigenmodes)
-        if not isinstance(eigenvalues, torch.Tensor):
-            eigenvalues = torch.tensor(eigenvalues)
+        """Main method with device awareness"""
+        # Ensure inputs are on correct device
+        eigenmodes = eigenmodes.to(self.device) if isinstance(eigenmodes, torch.Tensor) else torch.tensor(eigenmodes, device=self.device)
+        eigenvalues = eigenvalues.to(self.device) if isinstance(eigenvalues, torch.Tensor) else torch.tensor(eigenvalues, device=self.device)
 
         self.model.eval()
         with torch.no_grad():
-
             for data in self.test_loader:
+                # Move data to correct device
+                data = data.to(self.device)
+                # Ensure both model and data are on same device before encoding
+                self.model.embedding.to(self.device)
                 encoded_test_data = self.model.embedding.encode(data)
                 mask = data != self.mask_value
                 mask = mask.squeeze(0)
@@ -121,80 +105,74 @@ class Modes_Explorer():
                 valid_mask_int = valid_mask.to(torch.int64)
                 first_valid_timepoint = (valid_mask_int.argmax(dim=-1))
             
-                # Calculate Mean Points of all samples
+                # Calculate Mean Points
                 encoded_mask = data[..., :encoded_test_data.shape[-1]] != self.mask_value 
-                
-                masked_data = torch.where(encoded_mask, encoded_test_data, torch.tensor(float('nan'), device=encoded_test_data.device))
+                masked_data = torch.where(encoded_mask, encoded_test_data, torch.tensor(float('nan'), device=self.device))
                 sum_masked_data = torch.nansum(masked_data, dim=1)  
                 num_non_masked = torch.sum(~torch.isnan(masked_data), dim=1)
                 mean_encoded_data = sum_masked_data / num_non_masked.clamp(min=1)     
 
-            # Prepare References:
+            # Prepare References (ensure on CPU for pandas)
+            # Ensure operations happen on correct device
             mean_shift_data = self.model.operator.fwdkoopOperation(mean_encoded_data[0])
-            mean_decoded_shift_data = self.model.embedding.decode(mean_shift_data)
-            mean_target_decoded_data = self.model.embedding.decode(mean_encoded_data[1])
+            self.model.embedding.to(self.device)
+            mean_decoded_shift_data = self.model.embedding.decode(mean_shift_data).cpu()
+            mean_target_decoded_data = self.model.embedding.decode(mean_encoded_data[1]).cpu()
+            
             mean_target_encoded_data_df = pd.DataFrame(
-                mean_encoded_data[1].detach().numpy(),  
+                mean_encoded_data[1].cpu().numpy(),  
                 columns=[f'latent_feature {feature_idx}' for feature_idx in range(mean_encoded_data.shape[-1])]                
             )
             mean_target_encoded_data_df['timepoint'] = np.arange(len(mean_target_encoded_data_df))+1
+            
             mean_target_decoded_data_df = pd.DataFrame(
-                mean_target_decoded_data.detach().numpy(),  
+                mean_target_decoded_data.numpy(),  
                 columns=self.feature_list[:mean_target_decoded_data.shape[-1]]                
             )
             mean_target_decoded_data_df['timepoint'] = np.arange(len(mean_target_decoded_data_df))+1
 
-            
-            
             self.latent_weights = self.calculate_latent_weights(mean_encoded_data, eigenmodes, eigenvalues)
-
             
-            self.timesteps = np.arange(0, self.latent_weights.shape[1])  # Define the timesteps as a range from 1 to timespan
-            num_modes = eigenmodes.shape[0]  # Number of modes in latent space
-            num_features = mean_encoded_data.shape[-1]  # Number of features per timepoint
-            num_samples = mean_encoded_data.shape[1]
+            self.timesteps = np.arange(0, self.latent_weights.shape[1])
+            num_modes = eigenmodes.shape[0]
+            num_features = mean_encoded_data.shape[-1]
             
-            encoded_mode_time_evolution = np.zeros((2, num_modes,len(self.timesteps),  num_features), dtype=np.complex64)  # Prepare an array to store time evolution of modes
-            decoded_mode_time_evolution = np.zeros((2, num_modes,len(self.timesteps),  len(self.feature_list)), dtype=np.complex64)  # Prepare an array to store time evolution of modes
-            mode_amplitudes = np.zeros((num_modes,len(self.timesteps)), dtype=np.complex64)
-            temporal_amplitudes = np.zeros((2, num_modes,len(self.timesteps), num_features), dtype=np.complex64)
+            encoded_mode_time_evolution = np.zeros((2, num_modes, len(self.timesteps), num_features), dtype=np.complex64)
+            decoded_mode_time_evolution = np.zeros((2, num_modes, len(self.timesteps), len(self.feature_list)), dtype=np.complex64)
+            mode_amplitudes = np.zeros((num_modes, len(self.timesteps)), dtype=np.complex64)
+            temporal_amplitudes = np.zeros((2, num_modes, len(self.timesteps), num_features), dtype=np.complex64)
             
             for t in self.timesteps:
-            
                 for idx in range(num_modes):
-                    weight = self.latent_weights[0, t, idx]
-            
-                    eigenmode = eigenmodes[:,idx]
+                    weight = self.latent_weights[0, t, idx].cpu()
+                    eigenmode = eigenmodes[:,idx].cpu()
                     spatial_eigenmode = eigenmode * weight
                     real_spatial_eigenmode = spatial_eigenmode.real
                     
-                    eigenvalue = eigenvalues[idx]
+                    eigenvalue = eigenvalues[idx].cpu()
                     exp_shift = torch.exp(eigenvalue*1)
                     
                     temp_eigenmode = spatial_eigenmode * exp_shift
                     real_temp_eigenmode = temp_eigenmode.real
             
                     mode_amplitudes[idx, t] = weight * exp_shift
-
                     exp_temp = torch.exp(eigenvalue*1)
                     temporal_amplitudes[1, idx, t, :] = eigenmode * exp_temp
                     
-                    encoded_mode_time_evolution[0, idx, t, :] = spatial_eigenmode.detach().numpy()
-                    encoded_mode_time_evolution[1, idx, t, :] = temp_eigenmode.detach().numpy()
+                    encoded_mode_time_evolution[0, idx, t, :] = spatial_eigenmode.numpy()
+                    encoded_mode_time_evolution[1, idx, t, :] = temp_eigenmode.numpy()
 
-                    decoded_spatial_eigenmode = self.model.embedding.decode(real_spatial_eigenmode)
-                    decoded_temp_eigenmode = self.model.embedding.decode(real_temp_eigenmode)
+                    # Move to device for decoding - ensure embedding is on right device
+                    self.model.embedding.to(self.device)
+                    decoded_spatial_eigenmode = self.model.embedding.decode(real_spatial_eigenmode.to(self.device)).cpu()
+                    decoded_temp_eigenmode = self.model.embedding.decode(real_temp_eigenmode.to(self.device)).cpu()
             
-                    decoded_mode_time_evolution[0, idx, t, :] = decoded_spatial_eigenmode.detach().numpy()
-                    decoded_mode_time_evolution[1, idx, t, :] = decoded_temp_eigenmode.detach().numpy()
+                    decoded_mode_time_evolution[0, idx, t, :] = decoded_spatial_eigenmode.numpy()
+                    decoded_mode_time_evolution[1, idx, t, :] = decoded_temp_eigenmode.numpy()
                     
-        #decoded_spatial_eigenmode = self.model.embedding.decode(torch.tensor(np.sum(encoded_mode_time_evolution[0], axis=0, dtype=np.float32)))
-        #decoded_temp_eigenmode = self.model.embedding.decode(torch.tensor(np.sum(encoded_mode_time_evolution[1], axis=0, dtype=np.float32)))
-        
-        #decoded_mode_time_evolution[0, :, :, :] = decoded_spatial_eigenmode.detach().numpy()
-        #decoded_mode_time_evolution[1, :, :, :] = decoded_temp_eigenmode.detach().numpy()
-        return encoded_mode_time_evolution, mode_amplitudes, decoded_mode_time_evolution, mean_target_encoded_data_df, mean_target_decoded_data_df, temporal_amplitudes
-        
+        return (encoded_mode_time_evolution, mode_amplitudes, 
+                decoded_mode_time_evolution, mean_target_encoded_data_df, 
+                mean_target_decoded_data_df, temporal_amplitudes)
 
     def get_dynamic_info(self, mode_time_evolution, eigenvalues, encoded=False):
 
@@ -456,7 +434,9 @@ class Modes_Explorer():
         
         fig = go.Figure()
 
-        sum_encoded = torch.tensor(data_to_plot_summed.iloc[:,5:].values)
+        # Create tensor on correct device
+        sum_encoded = torch.tensor(data_to_plot_summed.iloc[:,5:].values, device=self.device)
+        self.model.embedding.to(self.device)
         sum_decoded = self.model.embedding.decode(sum_encoded)
         plot_df_decoded = pd.DataFrame(sum_decoded.detach().cpu().numpy(), columns=self.feature_list)
         plot_df_decoded['timepoint'] = np.arange(len(plot_df_decoded))

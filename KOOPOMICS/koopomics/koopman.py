@@ -18,7 +18,6 @@ from .interface import (DataManagementMixin,
                     InterpretationMixin,
                     InitializationMixin)
 
-
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -71,6 +70,9 @@ class KoopmanEngine(DataManagementMixin,
         """
         # Common initialization
         self._init_components()
+
+        # Initialize data preprocessor
+        self.preprocessor = None
         
         # Handle saved model loading
         if run_id is not None:

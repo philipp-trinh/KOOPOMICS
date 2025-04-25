@@ -14,8 +14,8 @@ class Timeseries_Explorer():
     
         # Determine device from model if not provided
         if device is None:
-            # Default to CPU instead of using model's device
-            self.device = torch.device('cpu')
+            # Use model's device instead of defaulting to CPU
+            self.device = next(model.parameters()).device
         else:
             self.device = device
             
@@ -57,7 +57,11 @@ class Timeseries_Explorer():
         self.df_gaps = self.df[self.df['gap'] == True].reset_index(drop=True)
 
         
+        # Get tensor data
         self.input_tensor = torch.tensor(self.df[self.df['gap']== False][self.feature_list].values, dtype=torch.float32).to(self.device)
+        
+        # Ensure the model is on the same device as the input tensor
+        self.model = self.model.to(self.device)
 
     def plot_1d_timeseries(self, feature=None):
 
@@ -151,15 +155,67 @@ class Timeseries_Explorer():
             if fwd:
                 for shift in range(1, max_Kstep + 1):
                     if shift not in self.shift_dict:
-                        _, fwd_output = self.model.predict(self.shift_dict[0], fwd=shift)
-                        self.shift_dict[shift] = fwd_output[-1].to(self.device)
+                        try:
+                            # Ensure input is on the same device as the model
+                            input_tensor = self.shift_dict[0].to(self.device)
+                            
+                            # Make sure model is on the right device
+                            self.model = self.model.to(self.device)
+                            
+                            # Make prediction ensuring device consistency
+                            _, fwd_output = self.model.predict(input_tensor, fwd=shift)
+                            
+                            # Handle case where output is a list
+                            if isinstance(fwd_output, list):
+                                self.shift_dict[shift] = fwd_output[-1].to(self.device)
+                            else:
+                                self.shift_dict[shift] = fwd_output.to(self.device)
+                        except RuntimeError as e:
+                            if "Expected all tensors to be on the same device" in str(e):
+                                print(f"Device mismatch detected. Moving all operations to {self.device}")
+                                # Force model and all tensors to device
+                                self.model = self.model.to(self.device)
+                                input_tensor = self.shift_dict[0].to(self.device)
+                                _, fwd_output = self.model.predict(input_tensor, fwd=shift)
+                                if isinstance(fwd_output, list):
+                                    self.shift_dict[shift] = fwd_output[-1].to(self.device)
+                                else:
+                                    self.shift_dict[shift] = fwd_output.to(self.device)
+                            else:
+                                raise e
         
             # Generate backward shifts
             elif bwd:
                 for shift in range(1, max_Kstep + 1):
                     if -shift not in self.shift_dict:
-                        bwd_output, _ = self.model.predict(self.shift_dict[0], bwd=shift)
-                        self.shift_dict[-shift] = bwd_output[-1].to(self.device)
+                        try:
+                            # Ensure input is on the same device as the model
+                            input_tensor = self.shift_dict[0].to(self.device)
+                            
+                            # Make sure model is on the right device
+                            self.model = self.model.to(self.device)
+                            
+                            # Make prediction ensuring device consistency
+                            bwd_output, _ = self.model.predict(input_tensor, bwd=shift)
+                            
+                            # Handle case where output is a list
+                            if isinstance(bwd_output, list):
+                                self.shift_dict[-shift] = bwd_output[-1].to(self.device)
+                            else:
+                                self.shift_dict[-shift] = bwd_output.to(self.device)
+                        except RuntimeError as e:
+                            if "Expected all tensors to be on the same device" in str(e):
+                                print(f"Device mismatch detected. Moving all operations to {self.device}")
+                                # Force model and all tensors to device
+                                self.model = self.model.to(self.device)
+                                input_tensor = self.shift_dict[0].to(self.device)
+                                bwd_output, _ = self.model.predict(input_tensor, bwd=shift)
+                                if isinstance(bwd_output, list):
+                                    self.shift_dict[-shift] = bwd_output[-1].to(self.device)
+                                else:
+                                    self.shift_dict[-shift] = bwd_output.to(self.device)
+                            else:
+                                raise e
 
         return self.shift_dict
 
@@ -179,7 +235,7 @@ class Timeseries_Explorer():
         input_time = pd.Series(filtered_shift_data[self.time_id])
         input_feature = pd.Series(filtered_shift_data[feature])
 
-        feature_index = self.feature_list.to_list().index(feature)
+        feature_index = self.feature_list.index(feature)
 
         temp_time = input_time
         temp_feature = input_feature
@@ -201,7 +257,8 @@ class Timeseries_Explorer():
             combined_shift_mask =  valid_shift_time_mask & combined_mask         
 
 
-            feature_values = pd.Series(shift_data[:, feature_index].numpy())
+            # Ensure tensor is on CPU before converting to numpy
+            feature_values = pd.Series(shift_data[:, feature_index].cpu().numpy())
 
             feature_values.index = shift_time_id.index
 
@@ -316,38 +373,11 @@ class Timeseries_Explorer():
         # Plotting----------------------------------------------------------
     
     
-        # Save the interactive visualization
-        self.plot_interactive_timeseries_plot(replicate_id_dropdown.value,
-                             feature_dropdown.value,
-                             shift_dropdown.value)
+        # Skip trying to run the visualization again
         
-    def shift_data(self, max_Kstep, fwd=False, bwd=False):
-        """Generates forward and/or backward predictions up to max_Kstep and stores in shift_dict."""
-    
-        # Initialize the shift dictionary to store shifts for both directions
-        self.shift_dict = {}
-        self.shift_dict[0] = self.input_tensor.to(self.device)  # Store the initial data
-        
-        with torch.no_grad():
-
-            # Generate forward shifts
-            if fwd:
-                for shift in range(1, max_Kstep + 1):
-                    if shift not in self.shift_dict:
-                        _, fwd_output = self.model.predict(self.shift_dict[0], fwd=shift)
-                        self.shift_dict[shift] = fwd_output[-1].to(self.device)
-        
-            # Generate backward shifts
-            elif bwd:
-                for shift in range(1, max_Kstep + 1):
-                    if -shift not in self.shift_dict:
-                        bwd_output, _ = self.model.predict(self.shift_dict[0], bwd=shift)
-                        self.shift_dict[-shift] = bwd_output[-1].to(self.device)
-
-        return self.shift_dict
-
     def shift_and_plot(self, ax, max_Kstep, feature, replicate_idx, original_point_range, fwd=False, bwd=False):
-
+        """Plot shifted data predictions based on the Koopman model."""
+        
         time_mask = (self.df_gapfree[self.time_id] >= original_point_range[0]) & (self.df_gapfree[self.time_id] <= original_point_range[1])
 
         if 'all' in replicate_idx:
@@ -362,7 +392,7 @@ class Timeseries_Explorer():
         input_time = pd.Series(filtered_shift_data[self.time_id])
         input_feature = pd.Series(filtered_shift_data[feature])
 
-        feature_index = self.feature_list.to_list().index(feature)
+        feature_index = self.feature_list.index(feature)
 
         temp_time = input_time
         temp_feature = input_feature
@@ -384,7 +414,8 @@ class Timeseries_Explorer():
             combined_shift_mask =  valid_shift_time_mask & combined_mask         
 
 
-            feature_values = pd.Series(shift_data[:, feature_index].numpy())
+            # Ensure tensor is on CPU before converting to numpy
+            feature_values = pd.Series(shift_data[:, feature_index].cpu().numpy())
 
             feature_values.index = shift_time_id.index
 
@@ -423,7 +454,7 @@ class Timeseries_Explorer():
         return sc
     
 
-    def plot_feature_timeseries(self, replicate_idx, feature, num_shift, original_point_range, pregnancy=False):
+    # Duplicate method removed - there was a duplicate plot_feature_timeseries method
     
         
         # Get Metadatas-------------------------------------------------------

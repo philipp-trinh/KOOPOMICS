@@ -47,7 +47,7 @@ class KoopmanDynamics:
         time_values: Sorted unique time values from the dataset.
         replicate_id: Column name for replicate identifiers.
         device: Torch device for computation (CPU/GPU).
-        test_set_df: Optional DataFrame for testing/validation.
+        test_df: Optional DataFrame for testing/validation.
         latent_explorer: Explorer for latent space analysis.
         importance_explorer: Explorer for feature importance analysis.
         mode_explorer: Explorer for Koopman modes analysis.
@@ -68,7 +68,7 @@ class KoopmanDynamics:
                           a suitable column automatically.
             replicate_id (str): Column name for replicate identifiers.
             device (torch.device): Device for computation. Defaults to CPU if None.
-            **kwargs: Additional arguments, including test_set_df for a separate test dataset.
+            **kwargs: Additional arguments, including test_df for a separate test dataset.
         """
         # Set device for computation
         self.device = torch.device('cpu')
@@ -83,7 +83,7 @@ class KoopmanDynamics:
         self.df = dataset_df
         self.features = feature_list
         self.condition_id = condition_id
-        self.test_set_df = kwargs.get("test_set_df", None)
+        self.test_df = kwargs.get("test_df", None)
         
         # If time_id is not specified but dataset has a numeric column, use the first one
         if time_id == '' and not self.df.select_dtypes(include=['number']).empty:
@@ -98,9 +98,7 @@ class KoopmanDynamics:
         else:
             self.time_id = time_id
             
-        # Extract sorted unique time values
-        print(self.time_id)
-        print(self.df.columns.tolist())
+        # Extract sorted unique time values 
         self.time_values = sorted(self.df[self.time_id].unique(), reverse=False)
         self.replicate_id = replicate_id
 
@@ -116,9 +114,9 @@ class KoopmanDynamics:
         )
 
         # Initialize mode and importance explorers based on test set availability
-        if self.test_set_df is not None:
+        if self.test_df is not None:
             self.mode_explorer = Modes_Explorer(
-                self.model, self.test_set_df,
+                self.model, self.test_df,
                 feature_list=feature_list,
                 mask_value=mask_value,
                 condition_id=condition_id,
@@ -127,7 +125,7 @@ class KoopmanDynamics:
             )
 
             self.importance_explorer = Importance_Explorer(
-                self.model, self.test_set_df,
+                self.model, self.test_df,
                 feature_list=feature_list,
                 mask_value=mask_value,
                 condition_id=condition_id,
@@ -135,7 +133,7 @@ class KoopmanDynamics:
                 replicate_id=replicate_id
             )
         else:
-            print('Feature Importance and Modes will be calculated on the complete dataset. Use the test_set_df instead!')
+            print('Feature Importance and Modes will be calculated on the complete dataset. Use the test_df instead!')
             
             self.importance_explorer = Importance_Explorer(
                 self.model, self.df,

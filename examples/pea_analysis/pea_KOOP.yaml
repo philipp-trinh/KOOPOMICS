@@ -1,7 +1,7 @@
 data:
   augment_by: null
   concat_delays: false
-  delay_size: 5
+  delay_size: 0
   dl_structure: temporal
   num_augmentations: null
   random_seed: 42
@@ -9,12 +9,12 @@ data:
 model:
   E_dropout_rate_1: 0.0
   E_dropout_rate_2: 0.0
-  E_layer_dims: 264,2000,2000,100
+  E_layer_dims: 247,2000,2000,1000
   activation_fn: leaky_relu
   embedding_type: ff_ae
-  linE_layer_dims: 100,2000,2000,100
-  lin_act_fn: leaky_relu
-  op_bandwidth: 2
+  linE_layer_dims: null
+  lin_act_fn: null
+  op_bandwidth: 0
   op_reg: skewsym
   operator: invkoop
 training:

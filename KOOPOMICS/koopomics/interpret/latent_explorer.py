@@ -11,6 +11,8 @@ import numpy as np
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import logging
 
 # Configure logging
@@ -82,14 +84,33 @@ class Latent_Explorer:
         with torch.no_grad():
             # Get standard latent representations
             latent_representations, _ = self.model.embed(self.input_tensor)
-            
+
+            # Resize the mask to match the latent representation dimensions
+            if self.mask.shape[1] != latent_representations.shape[1]:
+                # Use interpolation or projection logic if needed, but usually this is just about expansion or reduction
+                if self.mask.shape[1] > latent_representations.shape[1]:
+                    # Truncate the mask
+                    adjusted_mask = self.mask[:, :latent_representations.shape[1]]
+                else:
+                    # Expand the mask (repeat or pad with True or False as required)
+                    repeat_factor = latent_representations.shape[1] // self.mask.shape[1]
+                    adjusted_mask = self.mask.repeat(1, repeat_factor)
+
+                    # If still not matching (not divisible), pad the remaining
+                    if adjusted_mask.shape[1] < latent_representations.shape[1]:
+                        pad_size = latent_representations.shape[1] - adjusted_mask.shape[1]
+                        pad_tensor = torch.ones((self.mask.shape[0], pad_size), dtype=torch.bool, device=self.device)
+                        adjusted_mask = torch.cat([adjusted_mask, pad_tensor], dim=1)
+            else:
+                adjusted_mask = self.mask
+
             # Apply mask to handle missing values
             self.latent_representations = torch.where(
-                self.mask[:, :latent_representations.shape[-1]],
+                adjusted_mask,
                 latent_representations,
                 torch.tensor(0.0, device=self.device)
             )
-            
+                    
             # Get linearized representations if using linkoop
             try:
                 if hasattr(self.model, 'operator_info') and self.model.operator_info.get('linkoop', False):
@@ -152,6 +173,7 @@ class Latent_Explorer:
         # Prepare tensors on CPU for consistent processing
         true_input_tensor = torch.tensor(true_plot_df[self.features].values, dtype=torch.float32).to('cpu')
         self.model = self.model.to('cpu')
+        self.kstep = kstep
         
         # Get latent representations of the true data
         with torch.no_grad():
@@ -315,116 +337,6 @@ class Latent_Explorer:
         })
         
         return plot_df_pca, plot_df_loadings
-
-    def pca_latent_space_3d(self, fwd=False, bwd=False, start_time=None, end_time=None, source=None,
-                           subject_idx=None, color_by=None, linearize=False, hide_lines=None,
-                           show_midline=True):
-        """
-        Generate an interactive 3D PCA visualization of the latent space.
-        
-        Parameters:
-            fwd (bool): Whether to include forward predictions.
-            bwd (bool): Whether to include backward predictions.
-            start_time: Starting time point for filtering data.
-            end_time: Ending time point for filtering data.
-            source (str): Filter by data source ('true' or 'predicted').
-            subject_idx: Filter by specific subject indices.
-            color_by (str): Column name to use for coloring points.
-            linearize (bool): Whether to use linearized latent space (if linkoop).
-            hide_lines (list): List of replicate IDs for which to hide trajectory lines.
-            show_midline (bool): Whether to show the midline trajectory and midpoint.
-        """
-        # Initialize tracking for linearize option
-        if not hasattr(self, '_last_linearize'):
-            self._last_linearize = False
-            
-        # Get data for plotting if not already available or if linearization option changed
-        if self.plot_df_pca is None or linearize != self._last_linearize:
-            self.plot_df_pca, self.plot_df_latent = self.get_latent_plot_df(fwd, bwd, linearize)
-            self._last_linearize = linearize
-        
-        # Create a working copy of the data
-        temp_plot_df_pca = self.plot_df_pca.copy()
-        
-        # Set the title based on parameters
-        if linearize and self.linear_latent_representations is not None:
-            title_prefix = 'Linearized'
-        else:
-            title_prefix = ''
-            
-        if fwd:
-            title = f'{title_prefix} 3D PCA of Latent Representations Over Forward Steps'
-        elif bwd:
-            title = f'{title_prefix} 3D PCA of Latent Representations Over Backward Steps'
-        else:
-            title = f'{title_prefix} 3D PCA of Latent Representations'
-            
-        # Apply filters
-        if start_time is not None:
-            temp_plot_df_pca = temp_plot_df_pca[temp_plot_df_pca[self.time_id] > start_time]
-        if end_time is not None:
-            temp_plot_df_pca = temp_plot_df_pca[temp_plot_df_pca[self.time_id] < end_time]
-        if source is not None:
-            temp_plot_df_pca = temp_plot_df_pca[temp_plot_df_pca['Source'] == source]
-        if subject_idx is not None:
-            subject_list = temp_plot_df_pca[self.replicate_id].unique()
-            if isinstance(subject_idx, (list, tuple, np.ndarray)):
-                filtered_subjects = [subject_list[i] for i in subject_idx if i < len(subject_list)]
-            else:
-                filtered_subjects = [subject_list[subject_idx]] if subject_idx < len(subject_list) else []
-            temp_plot_df_pca = temp_plot_df_pca[temp_plot_df_pca[self.replicate_id].isin(filtered_subjects)]
-
-        # Default color by time if not specified
-        if color_by is None:
-            color_by = self.time_id
-            
-        # Split data by source for separate styling
-        true_data = temp_plot_df_pca[temp_plot_df_pca['Source'] == 'true']
-        predicted_data = temp_plot_df_pca[temp_plot_df_pca['Source'] == 'predicted']
-        
-        # Create figure
-        import plotly.graph_objects as go
-        fig = go.Figure()
-        
-        # Add traces for true data
-        unique_replicates = temp_plot_df_pca[self.replicate_id].unique()
-        
-        # Create color scale for time values
-        from plotly.colors import sequential
-        import matplotlib.cm as cm
-        
-        colormap = cm.get_cmap('viridis')
-        time_min = temp_plot_df_pca[self.time_id].min()
-        time_max = temp_plot_df_pca[self.time_id].max()
-        time_range = time_max - time_min if time_max > time_min else 1
-        
-        # Function to get color from time value
-        def get_time_color(time_value, opacity=1.0):
-            norm_time = (time_value - time_min) / time_range
-            rgba = colormap(norm_time)
-            return f'rgba({int(rgba[0]*255)},{int(rgba[1]*255)},{int(rgba[2]*255)},{opacity})'
-        
-        # Set up default hide_lines if None
-        if hide_lines is None:
-            hide_lines = []
-        elif not isinstance(hide_lines, (list, tuple)):
-            hide_lines = [hide_lines]
-        
-        # Track unique combinations for legend
-        legend_entries = set()
-        
-        # Align initial timepoints by finding the earliest timepoint for each replicate
-        # and storing its index to ensure we're always starting from the same point
-        initial_timepoints = {}
-        for replicate in unique_replicates:
-            true_rep_data = true_data[true_data[self.replicate_id] == replicate]
-            if not true_rep_data.empty:
-                min_time_idx = true_rep_data[self.time_id].idxmin()
-                initial_timepoints[replicate] = min_time_idx
-        
-        # Collect all data points to calculate midlines
-        all_true_data = []
-        all_pred_data = []
         
         # Add traces for each replicate
         for replicate in unique_replicates:
@@ -703,13 +615,13 @@ class Latent_Explorer:
         fig.show()
 
     def pca_latent_space_2d(self, fwd=False, bwd=False, linearize=False, start_time=None, end_time=None,
-                           filter_by_replicate=None):
+                           filter_by_replicate=None, initial_timepoints=None):
         """
-        Generate a 2D PCA visualization of the latent space.
+        Generate an interactive 2D PCA visualization of the latent space using Plotly.
         
         This method performs PCA dimensionality reduction on latent representations and
-        creates a 2D scatter plot with trajectories for each replicate over time, clearly
-        distinguishing between true data points and predictions.
+        creates an interactive 2D scatter plot with trajectories for each replicate over time,
+        clearly distinguishing between true data points and predictions.
         
         Parameters:
             fwd (bool): Whether to include forward predictions.
@@ -718,6 +630,9 @@ class Latent_Explorer:
             start_time: Filter points to those after this time value.
             end_time: Filter points to those before this time value.
             filter_by_replicate: List of replicate IDs to include.
+            initial_timepoints (dict): Dictionary mapping from replicate IDs to initial timepoints
+                                       to make predicted and true lines start from the same point.
+                                       Default is to use time 0 for all replicates.
         """
         # Initialize tracking for linearize option
         if not hasattr(self, '_last_pca2d_linearize'):
@@ -762,49 +677,55 @@ class Latent_Explorer:
         # Get unique replicates
         unique_replicates = temp_plot_df[self.replicate_id].unique()
         
-        # Create a figure
-        plt.figure(figsize=(14, 10))
+        # Create a Plotly figure
+        fig = go.Figure()
         
         # Set up color mapping for trajectories (different color per replicate)
         n_replicates = len(unique_replicates)
-        cmap = plt.get_cmap('tab10', n_replicates)
-        replicate_colors = {rep: cmap(i) for i, rep in enumerate(unique_replicates)}
+        replicate_colors = px.colors.qualitative.D3[:n_replicates] if n_replicates <= 10 else px.colors.qualitative.Alphabet
+        replicate_color_map = {rep: replicate_colors[i % len(replicate_colors)] for i, rep in enumerate(unique_replicates)}
         
-        # Create colormap for time points
-        from matplotlib.colors import Normalize
-        from matplotlib.cm import ScalarMappable
+        # Filter data to make sure we start at initial timepoint (default is time 0)
+        if initial_timepoints is None:
+            # Default to time 0 for all replicates
+            initial_time = 0
+            # Filter data to only include times >= initial_time
+            temp_plot_df = temp_plot_df[temp_plot_df[self.time_id] >= initial_time]
+        else:
+            # For custom initial timepoints, filter each replicate separately
+            filtered_dfs = []
+            for rep in unique_replicates:
+                initial_time = initial_timepoints.get(rep, 0)
+                rep_data = temp_plot_df[temp_plot_df[self.replicate_id] == rep]
+                rep_data = rep_data[rep_data[self.time_id] >= initial_time]
+                filtered_dfs.append(rep_data)
+            
+            # Combine all filtered data
+            if filtered_dfs:
+                temp_plot_df = pd.concat(filtered_dfs)
+                # Update unique replicates after filtering
+                unique_replicates = temp_plot_df[self.replicate_id].unique()
+            else:
+                # If all data was filtered out, reset to empty DataFrame with same columns
+                temp_plot_df = pd.DataFrame(columns=temp_plot_df.columns)
         
-        time_min = temp_plot_df[self.time_id].min()
-        time_max = temp_plot_df[self.time_id].max()
-        time_norm = Normalize(vmin=time_min, vmax=time_max)
-        time_cmap = ScalarMappable(norm=time_norm, cmap='viridis')
+        # Update true_data and pred_data after filtering
+        true_data = temp_plot_df[temp_plot_df['Source'] == 'true']
+        pred_data = temp_plot_df[temp_plot_df['Source'] == 'predicted']
         
-        # Track legend items
-        legend_elements = []
-        from matplotlib.lines import Line2D
+        # Calculate global min and max time for consistent color mapping
+        time_min = temp_plot_df[self.time_id].min() if not temp_plot_df.empty else 0
+        time_max = temp_plot_df[self.time_id].max() if not temp_plot_df.empty else 1
         
-        # Add true data point and line style to legend
-        legend_elements.append(
-            Line2D([0], [0], marker='o', color='gray', markerfacecolor='gray',
-                   markersize=10, label='True data', linestyle='-', linewidth=2)
-        )
+        # We'll only show a single colorbar for the first trace
+        show_colorbar = True
         
-        # Add predicted data point and line style to legend
-        legend_elements.append(
-            Line2D([0], [0], marker='D', color='gray', markerfacecolor='gray',
-                   markersize=10, label='Predicted data', linestyle='--', linewidth=2)
-        )
+        # We'll use arrows to indicate connections between true and predicted points
         
         # Plot trajectories for each replicate
         for replicate in unique_replicates:
             # Get color for this replicate
-            rep_color = replicate_colors[replicate]
-            
-            # Add this replicate to legend
-            legend_elements.append(
-                Line2D([0], [0], marker='', color=rep_color, label=f"{self.replicate_id}={replicate}",
-                       linestyle='-', linewidth=2)
-            )
+            rep_color = replicate_color_map[replicate]
             
             # Plot true data for this replicate
             rep_true = true_data[true_data[self.replicate_id] == replicate]
@@ -812,16 +733,40 @@ class Latent_Explorer:
                 # Sort by time
                 rep_true = rep_true.sort_values(by=self.time_id)
                 
-                # Plot scatter points
-                for _, row in rep_true.iterrows():
-                    time_color = time_cmap.to_rgba(row[self.time_id])
-                    plt.scatter(row['PCA Component 1'], row['PCA Component 2'],
-                              s=100, color=time_color, marker='o', edgecolor='black',
-                              alpha=0.8, zorder=3)
+                # Plot scatter points for true data
+                fig.add_trace(go.Scatter(
+                    x=rep_true['PCA Component 1'],
+                    y=rep_true['PCA Component 2'],
+                    mode='markers+lines',
+                    marker=dict(
+                        size=12,
+                        color=rep_true[self.time_id],
+                        colorscale='Viridis',
+                        cmin=time_min,
+                        cmax=time_max,
+                        line=dict(width=2, color='black'),
+                        opacity=0.8,
+                        showscale=show_colorbar,
+                        colorbar=dict(
+                            title=self.time_id,
+                            outlinewidth=1,
+                            outlinecolor='rgba(0,0,0,0.3)'
+                        )
+                    ),
+                    line=dict(
+                        color=rep_color,
+                        width=2
+                    ),
+                    name=f"True {self.replicate_id}={replicate}",
+                    legendgroup=f"group_{replicate}",
+                    hovertemplate=(
+                        f'True data<br>{self.replicate_id}={replicate}<br>{self.time_id}=%{{marker.color:.2f}}<br>'
+                        'PC1=%{x:.2f}<br>PC2=%{y:.2f}<extra></extra>'
+                    )
+                ))
                 
-                # Plot connecting line
-                plt.plot(rep_true['PCA Component 1'], rep_true['PCA Component 2'],
-                       color=rep_color, linestyle='-', linewidth=2, alpha=0.7, zorder=2)
+                # Only show colorbar for the first trace
+                show_colorbar = False
             
             # Plot predicted data for this replicate
             rep_pred = pred_data[pred_data[self.replicate_id] == replicate]
@@ -829,70 +774,231 @@ class Latent_Explorer:
                 # Sort by time
                 rep_pred = rep_pred.sort_values(by=self.time_id)
                 
-                # Plot scatter points
-                for _, row in rep_pred.iterrows():
-                    time_color = time_cmap.to_rgba(row[self.time_id])
-                    plt.scatter(row['PCA Component 1'], row['PCA Component 2'],
-                              s=130, color=time_color, marker='D', edgecolor='red',
-                              alpha=0.8, zorder=3)
+                # Make initial timepoints (time_id=0) identical in both datasets
+                time_zero_true = rep_true[rep_true[self.time_id] == 0]
+                time_zero_pred = rep_pred[rep_pred[self.time_id] == 0]
                 
-                # Plot connecting line
-                plt.plot(rep_pred['PCA Component 1'], rep_pred['PCA Component 2'],
-                       color=rep_color, linestyle='--', linewidth=2, alpha=0.7, zorder=2)
+                # If we have both true and predicted for time=0, make sure they're identical
+                if not time_zero_true.empty and not time_zero_pred.empty:
+                    # Replace the predicted point coordinates with the true point to ensure exact match
+                    for _, t_row in time_zero_true.iterrows():
+                        for p_idx in time_zero_pred.index:
+                            # Copy all component columns (works for both PCA and latent space)
+                            component_cols = [col for col in rep_pred.columns if 'Component' in col or 'Dim' in col]
+                            if component_cols:
+                                rep_pred.loc[p_idx, component_cols] = t_row[component_cols].values
                 
-            # Add arrows to show direction if we have both true and predicted points
-            if not rep_true.empty and not rep_pred.empty:
-                # Add arrow representation to legend if not already added
-                if len(legend_elements) >= 2 and not any("True→Predicted" in str(le._label) for le in legend_elements):
-                    legend_elements.append(
-                        Line2D([0], [0], marker='', color='gray', label=f"Arrow: True→Predicted",
-                             linestyle='-', linewidth=2, alpha=0.7)
+                # Plot scatter points for predicted data
+                fig.add_trace(go.Scatter(
+                    x=rep_pred['PCA Component 1'],
+                    y=rep_pred['PCA Component 2'],
+                    mode='markers+lines',
+                    marker=dict(
+                        size=12,
+                        color=rep_pred[self.time_id],
+                        colorscale='Viridis',
+                        cmin=time_min,
+                        cmax=time_max,
+                        symbol='diamond',
+                        line=dict(width=2, color='red'),
+                        opacity=0.8,
+                        showscale=False
+                    ),
+                    line=dict(
+                        color=rep_color,
+                        width=2,
+                        dash='dash'
+                    ),
+                    name=f"Predicted {self.replicate_id}={replicate}",
+                    legendgroup=f"group_{replicate}",
+                    hovertemplate=(
+                        f'Predicted data<br>{self.replicate_id}={replicate}<br>{self.time_id}=%{{marker.color:.2f}}<br>'
+                        'PC1=%{x:.2f}<br>PC2=%{y:.2f}<extra></extra>'
                     )
+                ))
+            
+            # Collect arrow data if we have both true and predicted points
+            if not rep_true.empty and not rep_pred.empty:
+                # For arrows, create lists to store the x, y coordinates
+                arrow_x = []
+                arrow_y = []
+                arrow_times = []
                 
-                # Add colored arrows between true points and their predictions
-                for t_idx, t_row in rep_true.iterrows():
-                    true_time = t_row[self.time_id]
-                    target_time = true_time
+                # Sort true and predicted data points by time
+                sorted_true = rep_true.sort_values(by=self.time_id).reset_index()
+                sorted_pred = rep_pred.sort_values(by=self.time_id).reset_index()
+                
+                # Get the k-step from the model (used in get_latent_plot_df)
+                k_step = getattr(self, 'kstep', 1)  # Default to 1 if not found
+                
+                # Create a list to store arrow annotations for this replicate
+                replicate_arrows = []
+                
+                # For each true data point, find corresponding predicted point k_step ahead in time sequence
+                for i, true_row in sorted_true.iterrows():
+                    # Only process if we have enough steps ahead in our sequence
+                    if i < len(sorted_true) - k_step:
+                        # Current true point
+                        true_point = (true_row['PCA Component 1'], true_row['PCA Component 2'])
+                        true_time = true_row[self.time_id]
+                        
+                        # Get the index k_step ahead in the sequence
+                        target_idx = i + k_step
+                        
+                        # Get target predicted point if it exists
+                        if target_idx < len(sorted_pred):
+                            pred_row = sorted_pred.iloc[target_idx]
+                            pred_point = (pred_row['PCA Component 1'], pred_row['PCA Component 2'])
+                            pred_time = pred_row[self.time_id]
+                            
+                            # Store the coordinates and time value for this segment
+                            arrow_x.extend([true_point[0], pred_point[0], None])
+                            arrow_y.extend([true_point[1], pred_point[1], None])
+                            arrow_times.append(true_time)  # Store the source time (Dpi)
+                # Create a trace for arrows using markers (triangles) along a path
+                if arrow_x and len(arrow_x) > 2:  # Only add if we have arrows
+                    # Create intermediate points for placing triangle markers
+                    triangle_x = []
+                    triangle_y = []
+                    triangle_colors = []  # To store the color for each triangle based on source time
                     
-                    # If doing forward prediction, connect time T to time T+1
-                    if fwd:
-                        target_time = true_time + 1
-                    # If doing backward prediction, connect time T to time T-1
-                    elif bwd:
-                        target_time = true_time - 1
+                    # Process each arrow segment
+                    for i in range(0, len(arrow_x)-2, 3):  # Skip None spacers
+                        if arrow_x[i] is not None and arrow_x[i+1] is not None:
+                            # Get start and end points
+                            x_start, y_start = arrow_x[i], arrow_y[i]
+                            x_end, y_end = arrow_x[i+1], arrow_y[i+1]
+                            
+                            # Get the source time for this segment (if available)
+                            time_idx = i // 3
+                            if time_idx < len(arrow_times):
+                                source_time = arrow_times[time_idx]
+                                # Normalize time for color mapping
+                                norm_time = (source_time - time_min) / (time_max - time_min) if time_max > time_min else 0.5
+                                # Get color from viridis colormap
+                                from matplotlib import cm
+                                rgba = cm.viridis(norm_time)
+                                segment_color = f'rgba({int(rgba[0]*255)},{int(rgba[1]*255)},{int(rgba[2]*255)},1.0)'
+                            else:
+                                segment_color = 'black'  # Default color if time not available
+                            
+                            # Calculate vector from start to end
+                            vec_x = x_end - x_start
+                            vec_y = y_end - y_start
+                            
+                            # Calculate length of vector
+                            length = (vec_x**2 + vec_y**2)**0.5
+                            
+                            # Skip if the segment is too short
+                            if length < 0.001:
+                                continue
+                                
+                            # Number of markers to place along this segment
+                            # More for longer segments, at least 3
+                            num_markers = max(3, int(length * 3))
+                            
+                            # Calculate angle for triangle orientation
+                            angle = np.degrees(np.arctan2(vec_y, vec_x))
+                            
+                            # Place markers evenly along the segment
+                            for j in range(1, num_markers):
+                                t = j / num_markers
+                                triangle_x.append(x_start + vec_x * t)
+                                triangle_y.append(y_start + vec_y * t)
+                                triangle_colors.append(segment_color)
                     
-                    # Find the target predicted point
-                    matching_p = rep_pred[abs(rep_pred[self.time_id] - target_time) < 1e-5]
-                    if not matching_p.empty:
-                        p_row = matching_p.iloc[0]
-                        # Get color from timepoint
-                        time_color = time_cmap.to_rgba(true_time)
-                        plt.annotate('', xy=(p_row['PCA Component 1'], p_row['PCA Component 2']),
-                                   xytext=(t_row['PCA Component 1'], t_row['PCA Component 2']),
-                                   arrowprops=dict(facecolor=time_color, shrink=0.05, width=2,
-                                                 headwidth=8, alpha=0.7), zorder=1)
+                    # Add the triangle markers trace
+                    if triangle_x:  # Only add if we have triangles
+                        fig.add_trace(go.Scatter(
+                            x=triangle_x,
+                            y=triangle_y,
+                            mode='markers',
+                            marker=dict(
+                                size=7,
+                                symbol='triangle-up',
+                                color=triangle_colors,  # Color by source time
+                                angle=angle,  # Set angle for triangles to point in direction of travel
+                                line=dict(width=1, color='rgba(0,0,0,0.5)')
+                            ),
+                            name=f"Source Time Arrows ({self.replicate_id}={replicate})",
+                            legendgroup=f"group_{replicate}",
+                            hoverinfo='none',
+                            showlegend=True
+                        ))
+                
+                # Add a trace for the arrow lines (to connect the markers)
+                if arrow_x and len(arrow_x) > 2:
+                    fig.add_trace(go.Scatter(
+                        x=arrow_x,
+                        y=arrow_y,
+                        mode='lines',
+                        line=dict(
+                            color='rgba(0,0,0,0.3)',  # Semi-transparent black
+                            width=1,
+                        ),
+                        opacity=0.5,
+                        name=f"Arrow Paths ({self.replicate_id}={replicate})",
+                        hoverinfo='none',
+                        showlegend=False,
+                        legendgroup=f"group_{replicate}"
+                    ))
         
-        # Add colorbar for time
-        cbar = plt.colorbar(time_cmap, label=self.time_id)
-        cbar.ax.tick_params(labelsize=10)
+        # Update layout
+        fig.update_layout(
+            # Remove explicit width/height for automatic sizing
+            title=dict(
+                text=plot_title,
+                font=dict(size=18)
+            ),
+            xaxis=dict(
+                title='PCA Component 1',
+                title_font=dict(size=12),
+                showgrid=True,
+                gridwidth=1,
+                gridcolor='rgba(211, 211, 211, 0.3)'
+            ),
+            yaxis=dict(
+                title='PCA Component 2',
+                title_font=dict(size=12),
+                showgrid=True,
+                gridwidth=1,
+                gridcolor='rgba(211, 211, 211, 0.3)'
+            ),
+            legend=dict(
+                title=dict(
+                    text="Data sources & Replicates",
+                    font=dict(size=10)
+                ),
+                x=1.2,
+                y=1,
+                xanchor='left',
+                yanchor='top',
+                font=dict(size=9),
+                bordercolor='rgba(0, 0, 0, 0.1)',
+                borderwidth=1,
+                itemsizing='constant',  # Make legend items consistent size
+                groupclick="toggleitem"  # Allows toggling entire groups with a single click
+            ),
+            # Adjust margins to provide better space for colorbar
+            margin=dict(l=50, r=80, t=60, b=50),
+            hovermode='closest',
+            plot_bgcolor='rgba(255, 255, 255, 1)',
+            # Add annotation at the bottom of the plot explaining the arrows
+            annotations=[
+                dict(
+                    text="Arrows are colored by time",
+                    xref="paper",
+                    yref="paper",
+                    x=0.5,
+                    y=-0.15,
+                    showarrow=False,
+                    font=dict(size=12)
+                )
+            ]
+        )
         
-        # Create custom legend
-        plt.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1.02, 1),
-                 fontsize=10, title="Data sources & Replicates")
-        
-        # Set labels and title
-        plt.title(plot_title, fontsize=14)
-        plt.xlabel('PCA Component 1', fontsize=12)
-        plt.ylabel('PCA Component 2', fontsize=12)
-        plt.grid(alpha=0.3)
-        plt.tight_layout()
-        
-        # Save plot to file
-        filename = f"{plot_title.replace(' ', '_')}.png"
-        plt.savefig(filename, dpi=300, bbox_inches='tight')
-        
-        plt.show()
-        
+        # Display the interactive plot
+        fig.show()
 
     def latent_space_3d(self, n_top_features=3, fwd=False, bwd=False, start_time=None, end_time=None,
                         source=None, subject_idx=None, color_by=None, linearize=False, hide_lines=None,
@@ -1802,3 +1908,517 @@ class Latent_Explorer:
         
         # Display the plot
         fig.show()
+    def pca_latent_space_3d(self, fwd=False, bwd=False, linearize=False, start_time=None, end_time=None,
+                                subject_idx=None, color_by=None, hide_lines=None, show_midline=True):
+            """
+            Generate an improved interactive 3D PCA visualization of the latent space.
+            
+            This version uses consistent replicate coloring and arrow-based visualization
+            similar to the 2D version, with only one colorbar showing.
+            
+            Parameters:
+                fwd (bool): Whether to include forward predictions.
+                bwd (bool): Whether to include backward predictions.
+                linearize (bool): Whether to use linearized latent space (if linkoop).
+                start_time: Starting time point for filtering data.
+                end_time: Ending time point for filtering data.
+                subject_idx: Filter by specific subject indices.
+                color_by (str): Column name to use for coloring points.
+                hide_lines (list): List of replicate IDs for which to hide trajectory lines.
+                show_midline (bool): Whether to show the midline trajectory and midpoint.
+            """
+            # Initialize tracking for linearize option
+            if not hasattr(self, '_last_linearize_3d'):
+                self._last_linearize_3d = False
+                
+            # Get data for plotting if not already available or if linearization option changed
+            if self.plot_df_pca is None or linearize != self._last_linearize_3d:
+                self.plot_df_pca, self.plot_df_latent = self.get_latent_plot_df(fwd, bwd, linearize)
+                self._last_linearize_3d = linearize
+            
+            # Create a working copy of the data
+            temp_plot_df_pca = self.plot_df_pca.copy()
+            
+            # Set the title based on parameters
+            if linearize and self.linear_latent_representations is not None:
+                title_prefix = 'Linearized'
+            else:
+                title_prefix = ''
+                
+            if fwd:
+                plot_title = f'{title_prefix} 3D PCA of Latent Space (Forward)'
+            elif bwd:
+                plot_title = f'{title_prefix} 3D PCA of Latent Space (Backward)'
+            else:
+                plot_title = f'{title_prefix} 3D PCA of Latent Space'
+                
+            # Apply filters
+            if start_time is not None:
+                temp_plot_df_pca = temp_plot_df_pca[temp_plot_df_pca[self.time_id] > start_time]
+            if end_time is not None:
+                temp_plot_df_pca = temp_plot_df_pca[temp_plot_df_pca[self.time_id] < end_time]
+            if subject_idx is not None:
+                subject_list = temp_plot_df_pca[self.replicate_id].unique()
+                if isinstance(subject_idx, (list, tuple, np.ndarray)):
+                    filtered_subjects = [subject_list[i] for i in subject_idx if i < len(subject_list)]
+                else:
+                    filtered_subjects = [subject_list[subject_idx]] if subject_idx < len(subject_list) else []
+                temp_plot_df_pca = temp_plot_df_pca[temp_plot_df_pca[self.replicate_id].isin(filtered_subjects)]
+
+            # Default color by time if not specified
+            if color_by is None:
+                color_by = self.time_id
+                
+            # Split data by source for separate styling
+            true_data = temp_plot_df_pca[temp_plot_df_pca['Source'] == 'true']
+            predicted_data = temp_plot_df_pca[temp_plot_df_pca['Source'] == 'predicted']
+            
+            # Create figure
+            fig = go.Figure()
+            
+            # Set up color mapping for trajectories (different color per replicate)
+            unique_replicates = temp_plot_df_pca[self.replicate_id].unique()
+            n_replicates = len(unique_replicates)
+            replicate_colors = px.colors.qualitative.D3[:n_replicates] if n_replicates <= 10 else px.colors.qualitative.Alphabet
+            replicate_color_map = {rep: replicate_colors[i % len(replicate_colors)] for i, rep in enumerate(unique_replicates)}
+            
+            # Calculate global min and max time for consistent color mapping
+            time_min = temp_plot_df_pca[self.time_id].min()
+            time_max = temp_plot_df_pca[self.time_id].max()
+            time_range = time_max - time_min if time_max > time_min else 1
+            
+            # Function to get color from time value
+            from matplotlib.cm import get_cmap
+            colormap = get_cmap('viridis')
+            
+            def get_time_color(time_value, opacity=1.0):
+                norm_time = (time_value - time_min) / time_range
+                rgba = colormap(norm_time)
+                return f'rgba({int(rgba[0]*255)},{int(rgba[1]*255)},{int(rgba[2]*255)},{opacity})'
+            
+            # Set up default hide_lines if None
+            if hide_lines is None:
+                hide_lines = []
+            elif not isinstance(hide_lines, (list, tuple)):
+                hide_lines = [hide_lines]
+            
+            # We'll only show a single colorbar for the first trace
+            show_colorbar = True
+            
+            # Collect all data points to calculate midlines
+            all_true_data = []
+            all_pred_data = []
+            
+            # Add traces for each replicate
+            for replicate in unique_replicates:
+                # Skip replicates that we want to hide completely
+                if replicate in hide_lines:
+                    continue
+                    
+                # Get color for this replicate
+                rep_color = replicate_color_map[replicate]
+                
+                # Filter data for this replicate
+                replicate_true = true_data[true_data[self.replicate_id] == replicate]
+                replicate_pred = predicted_data[predicted_data[self.replicate_id] == replicate]
+                
+                # Sort by time
+                replicate_true = replicate_true.sort_values(by=self.time_id)
+                replicate_pred = replicate_pred.sort_values(by=self.time_id)
+                
+                # Make initial timepoints (time_id=0) identical in both datasets
+                time_zero_true = replicate_true[replicate_true[self.time_id] == 0]
+                time_zero_pred = replicate_pred[replicate_pred[self.time_id] == 0]
+                
+                # If we have both true and predicted for time=0, make sure they're identical
+                if not time_zero_true.empty and not time_zero_pred.empty:
+                    # Replace the predicted point coordinates with the true point to ensure exact match
+                    for _, t_row in time_zero_true.iterrows():
+                        for p_idx in time_zero_pred.index:
+                            # Copy all component columns (works for both PCA and latent space)
+                            component_cols = [col for col in replicate_pred.columns if 'Component' in col or 'Dim' in col]
+                            if component_cols:
+                                replicate_pred.loc[p_idx, component_cols] = t_row[component_cols].values
+                
+                # Collect this replicate's data for midline calculations
+                if not replicate_true.empty:
+                    all_true_data.append(replicate_true)
+                    
+                if not replicate_pred.empty:
+                    all_pred_data.append(replicate_pred)
+                
+                # Add scatter points for true data
+                if not replicate_true.empty:
+                    # Add scatter trace for true data
+                    fig.add_trace(go.Scatter3d(
+                        x=replicate_true['PCA Component 1'],
+                        y=replicate_true['PCA Component 2'],
+                        z=replicate_true['PCA Component 3'],
+                        mode='markers',
+                        marker=dict(
+                            size=6,
+                            color=replicate_true[self.time_id],
+                            colorscale='Viridis',
+                            cmin=time_min,
+                            cmax=time_max,
+                            opacity=0.8,
+                            symbol='circle',
+                            showscale=show_colorbar,
+                            colorbar=dict(
+                                title=self.time_id,
+                                title_side='right',
+                                len=0.5,
+                                thickness=15,
+                                y=0.5,
+                                yanchor='middle',
+                                outlinewidth=1,
+                                outlinecolor='rgba(0,0,0,0.3)'
+                            )
+                        ),
+                        name=f'True {self.replicate_id}={replicate}',
+                        legendgroup=f'replicate_{replicate}',
+                        hovertemplate=(
+                            f'True<br>{self.replicate_id}=%{{customdata[0]}}<br>'
+                            f'{self.time_id}=%{{customdata[1]}}<br>'
+                            'PC1=%{x:.2f}<br>PC2=%{y:.2f}<br>PC3=%{z:.2f}<extra></extra>'
+                        ),
+                        customdata=replicate_true[[self.replicate_id, self.time_id]].values
+                    ))
+                    
+                    # Only show colorbar for the first trace
+                    show_colorbar = False
+                    
+                    # Add line connecting true points with replicate-specific color
+                    fig.add_trace(go.Scatter3d(
+                        x=replicate_true['PCA Component 1'],
+                        y=replicate_true['PCA Component 2'],
+                        z=replicate_true['PCA Component 3'],
+                        mode='lines',
+                        line=dict(
+                            color=rep_color,
+                            width=3,
+                            dash='solid',
+                        ),
+                        name=f'True Line {self.replicate_id}={replicate}',
+                        legendgroup=f'replicate_{replicate}',
+                        showlegend=True,
+                        hoverinfo='none'
+                    ))
+                
+                # Add scatter points for predicted data
+                if not replicate_pred.empty:
+                    # Add scatter trace for predicted data
+                    fig.add_trace(go.Scatter3d(
+                        x=replicate_pred['PCA Component 1'],
+                        y=replicate_pred['PCA Component 2'],
+                        z=replicate_pred['PCA Component 3'],
+                        mode='markers',
+                        marker=dict(
+                            size=6,
+                            color=replicate_pred[self.time_id],
+                            colorscale='Viridis',
+                            cmin=time_min,
+                            cmax=time_max,
+                            opacity=0.8,
+                            symbol='diamond',
+                            showscale=False,
+                            line=dict(
+                                color='red',   # Outline color
+                                width=50        # Thickness of the outline
+                            )
+                        ),
+                        name=f'Predicted {self.replicate_id}={replicate}',
+                        legendgroup=f'replicate_{replicate}',
+                        hovertemplate=(
+                            f'Predicted<br>{self.replicate_id}=%{{customdata[0]}}<br>'
+                            f'{self.time_id}=%{{customdata[1]}}<br>'
+                            'PC1=%{x:.2f}<br>PC2=%{y:.2f}<br>PC3=%{z:.2f}<extra></extra>'
+                        ),
+                        customdata=replicate_pred[[self.replicate_id, self.time_id]].values
+                    ))
+                    
+                    # Add line connecting predicted points with replicate-specific color
+                    fig.add_trace(go.Scatter3d(
+                        x=replicate_pred['PCA Component 1'],
+                        y=replicate_pred['PCA Component 2'],
+                        z=replicate_pred['PCA Component 3'],
+                        mode='lines',
+                        line=dict(
+                            color=rep_color,
+                            width=3,
+                            dash='dash',
+                        ),
+                        name=f'Predicted Line {self.replicate_id}={replicate}',
+                        legendgroup=f'replicate_{replicate}',
+                        showlegend=True,
+                        hoverinfo='none'
+                    ))
+                    
+                    # Add connecting arrows between true points and their predictions
+                    if not replicate_true.empty:
+                        # For arrows, create lists to store the x, y, z coordinates
+                        arrow_x = []
+                        arrow_y = []
+                        arrow_z = []
+                        arrow_times = []
+                        
+                        # Sort true and predicted data points by time
+                        sorted_true = replicate_true.sort_values(by=self.time_id).reset_index()
+                        sorted_pred = replicate_pred.sort_values(by=self.time_id).reset_index()
+                        
+                        # Get the k-step from the model (used in get_latent_plot_df)
+                        k_step = getattr(self, 'kstep', 1)  # Default to 1 if not found
+                        
+                        # For each true data point, find corresponding predicted point k_step ahead in time sequence
+                        for i, true_row in sorted_true.iterrows():
+                            # Only process if we have enough steps ahead in our sequence
+                            if i < len(sorted_true) - k_step:
+                                # Current true point
+                                true_point = (true_row['PCA Component 1'], true_row['PCA Component 2'], true_row['PCA Component 3'])
+                                true_time = true_row[self.time_id]
+                                
+                                # Get the index k_step ahead in the sequence
+                                target_idx = i + k_step
+                                
+                                # Get target predicted point if it exists
+                                if target_idx < len(sorted_pred):
+                                    pred_row = sorted_pred.iloc[target_idx]
+                                    pred_point = (pred_row['PCA Component 1'], pred_row['PCA Component 2'], pred_row['PCA Component 3'])
+                                    pred_time = pred_row[self.time_id]
+                                    
+                                    # Store the coordinates and time value for this segment
+                                    arrow_x.extend([true_point[0], pred_point[0], None])
+                                    arrow_y.extend([true_point[1], pred_point[1], None])
+                                    arrow_z.extend([true_point[2], pred_point[2], None])
+                                    arrow_times.append(true_time)  # Store the source time (Dpi)
+                        
+                        # Add arrow traces for this replicate
+                        if arrow_x and len(arrow_x) > 2:
+                            # Create a single connecting line for all arrows
+                            fig.add_trace(go.Scatter3d(
+                                x=arrow_x,
+                                y=arrow_y,
+                                z=arrow_z,
+                                mode='lines',
+                                line=dict(
+                                    color='rgba(0,0,0,0.3)',
+                                    width=1,
+                                ),
+                                opacity=0.5,
+                                name=f"Arrow Paths ({self.replicate_id}={replicate})",
+                                hoverinfo='none',
+                                showlegend=False,
+                                legendgroup=f"replicate_{replicate}"
+                            ))
+                            
+                            # For 3D visualization, create multiple mini line segments with color based on source time
+                            colored_arrow_list = []
+                            for i in range(0, len(arrow_x)-2, 3):
+                                if arrow_x[i] is not None and arrow_x[i+1] is not None:
+                                    # Get start and end points
+                                    x_start, y_start, z_start = arrow_x[i], arrow_y[i], arrow_z[i]
+                                    x_end, y_end, z_end = arrow_x[i+1], arrow_y[i+1], arrow_z[i+1]
+                                    
+                                    # Get the source time for this segment
+                                    time_idx = i // 3
+                                    if time_idx < len(arrow_times):
+                                        source_time = arrow_times[time_idx]
+                                        # Normalize time for color mapping
+                                        arrow_color = get_time_color(source_time, 1.0)
+                                    else:
+                                        arrow_color = 'rgba(0,0,0,1.0)'  # Default if time not available
+                                    
+                                    # Calculate vector from start to end
+                                    vec_x = x_end - x_start
+                                    vec_y = y_end - y_start
+                                    vec_z = z_end - z_start
+                                    
+                                    # Calculate length of vector
+                                    length = (vec_x**2 + vec_y**2 + vec_z**2)**0.5
+                                    
+                                    # Skip if the segment is too short
+                                    if length < 0.001:
+                                        continue
+                                    
+                                    # Number of intermediate points for arrows (including start, excluding end)
+                                    num_points = max(4, int(length))
+                                    
+                                    # Create arrow segments
+                                    for j in range(1, num_points):
+                                        t = j / num_points
+                                        # Calculate position along the vector
+                                        pos_x = x_start + vec_x * t
+                                        pos_y = y_start + vec_y * t
+                                        pos_z = z_start + vec_z * t
+                                        
+                                        # Create a mini cone at this position
+                                        cone_size = 0.1  # Size of the cone
+                                        fig.add_trace(go.Cone(
+                                            x=[pos_x],
+                                            y=[pos_y],
+                                            z=[pos_z],
+                                            u=[vec_x/length * cone_size],
+                                            v=[vec_y/length * cone_size],
+                                            w=[vec_z/length * cone_size],
+                                            colorscale=[[0, arrow_color], [1, arrow_color]],
+                                            showscale=False,
+                                            sizemode='absolute',
+                                            sizeref=1,
+                                            anchor='tail',
+                                            opacity=0.1,  # Set opacity between 0 (transparent) and 1 (opaque)
+                                            name=f"Arrow {self.replicate_id}={replicate}",
+                                            legendgroup=f"replicate_{replicate}",
+                                            showlegend=False,
+                                            hoverinfo='none'
+                                        ))
+                            
+                            # Add a single dummy trace for the legend
+                            fig.add_trace(go.Scatter3d(
+                                x=[None],
+                                y=[None],
+                                z=[None],
+                                mode='markers',
+                                marker=dict(
+                                    size=6,
+                                    color='black',
+                                    symbol='diamond',
+                                ),
+                                name=f"Source Time Arrows ({self.replicate_id}={replicate})",
+                                legendgroup=f"replicate_{replicate}",
+                                showlegend=True,
+                                visible=True
+                            ))
+            
+            # Add midlines if requested and we have data
+            if show_midline:
+                # Add true data midline if available
+                if all_true_data:
+                    # Combine all true data
+                    combined_true_df = pd.concat(all_true_data)
+                    
+                    # Group by time and calculate mean PCA coordinates for midline
+                    true_midline_df = combined_true_df.groupby(self.time_id).agg({
+                        'PCA Component 1': 'mean',
+                        'PCA Component 2': 'mean',
+                        'PCA Component 3': 'mean'
+                    }).reset_index()
+                    
+                    # Sort by time
+                    true_midline_df = true_midline_df.sort_values(by=self.time_id)
+                    
+                    # Add true midline trace
+                    fig.add_trace(go.Scatter3d(
+                        x=true_midline_df['PCA Component 1'],
+                        y=true_midline_df['PCA Component 2'],
+                        z=true_midline_df['PCA Component 3'],
+                        mode='lines+markers',
+                        marker=dict(
+                            size=8,
+                            color=true_midline_df[self.time_id],
+                            colorscale='Viridis',
+                            cmin=time_min,
+                            cmax=time_max,
+                            opacity=1.0,
+                            symbol='circle',
+                            showscale=False
+                        ),
+                        line=dict(
+                            color='rgba(255,255,0,0.8)',  # Yellow
+                            width=6
+                        ),
+                        name='True Midline (Average)',
+                        hovertemplate=(
+                            f'True Midline<br>{self.time_id}=%{{customdata}}<br>'
+                            'PC1=%{x:.2f}<br>PC2=%{y:.2f}<br>PC3=%{z:.2f}<extra></extra>'
+                        ),
+                        customdata=true_midline_df[self.time_id].values
+                    ))
+                
+                # Add predicted data midline if available
+                if all_pred_data:
+                    # Combine all predicted data
+                    combined_pred_df = pd.concat(all_pred_data)
+                    
+                    # Group by time and calculate mean PCA coordinates for midline
+                    pred_midline_df = combined_pred_df.groupby(self.time_id).agg({
+                        'PCA Component 1': 'mean',
+                        'PCA Component 2': 'mean',
+                        'PCA Component 3': 'mean'
+                    }).reset_index()
+                    
+                    # Sort by time
+                    pred_midline_df = pred_midline_df.sort_values(by=self.time_id)
+                    
+                    # Add predicted midline trace
+                    fig.add_trace(go.Scatter3d(
+                        x=pred_midline_df['PCA Component 1'],
+                        y=pred_midline_df['PCA Component 2'],
+                        z=pred_midline_df['PCA Component 3'],
+                        mode='lines+markers',
+                        marker=dict(
+                            size=8,
+                            color=pred_midline_df[self.time_id],
+                            colorscale='Viridis',
+                            cmin=time_min,
+                            cmax=time_max,
+                            opacity=1.0,
+                            symbol='diamond',
+                            showscale=False
+                        ),
+                        line=dict(
+                            color='rgba(255,100,0,0.8)',  # Orange
+                            width=6,
+                            dash='dash'
+                        ),
+                        name='Predicted Midline (Average)',
+                        hovertemplate=(
+                            f'Predicted Midline<br>{self.time_id}=%{{customdata}}<br>'
+                            'PC1=%{x:.2f}<br>PC2=%{y:.2f}<br>PC3=%{z:.2f}<extra></extra>'
+                        ),
+                        customdata=pred_midline_df[self.time_id].values
+                    ))
+                    
+            # Update layout with improved settings
+            fig.update_layout(
+                title=dict(
+                    text=plot_title,
+                    font=dict(size=18)
+                ),
+                scene=dict(
+                    xaxis_title='PCA Component 1',
+                    yaxis_title='PCA Component 2',
+                    zaxis_title='PCA Component 3',
+                    # Make axes consistent for better view
+                    aspectmode='data',
+                    camera=dict(
+                        eye=dict(x=1.5, y=1.5, z=1.5)
+                    )
+                ),
+                legend=dict(
+                    title=dict(
+                        text=f"{self.replicate_id} & Source",
+                        font=dict(size=12)
+                    ),
+                    x=1.15,  # Position legend to the right of the plot
+                    y=1,
+                    xanchor='left',
+                    yanchor='top',
+                    groupclick="toggleitem",
+                    itemsizing='constant'
+                ),
+                margin=dict(l=60, r=100, t=80, b=60),  # Adjust margins for legend
+                annotations=[
+                    dict(
+                        text="Arrows are colored by time",
+                        xref="paper",
+                        yref="paper",
+                        x=0.5,
+                        y=-0.1,
+                        showarrow=False,
+                        font=dict(size=12)
+                    )
+                ]
+            )
+            
+            # Display the plot
+            fig.show()

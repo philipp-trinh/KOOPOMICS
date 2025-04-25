@@ -1,5 +1,0 @@
-- dl_structure: single_sweep
-  max_Kstep: 6
-  project: pea_KOOP
-  timestamp: '2025-04-23T01:55:52.296893'
-  sweep_file: /lisc/user/trinh/KOOPOMICS/philipp-trinh/KOOPOMICS/examples/pea_CV/nested_cv_single_sweep/outer_splits/pea_KOOP_single_sweep_info.json

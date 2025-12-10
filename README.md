@@ -79,6 +79,7 @@ These additions aim to strengthen the connection between learned dynamical repre
 ---
 ## Installation
 KOOPOMICS requires Python 3.10 and is intended to be used within a conda environment.
+```bash
 git clone git@github.com:philipp-trinh/KOOPOMICS.git
 cd KOOPOMICS
 conda env create -f environment.yml
@@ -87,8 +88,10 @@ pip install -e .
 Optional Jupyter kernel:
 conda install ipykernel -y
 python -m ipykernel install --user --name=koopomics --display-name "KOOPOMICS"
+```
 
 ## Quick Start
+```python
 import pandas as pd
 from koopomics import KOOP
 model = KOOP()
@@ -100,8 +103,9 @@ backward_preds, forward_preds = model.predict(test_data=data, feature_list=featu
 metrics = model.evaluate()
 model.save_model("koopomics_model.pth")
 model.save_config("koopomics_config.json")
-
+```
 ## Package Structure
+```text
 koopomics/
 ├── config/
 ├── data_prep/
@@ -113,7 +117,7 @@ koopomics/
 ├── wandb_utils/
 ├── koopman.py
 └── test/
-
+```
 ## Technologies
 Python 3.10, NumPy, pandas, PyTorch, autoencoders and latent variable models, linear operator learning in latent space, spectral and eigenvalue analysis, modular package design, configuration-driven workflows, reproducible experiment management, and integrated experiment tracking with Weights & Biases.
 

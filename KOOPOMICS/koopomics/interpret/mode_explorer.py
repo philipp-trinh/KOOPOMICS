@@ -1,18 +1,11 @@
-import torch
-from ..training.data_loader import OmicsDataloader
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import plotly.express as px
-from scipy.fft import fft, fftfreq
-import ipywidgets as widgets
-from IPython.display import display
-import plotly.graph_objects as go
+from koopomics.utils import torch, pd, np, wandb
+
 
 class Modes_Explorer():
     def __init__(self, model,
                  dataset_df, feature_list, mask_value=-1e-9, condition_id='', time_id='', replicate_id='',
                  device=None, **kwargs):
+        from ..data_prep import OmicsDataloader
 
         self.model = model
         self.device = next(model.parameters()).device if device is None else device
@@ -176,6 +169,8 @@ class Modes_Explorer():
 
     def get_dynamic_info(self, mode_time_evolution, eigenvalues, encoded=False):
 
+        from scipy.fft import fft, fftfreq
+
         num_samples = mode_time_evolution.shape[0]
         num_modes = mode_time_evolution.shape[1]
         num_timesteps = mode_time_evolution.shape[2]
@@ -278,6 +273,10 @@ class Modes_Explorer():
 
     
     def plot_modes_interactive(self, df, mode_amplitudes, target_df=None, decoded=False):
+        
+        import ipywidgets as widgets
+
+        
         df_dynamic = df
         target_df = target_df
         
@@ -323,6 +322,8 @@ class Modes_Explorer():
         
     # Function to create interactive widgets
     def plot_interactive_timeseries_plot(self,mode_id, features, timepoint_range, df_dynamic, target_df=None, decoded=False):
+        from IPython.display import display
+
         # Define interactive plot function
         def interactive_plot(mode_id, features, timepoint_range, df_dynamic=df_dynamic, target_df=target_df, decoded=decoded):
             if decoded:
@@ -343,6 +344,10 @@ class Modes_Explorer():
         
     # Function to plot the time series for specific mode ID and selected features
     def plot_feature_timeseries(self,mode_id, features, timepoint_range, df_dynamic, target_df):
+        import plotly.graph_objects as go
+
+        import plotly.express as px
+
         # Filter the dataframe based on selected Mode ID
         if 'all' in mode_id:
             data_to_plot = df_dynamic.copy()
@@ -412,6 +417,10 @@ class Modes_Explorer():
         
     # Function to plot the time series for specific mode ID and selected features
     def plot_decoded_feature_timeseries(self,mode_id, features, timepoint_range, df_dynamic, target_df):
+        import plotly.graph_objects as go
+
+        import plotly.express as px
+
         # Filter the dataframe based on selected Mode ID
         if 'all' in mode_id:
             data_to_plot = df_dynamic.copy()

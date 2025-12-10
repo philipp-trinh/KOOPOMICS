@@ -17,7 +17,6 @@ For usage examples, see the documentation in docs/ or examples/ directories.
 from .koopman import KoopmanEngine as KOOP
 
 # Import key components for easy access
-from .config import ConfigManager
-from .model import KoopmanModel, build_model_from_config
+#from .config import ConfigManager
 
 __version__ = "1.0.0"

@@ -1,14 +1,17 @@
 import os
-from koopomics.utils import torch, pd, np, wandb
+import wandb
 import logging
+import pandas as pd
 from typing import Dict, List, Optional, Any, Union, Callable
+import torch
 
 import json
 from pathlib import Path
 import tempfile
 
 # Configure logging
-logger = logging.getLogger("koopomics")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
 class WandbManager:
@@ -68,7 +71,6 @@ class WandbManager:
         wandb run object
             Initialized wandb run
         """
-
         # Initialize wandb run
         self.run = wandb.init(
             project=self.project_name,
@@ -122,8 +124,6 @@ class WandbManager:
         model : nn.Module
             Model to log
         """
-        import wandb
-
         if self.run is None:
             logger.warning("No active wandb run. Call init_run() first.")
             return
@@ -177,8 +177,6 @@ class WandbManager:
         figure_name : str
             Name of the figure
         """
-        import wandb
-
         if self.run is None:
             logger.warning("No active wandb run. Call init_run() first.")
             return
@@ -199,8 +197,6 @@ class WandbManager:
         df_name : str
             Name of the dataframe
         """
-        import wandb
-
         if self.run is None:
             logger.warning("No active wandb run. Call init_run() first.")
             return
@@ -226,7 +222,6 @@ class WandbManager:
         """
         Finish the current wandb run.
         """
-        
         if self.run is None:
             logger.warning("No active wandb run. Call init_run() first.")
             return

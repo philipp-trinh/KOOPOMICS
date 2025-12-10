@@ -1,17 +1,13 @@
-import torch
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-import numpy as np
-import pandas as pd
-import ipywidgets as widgets
-from IPython.display import display
+from koopomics.utils import torch, pd, np, wandb
+
 
 
 class Timeseries_Explorer():
     def __init__(self, model,
               dataset_df, feature_list, mask_value=-1e-9, condition_id='', time_id='', replicate_id='',
               device=None, **kwargs):
-    
+        import matplotlib.pyplot as plt
+
         # Determine device from model if not provided
         if device is None:
             # Use model's device instead of defaulting to CPU
@@ -64,6 +60,7 @@ class Timeseries_Explorer():
         self.model = self.model.to(self.device)
 
     def plot_1d_timeseries(self, feature=None):
+        import ipywidgets as widgets
 
         # Get unique Subject IDs and feature columns
         sorted_replicate_ids = sorted(self.df[self.replicate_id].unique())
@@ -107,6 +104,8 @@ class Timeseries_Explorer():
                 
         # Function to create interactive widgets
         def plot_interactive_timeseries_plot(replicate_id, feature, num_shift):
+            from IPython.display import display
+
             time_slider = widgets.IntRangeSlider(
                     value=[0, 43],
                     min=0,

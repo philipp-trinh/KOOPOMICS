@@ -5,14 +5,12 @@ This module provides classes and functions for preprocessing OMICS data,
 including handling of time series gaps, numerical transformations, and feature selection.
 """
 
-import numpy as np
-import pandas as pd
+from koopomics.utils import torch, pd, np, wandb
 import logging
 from typing import List, Dict, Tuple, Optional, Union
-from sklearn.ensemble import RandomForestRegressor
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("koopomics")
 
 class DataIdentifiers:
     """
@@ -772,6 +770,9 @@ class FeatureSelector:
         list
             List of selected feature names
         """
+        from sklearn.ensemble import RandomForestRegressor
+
+
         # Create a copy to avoid modifying the original
         df = dataframe.copy()
         

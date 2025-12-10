@@ -5,18 +5,11 @@ This module provides tools for analyzing latent space representations, including
 PCA visualizations, forward/backward propagation, and feature importance analysis.
 """
 
-import torch
-import pandas as pd
-import numpy as np
-from sklearn.decomposition import PCA
-import matplotlib.pyplot as plt
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+from koopomics.utils import torch, pd, np, wandb
 import logging
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("koopomics")
 
 class Latent_Explorer:
     """
@@ -165,6 +158,12 @@ class Latent_Explorer:
         Returns:
             tuple: (plot_df_pca, plot_df_loadings) - DataFrames for visualization.
         """
+        from sklearn.decomposition import PCA
+
+        import plotly.graph_objects as go
+
+
+
         # Filter the DataFrame for samples without missing values
         # Check if features is already a list or needs to be converted
         feature_list = self.features if isinstance(self.features, list) else self.features.tolist()
@@ -634,6 +633,9 @@ class Latent_Explorer:
                                        to make predicted and true lines start from the same point.
                                        Default is to use time 0 for all replicates.
         """
+        import plotly.express as px
+        import plotly.graph_objects as go
+
         # Initialize tracking for linearize option
         if not hasattr(self, '_last_pca2d_linearize'):
             self._last_pca2d_linearize = False
@@ -1927,6 +1929,9 @@ class Latent_Explorer:
                 hide_lines (list): List of replicate IDs for which to hide trajectory lines.
                 show_midline (bool): Whether to show the midline trajectory and midpoint.
             """
+            import plotly.express as px
+            import plotly.graph_objects as go
+
             # Initialize tracking for linearize option
             if not hasattr(self, '_last_linearize_3d'):
                 self._last_linearize_3d = False

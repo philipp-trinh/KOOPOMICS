@@ -1,133 +1,233 @@
-import pandas as pd
-import torch
-import numpy as np
+from __future__ import annotations
+
 from pathlib import Path
 from typing import List, Union, Optional, Dict, Any, Tuple
-from math import ceil
-
-
 import logging
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("koopomics")
 
-# Import the DataRegistry class and DataPreprocessor
-from ..data_prep.data_registry import DataRegistry
-from ..data_prep.data_prep import DataPreprocessor
-from ..training.data_loader import OmicsDataloader
+from koopomics.utils import torch, pd, np, wandb
 
-# ============= DATA MANAGEMENT MIXIN =============
+# ================================================================
+# 🧠 DATA MANAGEMENT MIXIN
+# ================================================================
 class DataManagementMixin:
     """
-    Mixin providing data loading and preparation functionality.
-    
-    This mixin uses DataRegistry for core data handling and provides
-    interface methods for working with dataloaders and tensors.
+    Mixin providing data handling, preprocessing, and dataloader creation
+    for OMICS experiments. It interfaces with `DataRegistry` and 
+    `DataPreprocessor` for flexible, configuration-driven workflows.
     """
-    
+
+    # ------------------------------------------------------------------
+    # ⚙️ Initialization
+    # ------------------------------------------------------------------
     def __init__(self):
-        """Initialize the DataManagementMixin."""
-        # Ensure data registry exists
+        """Initialize the mixin with default registry and loader attributes."""
         self._ensure_data_registry()
-        
-        # Initialize data preprocessor (will be properly set up when needed)
+
+        # Preprocessing
         self.preprocessor = None
         self.preprocessing_info = None
-        
+
         # Data loaders
         self.data_loader = None
         self.train_loader = None
         self.test_loader = None
-        self.yaml_path = None
-        
-    def _ensure_data_registry(self):
-        """Ensure the data registry exists, creating it if needed."""
-        if not hasattr(self, '_data_registry'):
-            self._data_registry = DataRegistry()
-            logger.info("Data registry initialized")
-    
 
+        # Metadata
+        self.yaml_path = None
+
+
+    # ------------------------------------------------------------------
+    # 🧩 Core setup utilities
+    # ------------------------------------------------------------------
+    def _ensure_data_registry(self):
+        """Ensure the `DataRegistry` exists, creating it if necessary."""
+        from ..data_prep import DataRegistry
+
+        if not hasattr(self, "_data_registry"):
+            self._data_registry = DataRegistry()
+            logging.info("🗂️ DataRegistry initialized.")
+
+    def _get_time_structure_params(self):
+        """Shortcut to get relevant temporal config fields."""
+        tr = self.config["training"]
+        data_cfg = self.config["data"]
+        max_Kstep = getattr(tr, "max_Kstep", 0)
+        delay_size = getattr(data_cfg, "delay_size", 0)
+        dl_structure = getattr(data_cfg, "dl_structure", "temporal")
+
+        return max_Kstep, delay_size, dl_structure
+
+    # ------------------------------------------------------------------
+    # 🧪 Data preprocessing
+    # ------------------------------------------------------------------
     def preprocess_data(self, data: pd.DataFrame, **kwargs) -> pd.DataFrame:
         """
-        Preprocess data without loading it into dataloaders.
-        
-        Parameters:
-            data: DataFrame to preprocess
-            **kwargs: Preprocessing parameters (passed to DataPreprocessor.preprocess_data)
-            
-        Returns:
-            Preprocessed DataFrame
+        Preprocess raw data without creating loaders.
+
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Input data.
+        kwargs : dict
+            Arguments for `DataPreprocessor.preprocess_data`.
+
+        Returns
+        -------
+        pd.DataFrame
+            Preprocessed dataframe.
         """
-        # Initialize preprocessor if needed
         from ..data_prep.data_prep import DataPreprocessor
-        
-        # Use existing identifiers if available
-        time_id = kwargs.pop('time_id', getattr(self, 'time_id', None))
-        condition_id = kwargs.pop('condition_id', getattr(self, 'condition_id', None))
-        replicate_id = kwargs.pop('replicate_id', getattr(self, 'replicate_id', None))
-        
-        self.preprocessor = DataPreprocessor(
-            time_id=time_id,
-            condition_id=condition_id,
-            replicate_id=replicate_id
-        )
-        
-        # Apply preprocessing
-        processed_data, info = self.preprocessor.preprocess_data(data, **kwargs)
-        
-        # Store preprocessing info
+
+        ids = {k: kwargs.pop(k, getattr(self, k, None)) for k in ["time_id", "condition_id", "replicate_id"]}
+        self.preprocessor = DataPreprocessor(**ids)
+        processed, info = self.preprocessor.preprocess_data(data, **kwargs)
+
         self.preprocessing_info = info
-        
-        return processed_data
+        return processed
 
-    def load_data(self,
-                data: Union[str, Path, pd.DataFrame, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]] = None,
-                 yaml_path: Path = None,
-                 registry_dir: Path = None,
-                 feature_list: Optional[List[str]] = None,
-                 replicate_id: Optional[str] = None,
-                 time_id: Optional[str] = None,
-                 condition_id: Optional[str] = None,
-                 mask_value: Optional[float] = None,
-                 train_idx: List[int] = None,
-                 test_idx: List[int] = None
-                ) -> None:
-        """
-        Load OMICS data for training and testing.
 
-        Parameters:
-            yaml_path: Path to YAML configuration file
-            data: Input data that can be:
-                - pandas DataFrame
-                - PyTorch tensor
-                - Tuple of (train_tensor, val_tensor) for pre-split data
-            feature_list: List of feature names (required if data is DataFrame)
-            replicate_id: Column name for replicate IDs (required if data is DataFrame)
-            time_id: Column name for timepoint IDs (required if data is DataFrame)
-            condition_id: Column name for condition IDs (required if data is DataFrame)
-            mask_value: Value for masking missing data (optional)
+    # ------------------------------------------------------------------
+    # 📥 Data loading (main entrypoint)
+    # ------------------------------------------------------------------
+    def load_data(
+        self,
+        data: Union[str, Path, pd.DataFrame, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]] = None,
+        yaml_path: Optional[Path] = None,
+        registry_dir: Optional[Path] = None,
+        feature_list: Optional[List[str]] = None,
+        replicate_id: Optional[str] = None,
+        time_id: Optional[str] = None,
+        condition_id: Optional[str] = None,
+        mask_value: Optional[float] = None,
+        train_replicates: Optional[List[int]] = None,
+        test_replicates: Optional[List[int]] = None,
+        split_by_timepoints: bool = False,
+        selected_replicates: Optional[List[int]] = None,
+        train_timepoints: Optional[List[int]] = None,
+        test_timepoints: Optional[List[int]] = None,
+    ) -> None:
         """
-        # Log the start of data loading
-        logger.info("Initializing data loading...")
-        
-        # Ensure data registry exists
+        Load and prepare OMICS data for model training and testing.
+
+        This function serves as the unified entrypoint for loading data
+        either from in-memory structures (DataFrame or Tensor) or from a
+        YAML-based configuration and registry directory. It also sets up
+        training and testing splits — either across replicates or within
+        replicates along the time dimension.
+
+        Parameters
+        ----------
+        data : str | Path | pd.DataFrame | torch.Tensor | Tuple[torch.Tensor, torch.Tensor], optional
+            Input data source. Can be one of:
+            - A file path (CSV/TSV/HDF5, depending on implementation)
+            - A pandas DataFrame (structured OMICS table)
+            - A PyTorch tensor (preprocessed dataset)
+            - A tuple of tensors `(train_tensor, test_tensor)` for pre-split data
+
+        yaml_path : Path, optional
+            Path to a YAML configuration file that defines dataset parameters
+            (e.g., feature names, identifiers, and preprocessing rules).
+
+        registry_dir : Path, optional
+            Directory containing auxiliary files (feature registries, metadata, etc.).
+
+        feature_list : list of str, optional
+            Features (columns) to extract from the DataFrame. Required if `data` is a DataFrame.
+
+        replicate_id : str, optional
+            Column name in the DataFrame identifying biological or experimental replicates.
+
+        time_id : str, optional
+            Column name in the DataFrame identifying timepoints.
+
+        condition_id : str, optional
+            Column name in the DataFrame identifying treatment or condition groups.
+
+        mask_value : float, optional
+            Value to use for missing or masked data during tensor preparation.
+
+        train_replicates : list of int, optional
+            Indices of replicates to include in the training set.
+            Mutually exclusive with `train_ratio` if present in downstream code.
+
+        test_replicates : list of int, optional
+            Indices of replicates to include in the test set.
+
+        split_by_timepoints : bool, default=False
+            Whether to split within replicates along the time dimension
+            instead of splitting across replicates.
+
+        selected_replicates : list of int, optional
+            Replicates to apply the timepoint split on (only used if `split_by_timepoints=True`).
+
+        train_timepoints : list of int, optional
+            Indices of timepoints to include in the training segment
+            (used when `split_by_timepoints=True`).
+
+        test_timepoints : list of int, optional
+            Indices of timepoints to include in the test segment
+            (used when `split_by_timepoints=True`).
+
+        Notes
+        -----
+        - If both `train_replicates`/`test_replicates` and `split_by_timepoints=True`
+        are provided, the replicate-level split is applied first.
+        - Automatically detects tensor dimensionality and logs data structure.
+        - All inputs are converted to tensors before downstream processing.
+        """
+        from math import ceil
+        logger.info("🚀 Starting data loading...")
+
         self._ensure_data_registry()
-        
         if yaml_path is None and data is None:
-            raise ValueError("Either yaml_path or data must be provided")
-            
-        # Get data configuration
-        data_config = self.config.get_data_config()
-        logger.info(f"Data configuration loaded: {data_config}")
+            raise ValueError("Either `yaml_path` or `data` must be provided.")
 
-        if yaml_path is not None:
-            # Load data from YAML using the registry
+        data_config = self.config.get_data_config()
+
+        # --- Load from registry or dataframe ---
+        self._load_from_registry_or_dataframe(
+            data, yaml_path, registry_dir, feature_list, replicate_id, time_id, condition_id, mask_value
+        )
+
+        # --- Correct feature-dependent dimensions ---
+        self._adjust_model_input_dim()
+
+        # --- Correct temporal configuration ---
+        self._adjust_temporal_config()
+
+        # --- Create appropriate dataloaders ---
+        if isinstance(data, tuple) and all(isinstance(t, torch.Tensor) for t in data):
+            self._init_tensor_dataloaders(data)
+        else:
+            self._init_dataframe_dataloaders(
+                data_cfg=data_config,
+                split_by_timepoints=split_by_timepoints,
+
+                # ---- split by replicates ----
+                train_replicates=train_replicates,
+                test_replicates=test_replicates,
+
+                # ----- split_by_timepoints -----
+                selected_replicates=selected_replicates,
+                train_timepoints=train_timepoints,
+                test_timepoints=test_timepoints,
+            )
+        logger.info("✅ Data loading completed successfully.")
+
+
+    # ------------------------------------------------------------------
+    # 🔧 Helpers for data loading
+    # ------------------------------------------------------------------
+    def _load_from_registry_or_dataframe(
+        self, data, yaml_path, registry_dir, feature_list, replicate_id, time_id, condition_id, mask_value
+    ):
+        """Load data either from YAML registry or direct DataFrame."""
+        if yaml_path:
             self._data_registry.load_from_yaml(yaml_path)
             self.yaml_path = yaml_path
-        elif isinstance(data, pd.DataFrame) or isinstance(data, str):
-            # Validate and create input file using the registry
-            self._data_registry.validate_direct_input(data, feature_list, replicate_id, time_id,
-                                                    condition_id, mask_value)
+        elif isinstance(data, (pd.DataFrame, str)):
+            self._data_registry.validate_direct_input(data, feature_list, replicate_id, time_id, condition_id, mask_value)
             yaml_path = self._data_registry.create_data_input_file(
                 input=data,
                 feature_list=feature_list,
@@ -135,265 +235,272 @@ class DataManagementMixin:
                 condition_id=condition_id,
                 time_id=time_id,
                 mask_value=mask_value,
-                output_dir=registry_dir
+                output_dir=registry_dir,
             )
             self._data_registry.load_from_yaml(yaml_path)
             self.yaml_path = yaml_path
 
-        # Transfer attributes from registry to this instance for backward compatibility
-        registry_attrs = self._data_registry.get_data_attributes()
-        for key, value in registry_attrs.items():
+        for key, value in self._data_registry.get_data_attributes().items():
             setattr(self, key, value)
 
 
-        # Log completion of data loading
-        logger.info("Data loading completed successfully.")
+    def _adjust_model_input_dim(self):
+        """
+        🔧 Ensure that the encoder input dimension matches the actual number of features.
 
-        
-        # Correct config parameters based on timepoints
-        num_timepoints = len(self.data[self.time_id].unique())
-        max_Kstep = self.config.config['training'].get('max_Kstep', 0)
-        delay_size = self.config.config['data'].get('delay_size', 0)
-        current_dl_structure = self.config.config['data'].get('dl_structure', 'temporal')
-
+        This method updates the first entry in `E_layer_dims` to equal the current
+        feature count and automatically triggers revalidation of the configuration.
+        """
         num_features = len(self.feature_list)
-        E_layer_dim_str = self.config.config['model']['E_layer_dims']
-        e_dims_list = [int(x.strip()) for x in E_layer_dim_str.split(',')]
-        e_dims_list[0] = len(self.feature_list)
-        self.config.config['model']['E_layer_dims'] = ','.join(str(x) for x in e_dims_list)
-        logger.info(f"Input dimension {e_dims_list[0]} set to num_features {num_features}.")
 
+        # Access Pydantic model directly for live update
+        model_cfg = self.config.model
 
-        self.config.save_config(self.config.file_path)
-        self.config.reload_config()
+        # Update encoder dimensions safely (auto-validates)
+        e_dims = list(model_cfg.E_layer_dims)
+        if not e_dims:
+            raise ValueError("E_layer_dims is empty or not defined in config.")
 
-        # Calculate maximum possible Kstep (conservative estimate)
-        max_possible_Kstep = num_timepoints - 2  
+        e_dims[0] = num_features
+        model_cfg.E_layer_dims = e_dims  # ✅ auto-revalidated due to validate_assignment=True
 
-        # Check if we're near maximum Kstep capacity
-        near_max_capacity = max_Kstep >= max_possible_Kstep 
+        logging.info(f"📏 Updated input dimension → num_features={num_features}, E_layer_dims={e_dims}")
 
-        if current_dl_structure in ['temp_delay', 'temp_segm']:
+        # Optionally persist corrected config
+        if getattr(self.config, "file_path", None):
+            self.config.save(self.config.file_path)
 
-            if near_max_capacity:
-                # Switch to temporal structure if not already
-                if current_dl_structure != 'temporal':
-                    logger.warning(f"max_Kstep ({max_Kstep}) near maximum capacity for {num_timepoints} timepoints")
-                    logger.warning("Switching to dl_structure='temporal' for better handling")
-                    self.config.config['training']['max_Kstep'] = max_possible_Kstep
-                    self.config.config['data']['dl_structure'] = 'temporal'
-                    # Reset delay_size to default temporal value
-                    self.config.config['data']['delay_size'] = 0
+    def _adjust_temporal_config(self):
+        """
+        ⏱️ Automatically correct `max_Kstep`, `delay_size`, and `dl_structure`
+        based on the number of available timepoints and training mode.
+        """
+        from math import ceil
 
+        num_timepoints = len(self.data[self.time_id].unique())
+        tr = self.config.training
+        data_cfg = self.config.data
 
-            if current_dl_structure == 'temp_segm':
-                # TEMP_SEGM SPECIFIC RULES
-                min_segment_size = 3  # From to_temp_segm implementation
+        max_Kstep, delay_size, dl_structure = self._get_time_structure_params()
+        max_possible_Kstep = num_timepoints - 2
 
-                max_possible_Kstep = ceil(num_timepoints / min_segment_size) - 1
+        # === 🧭 Training mode correction ===
+        if tr.training_mode == "embed_tuned_stepwise":
+            tr.max_Kstep = max_possible_Kstep
+            data_cfg.dl_structure = "temporal"
 
-                if max_Kstep > max_possible_Kstep:
+            logger.info(
+                f"🪜 training_mode='embed_tuned_stepwise' → "
+                f"dl_structure='temporal', max_Kstep={max_possible_Kstep} "
+                f"for {num_timepoints} timepoints."
+            )
+
+        # === 🕒 Delay and segment structure corrections ===
+        if data_cfg.dl_structure in {"temp_delay", "temp_segm"}:
+            if tr.max_Kstep >= max_possible_Kstep:
+                logger.warning(
+                    f"⚠️ max_Kstep {tr.max_Kstep} too high for {num_timepoints} timepoints → switching to temporal mode."
+                )
+                tr.max_Kstep = max_possible_Kstep
+                data_cfg.dl_structure = "temporal"
+                data_cfg.delay_size = 0
+
+            elif data_cfg.dl_structure == "temp_segm":
+                seg_size = 3
+                limit = ceil(num_timepoints / seg_size) - 1
+                if tr.max_Kstep > limit:
                     logger.warning(
-                        f"Reducing max_Kstep from {max_Kstep} to {max_possible_Kstep} "
-                        f"(for {num_timepoints} timepoints with {min_segment_size}-point segments)"
+                        f"Reducing max_Kstep from {tr.max_Kstep} → {limit} for temp_segm (segment size={seg_size})."
                     )
-                    self.config.config['training']['max_Kstep'] = max_possible_Kstep
-                    
-            if current_dl_structure == 'temp_delay':
-                # TEMP_DELAY SPECIFIC RULES
+                    tr.max_Kstep = limit
 
-                # Standard adjustment logic
-                max_delay_size = num_timepoints - 1
-                if delay_size >= max_delay_size:
-                    delay_size = max_delay_size
-                    self.config.config['data']['delay_size'] = delay_size
+            elif data_cfg.dl_structure == "temp_delay":
+                data_cfg.delay_size = min(delay_size, num_timepoints - 1)
+                tr.max_Kstep = num_timepoints - data_cfg.delay_size
 
-                delay_max_Kstep = num_timepoints - delay_size
-                self.config.config['training']['max_Kstep'] = delay_max_Kstep
+        # === 🔄 Re-validate and optionally persist ===
+        self.config.correct()  # ensures consistency across model/training/data
+        if getattr(self.config, "file_path", None):
+            self.config.save(self.config.file_path)
 
-
-            logger.info(f"Final configuration: max_Kstep={self.config.config['training']['max_Kstep']}, delay_size={self.config.config['data']['delay_size']}, dl_structure={self.config.config['data'].get('dl_structure')}")
-
-            # Update data configuration
-            self.config.reload_config()
-            data_config = self.config.get_data_config()
-            logger.info(f"Data configuration updated: {data_config}")
+        logger.info(f"🧩 Temporal configuration updated and revalidated for {num_timepoints} timepoints.")
 
 
-        # Check if we have pre-split tensors
-        if isinstance(data, tuple) and len(data) == 2 and all(isinstance(t, torch.Tensor) for t in data):
-            logger.info("Loading pre-split train and validation tensordata...")
-            train_tensor, val_tensor = data
 
-            # correct delay_size param to provided tensor data delay
-            num_delays = train_tensor.shape[-2]
-            self.config.config['data']['delay_size'] = num_delays
-            
-            # Create TensorDatasets
-            from torch.utils.data import TensorDataset
-            train_dataset = TensorDataset(train_tensor)
-            val_dataset = TensorDataset(val_tensor)
-            
-            # Create data loaders
-            from koopomics.training.data_loader import PermutedDataLoader
-            self.train_loader = PermutedDataLoader(
-                dataset=train_dataset,
-                batch_size=data_config['batch_size'],
-                shuffle=False,
-                permute_dims=(1, 0, 2, 3),
-                mask_value=self.mask_value
-            )
-            
-            self.test_loader = PermutedDataLoader(
-                dataset=val_dataset,
-                batch_size=600,
-                shuffle=False,
-                permute_dims=(1, 0, 2, 3),
-                mask_value=self.mask_value
-            )
-            
-            # Set data_loader to None to indicate custom data loaders
-            self.data_loader = None
+    def _init_tensor_dataloaders(self, data_tuple):
+        """Initialize dataloaders directly from pre-split tensors."""
+        from torch.utils.data import TensorDataset
+        from koopomics.training.data_loader import PermutedDataLoader
+
+        train_tensor, val_tensor = data_tuple
+        data_cfg = self.config.get_data_config()
+
+        num_delays = train_tensor.shape[-2]
+        self.config["data"]["delay_size"] = num_delays
+
+        train_dataset = TensorDataset(train_tensor)
+        val_dataset = TensorDataset(val_tensor)
+
+        self.train_loader = PermutedDataLoader(train_dataset, batch_size=data_cfg["batch_size"], shuffle=False, permute_dims=(1, 0, 2, 3))
+        self.test_loader = PermutedDataLoader(val_dataset, batch_size=600, shuffle=False, permute_dims=(1, 0, 2, 3))
+        self.data_loader = None
+
+        logging.info(f"📦 Pre-split tensors loaded ({len(self.train_loader)} train, {len(self.test_loader)} val).")
 
 
-            
-            logger.info(f"Pre-split data loaded: {len(self.train_loader)} training batches, {len(self.test_loader)} validation batches")
-            
-        else:
-            logger.info("Loading and splitting dataframe...")
-            
-            # Create data loader
-            self.data_loader = OmicsDataloader(
-                df=self.data,
-                feature_list=self.feature_list,
-                replicate_id=self.replicate_id,
-                time_id = self.time_id,
-                condition_id = self.condition_id,
-                batch_size=data_config['batch_size'],
-                max_Kstep=self.config.max_Kstep,
-                dl_structure=data_config['dl_structure'],
-                shuffle=True,
-                mask_value=self.mask_value,
-                train_ratio=data_config['train_ratio'],
-                train_idx=train_idx,
-                test_idx=test_idx,
-                delay_size=data_config['delay_size'],
-                random_seed=data_config['random_seed'],
-                concat_delays=data_config['concat_delays'],
-                augment_by=data_config['augment_by'],
-                num_augmentations=data_config['num_augmentations']
-            )
+    def _init_dataframe_dataloaders(
+        self,
+        data_cfg,
+        split_by_timepoints: bool,
+        selected_replicates: Optional[List[int]] = None,
+        train_replicates: Optional[List[int]] = None,
+        test_replicates: Optional[List[int]] = None,
+        train_timepoints: Optional[List[int]] = None,
+        test_timepoints: Optional[List[int]] = None,
+    ):
+        """
+        Initialize OMICS dataloaders from a structured DataFrame.
 
-            if current_dl_structure == 'temp_segm':
-                # TEMP_SEGM SPECIFIC RULES
-                self.config.config['data']['delay_size'] = self.data_loader.structured_train_tensor.shape[-2]
+        This function prepares and instantiates the OmicsDataloader
+        depending on whether splitting is performed across replicates
+        or within replicates by timepoints.
 
-                # Update data configuration
-                self.config.reload_config()
-                data_config = self.config.get_data_config()
-                
-            logger.info("Creating OmicsDataloader with the following parameters:")
-            logger.info(f"  - batch_size: {data_config['batch_size']}")
-            logger.info(f"  - max_Kstep: {self.config.max_Kstep}")
-            logger.info(f"  - dl_structure: {data_config['dl_structure']}")
-            logger.info(f"  - shuffle: {True}")
-            logger.info(f"  - mask_value: {self.mask_value}")
-            logger.info(f"  - train_ratio: {data_config['train_ratio']}")
-            logger.info(f"  - delay_size: {data_config['delay_size']}")
-            logger.info(f"  - random_seed: {data_config['random_seed']}")
-            logger.info(f"  - concat_delays: {data_config['concat_delays']}")
-            logger.info(f"  - augment_by: {data_config['augment_by']}")
-            logger.info(f"  - num_augmentations: {data_config['num_augmentations']}")
-                                       
-            # Get data loaders
-            self.train_loader, self.test_loader = self.data_loader.get_dataloaders()
-            logger.info(f"Stuctured Data shape: {self.data_loader.structured_train_tensor.shape}")
+        Parameters
+        ----------
+        data_cfg : dict
+            Configuration dictionary defining loader parameters
+            (e.g., batch size, train ratio, augmentation, etc.).
+        split_by_timepoints : bool
+            Whether to perform timepoint-level splitting instead of replicate-level.
+        selected_replicates : list of int, optional
+            Replicates to process (used if split_by_timepoints=True).
+        train_replicates : list of int, optional
+            Replicates to include in the training set (replicate-level split).
+        test_replicates : list of int, optional
+            Replicates to include in the test set (replicate-level split).
+        train_timepoints : list of int, optional
+            Timepoints to include in the training set (timepoint-level split).
+        test_timepoints : list of int, optional
+            Timepoints to include in the test set (timepoint-level split).
+        """
+        from ..data_prep import OmicsDataloader
 
 
-            logger.info(f"Data loaded: {len(self.train_loader)} training batches, {len(self.test_loader)} testing batches")
+        # --- Core attributes ---
+        self.split_by_timepoints = split_by_timepoints
+        self.selected_replicates = selected_replicates
 
+        # --- Instantiate dataloader ---
+        self.data_loader = OmicsDataloader(
+            df=self.data,
+            feature_list=self.feature_list,
+            replicate_id=self.replicate_id,
+            time_id=self.time_id,
+            condition_id=self.condition_id,
+            batch_size=data_cfg["batch_size"],
+            max_Kstep=self.config.training.max_Kstep,
+            dl_structure=data_cfg["dl_structure"],
+            shuffle=True,
+            mask_value=self.mask_value,
+            train_ratio=data_cfg["train_ratio"],
+            delay_size=data_cfg["delay_size"],
+            random_seed=data_cfg["random_seed"],
+            concat_delays=data_cfg["concat_delays"],
+            augment_by=data_cfg["augment_by"],
+            num_augmentations=data_cfg["num_augmentations"],
+
+            # --- Split configuration ---
+            split_by_timepoints=self.split_by_timepoints,
+            selected_replicates=selected_replicates,
+            train_replicates=train_replicates,
+            test_replicates=test_replicates,
+            train_timepoints=train_timepoints,
+            test_timepoints=test_timepoints,
+        )
+
+        self.train_loader, self.test_loader = self.data_loader.get_dataloaders()
+
+
+    # ------------------------------------------------------------------
+    # 🔄 Reconfiguration
+    # ------------------------------------------------------------------
+    def reconfigure_data(self, max_Kstep: Optional[int] = None):
+        """
+        Rebuild dataloaders dynamically for progressive/stepwise training 
+        without reloading from disk. 
+        It is mainly used for the training mode: "Embed_Tuned_Stepwise".
+        """
+        from ..data_prep import OmicsDataloader
+
+        if self.data is None:
+            raise ValueError("No data available. Call `load_data()` first.")
+
+        logging.info(f"♻️ Reconfiguring dataloader (max_Kstep={max_Kstep}).")
+
+        data_cfg = self.config.get_data_config()
+        self.data_loader = OmicsDataloader(
+            df=self.data,
+            feature_list=self.feature_list,
+            replicate_id=self.replicate_id,
+            time_id=self.time_id,
+            condition_id=self.condition_id,
+            batch_size=data_cfg["batch_size"],
+            max_Kstep=max_Kstep,
+            dl_structure=data_cfg["dl_structure"],
+            shuffle=True,
+            mask_value=self.mask_value,
+            train_ratio=data_cfg["train_ratio"],
+            delay_size=data_cfg["delay_size"],
+            random_seed=data_cfg["random_seed"],
+            concat_delays=data_cfg["concat_delays"],
+            augment_by=data_cfg["augment_by"],
+            num_augmentations=data_cfg["num_augmentations"],
+            split_by_timepoints=self.split_by_timepoints,
+            replicate_idx=self.replicate_idx,
+        )
+
+        self.train_loader, self.test_loader = self.data_loader.get_dataloaders()
+        logging.info(f"✅ Dataloaders reconfigured: {len(self.train_loader)} train, {len(self.test_loader)} test.")
+
+
+    # ------------------------------------------------------------------
+    # 📤 Data reconstruction
+    # ------------------------------------------------------------------
     def get_data_dfs(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        """
-        Get the full, train, and test dataframes in the original format with replicate_id, time_id, and features.
-        This reconstructs the original structure even after temporal segmentation or delay structuring.
-        
-        Works with both regular data loading and pre-split tensors (with some limitations).
-        
-        Returns:
-            Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: (full_df, train_df, test_df)
-            
-        Raises:
-            ValueError: If data is not loaded or train/test loaders are not available
-        """
-        # Check if data loaders exist
+        """Reconstruct full, train, and test DataFrames from loaders."""
         if self.train_loader is None or self.test_loader is None:
-            raise ValueError("Train/test data not loaded. Call load_data() first with train_ratio > 0 or pre-split tensors.")
-            
-        logger.info("Reconstructing original dataframes from loaded data")
-        
-        # If we have a data_loader, use its reconstruction method
-        if self.data_loader is not None:
-            # Get train and test indices
-            train_indices, test_indices = self.data_loader.get_indices()
-            
-            # Reconstruct the original dataframes
-            full_df = self.data_loader.reconstruct_original_dataframe()
-            train_df = self.data_loader.reconstruct_original_dataframe(train_indices)
-            test_df = self.data_loader.reconstruct_original_dataframe(test_indices)
-            
-            logger.info(f"Reconstructed original dataframes: full ({full_df.shape}), train ({train_df.shape}), test ({test_df.shape})")
-            return full_df, train_df, test_df
-        
-        # For pre-split tensors, we need to create a synthetic dataframe
-        else:
-            logger.warning("Pre-split tensors were provided without original dataframe. Creating synthetic dataframe structure.")
-            
-            # Extract tensors from data loaders to determine dimensions
-            sample_train_batch = next(iter(self.train_loader))[0]
-            sample_test_batch = next(iter(self.test_loader))[0]
-            
-            # Create synthetic replicate_ids and time_ids
-            train_size = len(self.train_loader.dataset)
-            test_size = len(self.test_loader.dataset)
-            total_size = train_size + test_size
-            
-            # Create a base dataframe with synthetic IDs
-            synthetic_df = pd.DataFrame({
-                'replicate_id': [f'sample_{i}' for i in range(total_size)],
-                'time_id': [0] * total_size,  # Default time_id
-                'condition_id': ['unknown'] * total_size  # Default condition
-            })
-            
-            # Extract features if possible
-            if hasattr(self, 'feature_list') and self.feature_list:
-                feature_names = self.feature_list
-            else:
-                # Create synthetic feature names
-                if len(sample_train_batch.shape) >= 4:
-                    num_features = sample_train_batch.shape[-1]
-                    feature_names = [f'feature_{i}' for i in range(num_features)]
-                else:
-                    feature_names = ['unknown_feature']
-            
-            # Add dummy feature values
-            for feature in feature_names:
-                synthetic_df[feature] = 0.0
-                
-            # Split into train and test
-            train_df = synthetic_df.iloc[:train_size].copy()
-            test_df = synthetic_df.iloc[train_size:].copy()
-            
-            logger.info(f"Created synthetic dataframes: full ({synthetic_df.shape}), train ({train_df.shape}), test ({test_df.shape})")
-            logger.info("Note: These are synthetic dataframes with placeholder values since original data structure was not available.")
-            
-            return synthetic_df, train_df, test_df
-            
+            raise ValueError("No data loaded — call `load_data()` first.")
+
+        if self.data_loader:
+            train_idx, test_idx = self.data_loader.get_indices()
+            return (
+                self.data_loader.reconstruct_original_dataframe(),
+                self.data_loader.reconstruct_original_dataframe(train_idx),
+                self.data_loader.reconstruct_original_dataframe(test_idx),
+            )
+
+        logging.warning("⚠️ Using synthetic DataFrame reconstruction (no original data).")
+        return self._create_synthetic_dfs()
+
+    def _create_synthetic_dfs(self):
+        """Create synthetic dataframes if original data is unavailable."""
+        train_size, test_size = len(self.train_loader.dataset), len(self.test_loader.dataset)
+        total_size = train_size + test_size
+        feature_names = getattr(self, "feature_list", [f"feature_{i}" for i in range(self.train_loader.dataset.tensors[0].shape[-1])])
+
+        df = pd.DataFrame({
+            "replicate_id": [f"sample_{i}" for i in range(total_size)],
+            "time_id": [0] * total_size,
+            "condition_id": ["unknown"] * total_size,
+            **{f: [0.0] * total_size for f in feature_names},
+        })
+        return df, df.iloc[:train_size], df.iloc[train_size:]
+
+
+    # ------------------------------------------------------------------
+    # 🧾 Registry utilities
+    # ------------------------------------------------------------------
     def create_data_input_file(self, **kwargs):
-        """
-        Creates a YAML configuration file with HDF5 data storage.
-        
-        This is a wrapper around the DataRegistry method for backward compatibility.
-        """
-        # Ensure data registry exists
+        """Wrapper around `DataRegistry.create_data_input_file()`."""
         self._ensure_data_registry()
         return self._data_registry.create_data_input_file(**kwargs)

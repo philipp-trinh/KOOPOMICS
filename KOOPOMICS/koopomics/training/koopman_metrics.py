@@ -1,5 +1,5 @@
 
-import torch
+from koopomics.utils import torch, pd, np, wandb
 
 
 
@@ -144,17 +144,17 @@ class KoopmanMetricsMixin:
         for f in range(fwd):
             latent_fwd = self.model.operator.fwd_step(latent_fwd) # shift f times forward
 
-            if self.current_step > 1 and self.loss_weights[5] > 0:
-                shifted_fwd_storage = self.model.embedding.decode(latent_fwd)
+            if self.current_step > 1 and self.effective_loss_weights['tempcons'] > 0:
+                shifted_fwd_storage = self.model.embedding.decode(latent_fwd.real)
                 self.temporal_cons_fwd_storage[f] = shifted_fwd_storage
         
-        shifted_fwd = self.model.embedding.decode(latent_fwd)
+        shifted_fwd = self.model.embedding.decode(latent_fwd.real)
 
 
         loss_fwd_step += self.criterion(shifted_fwd, target_fwd)
 
         # Compute latent identity loss with shifted latent prediction
-        if self.loss_weights[2] > 0:
+        if self.effective_loss_weights["latent_identity"] > 0:
             latent_target_fwd = self.model.embedding.encode(target_fwd)
             mask = target_fwd != self.mask_value  
             
@@ -165,7 +165,7 @@ class KoopmanMetricsMixin:
             corrected_latent_target = torch.where(latent_mask, latent_target_fwd, torch.tensor(self.mask_value, device=latent_target_fwd.device))
             
 
-            loss_latent_fwd_identity_step += self.criterion(latent_fwd, corrected_latent_target)
+            loss_latent_fwd_identity_step += self.criterion(latent_fwd.real, corrected_latent_target)
             
         return loss_fwd_step, loss_latent_fwd_identity_step
 
@@ -178,17 +178,17 @@ class KoopmanMetricsMixin:
         for b in range(bwd):
             latent_bwd = self.model.operator.bwd_step(latent_bwd) # shift b times backward
 
-            if self.current_step > 1 and self.loss_weights[5] > 0:
-                shifted_bwd_storage = self.model.embedding.decode(latent_bwd)
+            if self.current_step > 1 and self.effective_loss_weights['tempcons'] > 0:
+                shifted_bwd_storage = self.model.embedding.decode(latent_bwd.real)
                 self.temporal_cons_bwd_storage[b-1] = shifted_bwd_storage
         
         
-        shifted_bwd = self.model.embedding.decode(latent_bwd)
+        shifted_bwd = self.model.embedding.decode(latent_bwd.real)
 
         loss_bwd_step += self.criterion(shifted_bwd, target_bwd)
 
         # Compute latent identity loss with shifted latent prediction
-        if self.loss_weights[2] > 0:
+        if self.effective_loss_weights['latent_identity'] > 0:
             latent_target_bwd = self.model.embedding.encode(target_bwd)
             mask = target_bwd != self.mask_value 
             
@@ -198,12 +198,47 @@ class KoopmanMetricsMixin:
 
             corrected_latent_target = torch.where(latent_mask, latent_target_bwd, torch.tensor(self.mask_value, device=latent_target_bwd.device))
                         
-            loss_latent_bwd_identity_step += self.criterion(latent_bwd, corrected_latent_target)
+            loss_latent_bwd_identity_step += self.criterion(latent_bwd.real, corrected_latent_target)
             
         return loss_bwd_step, loss_latent_bwd_identity_step
 
 
-    def compute_identity_loss(self, input_tensor, shift_target_tensor):
+    def compute_identity_loss(self, input_tensor, shift_target_tensor=None):
+        """
+        Computes the reconstruction (identity) loss of the autoencoder.
+        """
+        # Determine which tensor to reconstruct
+        target_tensor = shift_target_tensor if shift_target_tensor is not None else input_tensor
+
+        # Encode and decode
+        latent = self.model.embedding.encode(target_tensor)
+        reconstructed = self.model.embedding.decode(latent)
+
+        # Compute reconstruction loss
+        loss_identity = self.criterion(reconstructed, target_tensor)
+
+        return loss_identity
+
+
+    def compute_orthogonality_loss(self, latent_tensor):
+        """
+        Computes the orthogonality loss on the latent space.
+        Expects a tensor of shape [batch*time, latent_dim] or [batch, time, latent_dim].
+        """
+        if latent_tensor.dim() == 3:
+            batch_size, time_steps, latent_dim = latent_tensor.shape
+            Z = latent_tensor.reshape(batch_size * time_steps, latent_dim)
+        else:
+            Z = latent_tensor  # already [batch*time, latent_dim]
+
+        cov = Z.T @ Z / Z.shape[0]
+        I = torch.eye(Z.shape[1], device=Z.device)
+        loss_orth = torch.norm(cov - I, p='fro') ** 2
+
+        return loss_orth
+
+
+    def compute_identity_loss_(self, input_tensor, shift_target_tensor):
 
         loss_identity_step = torch.tensor(0.0, device=self.device)
         
@@ -221,28 +256,93 @@ class KoopmanMetricsMixin:
 
         return loss_identity_step
 
-    def compute_inverse_consistency(self, input_tensor, target_tensor):
-        
+    def compute_inverse_consistency(
+        self,
+        input_tensor,
+        target_tensor=None,
+        latent_invcons_weight: float | None = 0.02,
+    ):
+        """
+        Compute inverse-consistency loss between forward and backward Koopman operations.
+
+        Enforces that forward→backward and backward→forward dynamics approximately 
+        return to the same decoded observation (real domain).
+        Optionally adds a latent-space inverse consistency term for stability.
+
+        Parameters
+        ----------
+        input_tensor : torch.Tensor
+            Input observation at time t (real).
+        target_tensor : torch.Tensor, optional
+            Next observation (real). If provided, consistency is also enforced on it.
+        latent_weight : float or None, optional
+            Weight for latent-space inverse consistency regularization.
+            If None or 0, the term is skipped. Default = 0.02.
+
+        Returns
+        -------
+        loss_inv_cons_step : torch.Tensor
+            Total inverse consistency loss (scalar).
+        """
         loss_inv_cons_step = torch.tensor(0.0, device=self.device)
-        
-        latent_input = self.model.embedding.encode(input_tensor)
-        
-        inverted_bwd_fwd_input = self.model.embedding.decode(self.model.operator.bwd_step(self.model.operator.fwd_step(latent_input)))
-        loss_inv_cons_step += self.criterion(inverted_bwd_fwd_input, input_tensor)
 
-        inverted_fwd_bwd_input = self.model.embedding.decode(self.model.operator.fwd_step(self.model.operator.bwd_step(latent_input)))
-        loss_inv_cons_step += self.criterion(inverted_fwd_bwd_input, input_tensor)
+        # --------------------------------------------------------
+        # 🔹 Encode input (real → complex)
+        # --------------------------------------------------------
+        latent_input = self.model.embedding.encode(input_tensor).to(torch.complex64)
 
+        # Forward→Backward
+        fwd_bwd_input = self.model.operator.bwd_step(
+            self.model.operator.fwd_step(latent_input)
+        )
+        decoded_fwd_bwd_input = self.model.embedding.decode(fwd_bwd_input.real)
+        loss_inv_cons_step += self.criterion(decoded_fwd_bwd_input, input_tensor)
+
+        # Backward→Forward
+        bwd_fwd_input = self.model.operator.fwd_step(
+            self.model.operator.bwd_step(latent_input)
+        )
+        decoded_bwd_fwd_input = self.model.embedding.decode(bwd_fwd_input.real)
+        loss_inv_cons_step += self.criterion(decoded_bwd_fwd_input, input_tensor)
+
+        # --------------------------------------------------------
+        # 🔹 Optionally apply same consistency to target
+        # --------------------------------------------------------
         if target_tensor is not None:
-            latent_target = self.model.embedding.encode(target_tensor)
-        
-            inverted_bwd_fwd_target = self.model.embedding.decode(self.model.operator.bwd_step(self.model.operator.fwd_step(latent_target)))
-            loss_inv_cons_step += self.criterion(inverted_bwd_fwd_target, target_tensor)
-    
-            inverted_fwd_bwd_target = self.model.embedding.decode(self.model.operator.fwd_step(self.model.operator.bwd_step(latent_target)))
-            loss_inv_cons_step += self.criterion(inverted_fwd_bwd_target, target_tensor)
+            latent_target = self.model.embedding.encode(target_tensor).to(torch.complex64)
+
+            fwd_bwd_target = self.model.operator.bwd_step(
+                self.model.operator.fwd_step(latent_target)
+            )
+            decoded_fwd_bwd_target = self.model.embedding.decode(fwd_bwd_target.real)
+            loss_inv_cons_step += self.criterion(decoded_fwd_bwd_target, target_tensor)
+
+            bwd_fwd_target = self.model.operator.fwd_step(
+                self.model.operator.bwd_step(latent_target)
+            )
+            decoded_bwd_fwd_target = self.model.embedding.decode(bwd_fwd_target.real)
+            loss_inv_cons_step += self.criterion(decoded_bwd_fwd_target, target_tensor)
+
+        # --------------------------------------------------------
+        # ⚙️ Optional latent-space consistency (complex domain)
+        # --------------------------------------------------------
+        if latent_invcons_weight and latent_invcons_weight > 0:
+            latent_fwd_bwd = self.model.operator.bwd_step(
+                self.model.operator.fwd_step(latent_input)
+            )
+            latent_bwd_fwd = self.model.operator.fwd_step(
+                self.model.operator.bwd_step(latent_input)
+            )
+            loss_latent_cons = (
+                self.criterion(latent_fwd_bwd.real, latent_input.real)
+                + self.criterion(latent_fwd_bwd.imag, latent_input.imag)
+                + self.criterion(latent_bwd_fwd.real, latent_input.real)
+                + self.criterion(latent_bwd_fwd.imag, latent_input.imag)
+            )
+            loss_inv_cons_step += latent_invcons_weight * loss_latent_cons
 
         return loss_inv_cons_step
+
 
     def compute_temporal_consistency(self, temporal_cons_storage, bwd = False):
 
@@ -335,5 +435,92 @@ class KoopmanMetricsMixin:
 
                 
     def calculate_total_loss(self, *losses):
-        return sum(loss * weight for loss, weight in zip(losses, self.loss_weights))
+        """
+        Calculate the weighted total loss from a list of loss tensors.
+
+        The order of the loss tensors in `*losses` must match the order of keys
+        in `self.loss_weights`. The expected order is:
+
+            1. "fwd"             : forward prediction loss
+            2. "bwd"             : backward prediction loss
+            3. "latent_identity" : latent identity loss
+            4. "identity"        : autoencoder reconstruction loss
+            5. "orthogonality"   : latent space orthogonality loss
+            6. "invcons"         : inverse consistency loss
+            7. "tempcons"        : temporal consistency loss
+
+        Parameters
+        ----------
+        *losses : torch.Tensor
+            Individual loss components in the order listed above.
+
+        Returns
+        -------
+        torch.Tensor
+            Weighted total loss.
+        """
+        loss_total = 0.0
+        for loss, key in zip(losses, self.effective_loss_weights.keys()):
+            weight = self.effective_loss_weights[key]
+            loss_total += loss * weight
+        return loss_total
+
+    def koopman_stability_loss(self, max_radius: float = 1.05, koopman_stab_weight: float = 1e-3) -> torch.Tensor:
+        """
+        Penalize Koopman eigenvalues with |λ| > max_radius to softly enforce spectral stability.
+        Works for both forward and bidirectional (InvKoop) operators.
+
+        Parameters
+        ----------
+        model : torch.nn.Module
+            The full Koopman autoencoder model (must have .operator defined).
+        max_radius : float, optional
+            Maximum allowed spectral radius before penalty starts.
+        strength : float, optional
+            Regularization strength for penalizing unstable eigenvalues.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar stability loss (ready to add to total loss).
+        """
+
+        op = getattr(self.model, "operator", None)
+        if op is None:
+            raise AttributeError("Model has no 'operator' attribute.")
+
+        # ----------------------------------------------------------------------
+        # 🔍 Select appropriate Koopman matrix (forward direction)
+        # ----------------------------------------------------------------------
+        reg = str(getattr(op, "op_reg", "none")).lower()
+
+        try:
+            if reg in ["none", "no"]:
+                K = op.fwdkoop
+            elif reg == "banded":
+                K = op.bandedkoop_fwd.kmatrix()
+            elif reg == "skewsym":
+                # Skew-symmetric → purely imaginary spectrum, stable by construction
+                return torch.tensor(0.0, device=op.device)
+            elif reg == "nondelay":
+                K = op.nondelay_fwd.kmatrix()
+            else:
+                return torch.tensor(0.0, device=op.device)
+        except Exception as e:
+            print(f"⚠️ Could not extract Koopman matrix for stability loss: {e}")
+            return torch.tensor(0.0, device=op.device)
+
+        # ----------------------------------------------------------------------
+        # 🧮 Compute eigenvalue penalty
+        # ----------------------------------------------------------------------
+        try:
+            eigvals = torch.linalg.eigvals(K)
+            mags = torch.abs(eigvals)
+            penalty = torch.relu(mags - max_radius)
+            loss_val = koopman_stab_weight * torch.mean(penalty ** 2)
+            return loss_val.real
+        except RuntimeError as e:
+            print(f"⚠️ Stability loss skipped (eigendecomposition failed): {e}")
+            return torch.tensor(0.0, device=op.device)
+
 

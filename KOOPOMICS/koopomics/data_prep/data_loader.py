@@ -1,16 +1,12 @@
-import torch
+from koopomics.utils import torch, pd, np, wandb
 from torch.utils.data import DataLoader, TensorDataset, random_split, Subset
-import pandas as pd
-import numpy as np
 from typing import List, Union, Optional, Dict, Any, Literal
 
 
 
 import logging
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
+logger = logging.getLogger("koopomics")
 
 class PermutedDataLoader(DataLoader):
     """
@@ -63,47 +59,117 @@ class OmicsDataloaderBase:
     """Base class for Omics dataloaders with common functionality"""
     
 
-    def __init__(self, 
-                df: pd.DataFrame,
-                feature_list: List[str],
-                replicate_id: str,
-                time_id: str,
-                condition_id: str,
-                batch_size: int = 5,
-                max_Kstep: int = 10,
-                shuffle: bool = True,
-                mask_value: float = -2.0,
-                train_ratio: float = 0.0,
-                random_seed: int = 42,
-                train_idx: List[int] = None,
-                test_idx: List[int] = None, 
-                **kwargs: Dict[str, Any]) -> None:
+    def __init__(
+        self, 
+        df: pd.DataFrame,
+        feature_list: List[str],
+        replicate_id: str,
+        time_id: str,
+        condition_id: str,
+        batch_size: int = 5,
+        max_Kstep: int = 10,
+        shuffle: bool = True,
+        mask_value: float = -2.0,
+        train_ratio: float = 0.0,
+        random_seed: int = 42,
+        split_by_timepoints: bool = False,
+        selected_replicates: Optional[List[int]] = None,
+        train_replicates: Optional[List[int]] = None,
+        test_replicates: Optional[List[int]] = None,
+        train_timepoints: Optional[List[int]] = None,
+        test_timepoints: Optional[List[int]] = None,
+        **kwargs: Dict[str, Any],
+        ) -> None:
         """
-        Base initialization for all Omics dataloaders
-        
-        Args:
-            df: Temporally and replicate sorted DataFrame with uniform timeseries
-            feature_list: List of features to use
-            replicate_id: Column name for replicate ID
-            batch_size: Batch size for dataloader
-            max_Kstep: Maximum K-step for prediction
-            shuffle: Whether to shuffle the data
-            mask_value: Value to use for masking
-            train_ratio: Ratio of data to use for training (0 for no split)
-            random_seed: Random seed for reproducibility
-            **kwargs: Additional arguments including:
-                augment_by: Optional[List[str]] - Augmentation methods (e.g., ['noise', 'scale'])
-                num_augmentations: Optional[Union[int, List[int]]] - Number of augmentations per method
-                
-        Example:
-            >>> dataloader = OmicsDataloader(
-            ...     df=data,
-            ...     feature_list=['gene1', 'gene2'],
-            ...     replicate_id='sample_id',
-            ...     augment_by=['noise', 'scale'],
-            ...     num_augmentations=[2, 1]
-            ... )
+        Base initialization for all Omics dataloaders.
+
+        This class defines shared functionality for dataset preparation,
+        splitting strategies, and optional data augmentation. It is
+        designed to be extended by specialized dataloaders implementing
+        specific temporal structures (e.g., temporal, delay, segment).
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Input data, pre-sorted by replicate and time columns.
+            Must represent uniform time series per replicate.
+        feature_list : list of str
+            Names of features (columns) to include in the data tensor.
+        replicate_id : str
+            Column name representing biological or experimental replicates.
+        time_id : str
+            Column name representing timepoints.
+        condition_id : str
+            Column name representing experimental conditions.
+        batch_size : int, default=5
+            Batch size used for dataloaders.
+        max_Kstep : int, default=10
+            Maximum K-step for multi-step prediction.
+        shuffle : bool, default=True
+            Whether to shuffle data samples during batching.
+        mask_value : float, default=-2.0
+            Value used for masked or invalid data points.
+        train_ratio : float, default=0.0
+            Proportion of the dataset assigned to training (0 → no split).
+        random_seed : int, default=42
+            Random seed to ensure reproducibility of splits and augmentations.
+
+        split_by_timepoints : bool, default=False
+            Whether to split the data by timepoints instead of by replicates.
+
+        selected_replicates : list[int], optional
+            Subset of replicates to use when performing a timepoint-level split.
+
+        train_replicates : list[int], optional
+            Replicate indices assigned to the training set
+            (used for replicate-level splitting).
+
+        test_replicates : list[int], optional
+            Replicate indices assigned to the test set
+            (used for replicate-level splitting).
+
+        train_timepoints : list[int], optional
+            Timepoint indices assigned to the training segment
+            (used for timepoint-level splitting).
+
+        test_timepoints : list[int], optional
+            Timepoint indices assigned to the test segment
+            (used for timepoint-level splitting).
+
+        **kwargs : dict, optional
+            Additional keyword arguments, such as:
+            
+            augment_by : list[str], optional
+                Data augmentation methods to apply to training samples.
+                Supported options include:
+                - 'noise'     : Add Gaussian noise to features
+                - 'scale'     : Apply feature-wise scaling
+                - 'shift'     : Randomly shift feature intensities
+                - 'time_warp' : Slightly distort temporal spacing
+
+            num_augmentations : int | list[int], optional
+                Number of augmentations to apply per method. Can be:
+                - A single integer (applies to all methods equally)
+                - A list specifying augmentation count per method
+
+        Example
+        -------
+        >>> dataloader = OmicsDataloader(
+        ...     df=data,
+        ...     feature_list=['gene1', 'gene2'],
+        ...     replicate_id='sample_id',
+        ...     time_id='time',
+        ...     condition_id='treatment',
+        ...     augment_by=['noise', 'scale'],
+        ...     num_augmentations=[2, 1],
+        ...     split_by_timepoints=True,
+        ...     selected_replicates=[0, 1],
+        ...     train_timepoints=[0, 1, 2],
+        ...     test_timepoints=[3, 4]
+        ... )
         """
+
+        # ⚙️ --- Core configuration ---
         self.df = df
         self.feature_list = feature_list
         self.replicate_id = replicate_id
@@ -114,86 +180,281 @@ class OmicsDataloaderBase:
         self.shuffle = shuffle
         self.mask_value = mask_value
         self.train_ratio = train_ratio
-        
         self.random_seed = random_seed
+
+        # 📦 --- Data handling attributes ---
         self.perm_indices = None
         self.data_shape = None
-        
-        torch.manual_seed(self.random_seed)
-        np.random.seed(self.random_seed)
-        
-        # Initialize loaders and dataset attributes
         self.train_loader = None
         self.test_loader = None
         self.permuted_loader = None
         self.dataset_df = None
-        self.train_idx = train_idx
-        self.test_idx = test_idx
 
-        # Load data into tensor
-        self.data_tensor, self.index_tensor = self.prepare_data()
+        # 🎲 --- Reproducibility ---
+        torch.manual_seed(self.random_seed)
+        np.random.seed(self.random_seed)
         
-        self.train_tensor, self.test_tensor = self.split_tensor_data(data_tensor=self.data_tensor,
-                                                                     train_ratio=self.train_ratio,
-                                                                     train_idx=self.train_idx,
-                                                                     test_idx = self.test_idx)
+
+        # 🧱 --- Load Data ---
+        self.df_tensor, self.df_index_tensor, self.data_tensor, self.index_tensor = self.prepare_data()
+        # 🕓 --- Split configuration ---
+        # By timepoints:
+        self.split_by_timepoints = split_by_timepoints
+        self.selected_replicates = selected_replicates  # default first replicate
+        self.train_timepoints = train_timepoints
+        self.test_timepoints = test_timepoints
+        # By replicates:
+        self.train_replicates = train_replicates
+        self.test_replicates = test_replicates
+
+
+        if self.split_by_timepoints:
+            
+            self.train_tensor, self.test_tensor = self.split_tensor_by_timepoints(
+            tensor=self.data_tensor,
+            selected_replicates=self.selected_replicates, 
+            train_ratio=self.train_ratio,
+            train_timepoints=self.train_timepoints,
+            test_timepoints=self.test_timepoints
+        )        
+
+            self.train_index_tensor, self.test_index_tensor = self.split_tensor_by_timepoints(
+            tensor=self.index_tensor,
+            selected_replicates=self.selected_replicates, 
+            train_ratio=self.train_ratio,
+            train_timepoints=self.train_timepoints,
+            test_timepoints=self.test_timepoints
+        )        
+
+
+        else:
+
+            self.train_tensor, self.test_tensor = self.split_tensor_by_replicates(data_tensor=self.data_tensor,
+                                                            train_ratio=self.train_ratio,
+                                                            train_replicates=self.train_replicates,
+                                                            test_replicates = self.test_replicates)
         
-        self.train_index_tensor, self.test_index_tensor = self.split_tensor_data(data_tensor=self.index_tensor,
-                                                                     train_ratio=self.train_ratio,
-                                                                     train_idx=self.train_idx,
-                                                                     test_idx = self.test_idx)
+            self.train_index_tensor, self.test_index_tensor = self.split_tensor_by_replicates(data_tensor=self.index_tensor,
+                                                                        train_ratio=self.train_ratio,
+                                                                        train_replicates=self.train_replicates,
+                                                                        test_replicates = self.test_replicates)
+
 
         # Handle data augmentation
         if 'augment_by' in kwargs and kwargs['augment_by'] is not None:
             augment_methods = kwargs['augment_by']
             num_augmentations = kwargs.get('num_augmentations', 2)  # Default 2 if not specified
             
+
+        # Handle data augmentation if specified
+        self.augment_by = kwargs.get("augment_by", None)
+        self.num_augmentations = kwargs.get("num_augmentations", 2)  # default 2
+
+        if self.augment_by is not None:
+
             # Perform augmentation before preparing tensors
             self.augment_train_tensor(augmentation_methods=augment_methods,
                             num_augmentations=num_augmentations)
             
 
-        # Structure Tensors - will be implemented by subclasses
+        # 🧩 --- Structured tensors (to be implemented by subclasses) ---
         self.structured_train_tensor = torch.empty(0)
         self.structured_index_tensor = torch.empty(0)
-    
-    def split_tensor_data(self, data_tensor, train_ratio=1.0, train_idx=None, test_idx=None):
+
+        # 🧾 Print summary after setup
+        self._print_initialization_summary()
+
+    def _print_initialization_summary(self) -> None:
+        """🧾 Print and log a structured summary after dataloader initialization"""
+        summary_lines = [
+            "\n" + "=" * 60,
+            "🧬 OmicsDataloaderBase Initialization Summary",
+            "=" * 60,
+            f"📁 DataFrame shape         : {self.df.shape}",
+            f"🧫 Features used           : {len(self.feature_list)} → {self.feature_list[:6]}{'...' if len(self.feature_list) > 6 else ''}",
+            f"🔢 Replicate ID column     : '{self.replicate_id}'",
+            f"🕓 Time ID column          : '{self.time_id}'",
+            f"🧪 Condition ID column     : '{self.condition_id}'",
+            f"📦 Batch size              : {self.batch_size}",
+            f"⏩ Max K-step              : {self.max_Kstep}",
+            f"🎲 Shuffle                 : {self.shuffle}",
+            f"🧮 Train ratio             : {self.train_ratio:.2f}",
+            f"🌱 Split by timepoints     : {self.split_by_timepoints}",
+            f"🧠 Random seed             : {self.random_seed}",
+        ]
+
+        # Add tensor info (if available)
+        if hasattr(self, "data_tensor") and self.data_tensor is not None:
+            summary_lines.append(f"🧬 Data tensor shape       : {tuple(self.data_tensor.shape)}")
+        if hasattr(self, "index_tensor") and self.index_tensor is not None:
+            summary_lines.append(f"🔖 Index tensor shape      : {tuple(self.index_tensor.shape)}")
+
+
+        # --- ✂️ Split Information ---
+        summary_lines.append("\n✂️  Split Information")
+        summary_lines.append("-" * 70)
+
+        if hasattr(self, "split_info") and self.split_info:
+            if self.split_by_timepoints:
+                summary_lines.append("🧫 Split mode               : by timepoints")
+                for info in self.split_info:
+                    rep = info.get("replicate", 0)
+                    tr_min, tr_max = info.get("train_range", (None, None))
+                    te_min, te_max = info.get("test_range", (None, None))
+                    tr_size, te_size = info.get("train_size", 0), info.get("test_size", 0)
+                    summary_lines.append(
+                        f"   🧬 Rep {rep:<2} → Train [{tr_min}–{tr_max}] ({tr_size}), Test [{te_min}–{te_max}] ({te_size})"
+                    )
+
+            else:
+                summary_lines.append("🧫 Split mode               : by replicates/samples")
+                train_reps = [d["replicate"] for d in self.split_info if d["set"] == "train"]
+                test_reps = [d["replicate"] for d in self.split_info if d["set"] == "test"]
+                summary_lines.append(f"   🧬 Replicates in train → {train_reps}")
+                summary_lines.append(f"   🧬 Replicates in test  → {test_reps}")
+
+            if hasattr(self, "train_tensor") and hasattr(self, "test_tensor"):
+                summary_lines.append(
+                    f"📊 Tensor shapes → "
+                    f"Train: {tuple(self.train_tensor.shape)}, "
+                    f"Test: {tuple(self.test_tensor.shape)} "
+                    f"(dims: replicates × K+1 × timepoints × features)"
+                )
+        else:
+            summary_lines.append("⚠️  No split information found.")
+
+
+        # Augmentation info
+        if getattr(self, "augment_by", None) is not None:
+            summary_lines.append("🧪 Data Augmentation:")
+            summary_lines.append(f"   → Methods: {self.augment_by}")
+            summary_lines.append(f"   → Num augmentations: {self.num_augmentations}")
+        else:
+            summary_lines.append("🧪 Data Augmentation     : None")
+
+        summary_lines.append("=" * 60)
+        summary_text = "\n".join(summary_lines)
+
+        logger.info(summary_text)
+
+    def split_tensor_by_replicates(self, data_tensor, train_ratio=1.0, train_replicates=None, test_replicates=None):
         """
         Splits the input tensor into training and testing sets.
+        Splits along replicate dimension
         Default: train_ratio=1 (all data in training set, empty test set).
         
         Args:
             data_tensor: Input tensor to split (along dim=0).
             train_ratio: If provided, randomly splits data (default=1.0 → all train).
-            train_idx: Optional precomputed train indices (list/tuple/tensor).
-            test_idx: Optional precomputed test indices (list/tuple/tensor).
+            train_replicates: Optional precomputed train indices (list/tuple/tensor).
+            test_replicates: Optional precomputed test indices (list/tuple/tensor).
         
         Returns:
             train_tensor, test_tensor
         """
-        if train_idx is not None and test_idx is not None:
-            # Case 1: Predefined indices (ignore train_ratio)
-            if not isinstance(train_idx, torch.Tensor):
-                train_idx = torch.tensor(train_idx, dtype=torch.long)
-            if not isinstance(test_idx, torch.Tensor):
-                test_idx = torch.tensor(test_idx, dtype=torch.long)
-            
+
+
+        num_reps = data_tensor.size(0)
+
+        # 🧩 --- Determine indices ---
+        if train_replicates is not None and test_replicates is not None:
+            # Predefined split
+            self.train_idx = torch.as_tensor(train_replicates, dtype=torch.long)
+            self.test_idx = torch.as_tensor(test_replicates, dtype=torch.long)
         else:
-            # Case 2: Split by train_ratio (default: train_ratio=1 → all train)
-            num_samples = data_tensor.size(0)
-            train_size = int(train_ratio * num_samples)
-            indices = torch.randperm(num_samples)
-            train_idx = indices[:train_size]
-            test_idx = indices[train_size:]  # Empty if train_ratio=1
-        
-        # Perform the split
-        train_tensor = data_tensor[train_idx]
-        test_tensor = data_tensor[test_idx] if len(test_idx) > 0 else torch.tensor([])
-        
-        # Store the ratio
-        self.train_ratio = len(train_idx) / max(1, (len(train_idx) + len(test_idx)))  # Avoid division by zero
-        
+            # Random split by ratio
+            indices = torch.arange(num_reps)
+            train_size = int(train_ratio * num_reps)
+            shuffled = indices[torch.randperm(num_reps)]
+            self.train_idx = shuffled[:train_size]
+            self.test_idx = shuffled[train_size:]
+
+        # 🧮 --- Perform split ---
+        train_tensor = data_tensor[self.train_idx]
+        test_tensor = (
+            data_tensor[self.test_idx] if len(self.test_idx) > 0 else torch.empty(0)
+        )
+
+        # --- Store detailed split info per replicate ---
+        self.split_info = []
+        for ridx in range(num_reps):
+            role = "train" if ridx in self.train_idx.tolist() else (
+                "test" if ridx in self.test_idx.tolist() else "unused"
+            )
+            self.split_info.append({
+                "mode": "sample",
+                "replicate": int(ridx),
+                "set": role
+            })
+
+
+        # 🧩 --- Store ratio ---
+        self.train_ratio = len(self.train_idx) / max(
+            1, (len(self.train_idx) + len(self.test_idx))
+        )
+
         return train_tensor, test_tensor
+
+    def split_tensor_by_timepoints(self, tensor, selected_replicates=[0], train_ratio=0.8, train_timepoints=None, test_timepoints=None):
+        """
+        Split one or more replicates along the timepoint dimension (dim=2) deterministically.
+
+        Args:
+            tensor: torch.Tensor
+                Shape [num_replicates, K+1, timepoints] or [num_replicates, K+1, timepoints, features].
+            selected_replicates: int or list of ints
+                Which replicate(s) to select.
+            train_ratio: float
+                Fraction of timepoints used for training (default 0.8).
+            train_timepoints: optional tensor/list
+                Custom indices for training timepoints (overrides train_ratio).
+            test_timepoints: optional tensor/list
+                Custom indices for test timepoints (overrides train_ratio).
+
+        Returns:
+            train_tensor: torch.Tensor
+                [num_selected_replicates, K+1, train_size, ...]
+            test_tensor: torch.Tensor
+                [num_selected_replicates, K+1, test_size, ...]
+        """
+        if isinstance(selected_replicates, int):
+            selected_replicates = [selected_replicates]
+
+        train_list, test_list = [], []
+        split_info = []
+
+        for ridx in selected_replicates:
+            rep_tensor = tensor[ridx]  # shape [K+1, timepoints, ...]
+            num_timepoints = rep_tensor.shape[1]
+
+            # Determine split indices
+            if train_timepoints is not None and test_timepoints is not None:
+                train_index = torch.as_tensor(train_timepoints)
+                test_index = torch.as_tensor(test_timepoints)
+            else:
+                train_size = min(int(train_ratio * num_timepoints), num_timepoints - 1)
+                train_index = torch.arange(train_size)
+                test_index = torch.arange(train_size, num_timepoints)
+
+            # Perform split
+            train_rep = rep_tensor[:, train_index, ...]
+            test_rep = rep_tensor[:, test_index, ...]
+            train_list.append(train_rep)
+            test_list.append(test_rep)
+
+            # Store for summary
+            split_info.append({
+                "replicate": ridx,
+                "train_range": (train_index.min().item(), train_index.max().item()),
+                "test_range": (test_index.min().item(), test_index.max().item()),
+                "train_size": len(train_index),
+                "test_size": len(test_index)
+            })
+
+        # Save split info for summary printing
+        self.split_info = split_info
+
+        return torch.stack(train_list), torch.stack(test_list)
 
     def augment_train_tensor(self, augmentation_methods: Union[str, List[str]], num_augmentations: Union[int, List[int]]) -> None:
         """
@@ -408,7 +669,7 @@ class OmicsDataloaderBase:
             data_tensor = torch.stack(sample_data)  # [samples, K+1, window, features]
             index_tensor = torch.stack(sample_indices)  # [samples, K+1, window]
             
-        return data_tensor, index_tensor  
+        return df_tensor, index_base, data_tensor, index_tensor  
 
     def structure_data(self):
         """To be implemented by subclasses"""
@@ -1238,51 +1499,68 @@ class OmicsDataloader:
         dl_structure: Literal['random', 'temporal', 'temp_delay', 'temp_segm'] = 'random',
         shuffle: bool = True,
         mask_value: float = -2.0,
-        train_ratio: float = 1,
-        train_idx: Optional[List[int]] = None,
-        test_idx: Optional[List[int]] = None,
+        train_ratio: float = 1.0,
         delay_size: int = 3,
         concat_delays: bool = False,
         random_seed: int = 42,
         augment_by: Optional[List[str]] = None,
-        num_augmentations: Optional[Union[int, List[int]]] = None
+        num_augmentations: Optional[Union[int, List[int]]] = None,
+        split_by_timepoints: bool = False,
+        selected_replicates: Optional[List[int]] = None,
+        train_replicates: Optional[List[int]] = None,
+        test_replicates: Optional[List[int]] = None,
+        train_timepoints: Optional[List[int]] = None,
+        test_timepoints: Optional[List[int]] = None,
     ) -> None:
         """
-        Initialize a Koopman operator-compatible dataloader with configurable temporal structure.
-        
-        Args:
-            df: Input DataFrame containing time series data with consistent sampling intervals.
-                Must be pre-sorted by replicate_id and time.
-            feature_list: Column names of features to use for modeling.
-            replicate_id: Column name identifying individual time series replicates.
-            batch_size: Number of samples per training batch.
-            max_Kstep: Maximum prediction horizon steps (K) for multi-step forecasting.
-            dl_structure: Determines how temporal data is structured:
-                'random' - Treats each time point independently
-                'temporal' - Preserves full original sequences
-                'temp_delay' - Sliding window with overlap (delay embedding)
-                'temp_segm' - Non-overlapping temporal segments
-            shuffle: Whether to shuffle samples during training.
-            mask_value: Special value indicating masked/invalid data points.
-            train_ratio: Proportion (0-1) of data to use for training (rest for validation).
-            delay_size: Window length for 'temp_delay' structure.
-            concat_delays: Whether to concatenate delay windows along feature axis.
-            random_seed: Seed for all random number generators.
-            augment_by: List of augmentation methods to apply. Options:
-                'noise', 'scale', 'shift', 'time_warp'
-            num_augmentations: Either:
-                - Single integer (applies to all augmentation methods)
-                - List matching augment_by length (specifies counts per method)
-        
-        Example:
-            >>> loader = KoopmanDataLoader(
-            ...     df=timeseries_data,
-            ...     feature_list=['gene1', 'gene2'],
-            ...     replicate_id='sample_id',
-            ...     dl_structure='temp_delay',
-            ...     augment_by=['noise', 'scale'],
-            ...     num_augmentations=[3, 1]
-            ... )
+        Initialize an Omics dataloader compatible with Koopman operator modeling.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Input data, pre-sorted by replicate and time identifiers.
+        feature_list : list of str
+            Feature (column) names to include.
+        replicate_id : str
+            Column name identifying experimental or biological replicates.
+        time_id : str
+            Column name representing the temporal dimension.
+        condition_id : str
+            Column name identifying experimental conditions or treatments.
+        batch_size : int, default=5
+            Number of samples per training batch.
+        max_Kstep : int, default=10
+            Maximum number of future steps to predict.
+        dl_structure : {'random', 'temporal', 'temp_delay', 'temp_segm'}, default='random'
+            Determines how the temporal data is structured.
+        shuffle : bool, default=True
+            Whether to shuffle samples in each epoch.
+        mask_value : float, default=-2.0
+            Value used to mark masked or invalid samples.
+        train_ratio : float, default=1.0
+            Ratio of data assigned to training.
+        delay_size : int, default=3
+            Size of temporal delay window for `temp_delay` structure.
+        concat_delays : bool, default=False
+            Whether to concatenate delays along the feature axis.
+        random_seed : int, default=42
+            Random seed for reproducibility.
+        augment_by : list of str, optional
+            Augmentation methods to apply (e.g., ['noise', 'scale']).
+        num_augmentations : int | list[int], optional
+            Number of augmentations per method.
+        split_by_timepoints : bool, default=False
+            Whether to perform timepoint-based splitting within replicates.
+        selected_replicates : list[int], optional
+            Replicates to process when `split_by_timepoints=True`.
+        train_replicates : list[int], optional
+            Replicate indices for training split.
+        test_replicates : list[int], optional
+            Replicate indices for testing split.
+        train_timepoints : list[int], optional
+            Time indices for training split (if splitting by timepoints).
+        test_timepoints : list[int], optional
+            Time indices for testing split (if splitting by timepoints).
         """
         self.dl_structure = dl_structure
         self.delay_size = delay_size
@@ -1290,24 +1568,30 @@ class OmicsDataloader:
         
         # Common parameters for all dataloader types
         common_params = {
-            'df': df,
-            'feature_list': feature_list,
-            'replicate_id': replicate_id,
-            'time_id': time_id,
-            'condition_id': condition_id,
-            'batch_size': batch_size,
-            'max_Kstep': max_Kstep,
-            'shuffle': shuffle,
-            'mask_value': mask_value,
-            'train_ratio': train_ratio,
-            'train_idx': train_idx,
-            'test_idx': test_idx,
-            'random_seed': random_seed,
-            'augment_by': augment_by,
-            'num_augmentations': num_augmentations
+            "df": df,
+            "feature_list": feature_list,
+            "replicate_id": replicate_id,
+            "time_id": time_id,
+            "condition_id": condition_id,
+            "batch_size": batch_size,
+            "max_Kstep": max_Kstep,
+            "shuffle": shuffle,
+            "mask_value": mask_value,
+            "train_ratio": train_ratio,
+            "random_seed": random_seed,
+            "augment_by": augment_by,
+            "num_augmentations": num_augmentations,
+
+            # --- Split configuration ---
+            "split_by_timepoints": split_by_timepoints,
+            "selected_replicates": selected_replicates,
+            "train_replicates": train_replicates,
+            "test_replicates": test_replicates,
+            "train_timepoints": train_timepoints,
+            "test_timepoints": test_timepoints,
         }
-        
-        # Select the appropriate dataloader implementation
+
+        # --- Select the appropriate dataloader implementation ---
         if dl_structure == 'temporal':
             self.dataloader = TemporalDataloader(**common_params)
         elif dl_structure == 'temp_delay':

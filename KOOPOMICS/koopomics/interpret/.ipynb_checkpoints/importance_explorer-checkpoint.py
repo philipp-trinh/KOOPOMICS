@@ -10,10 +10,19 @@ Classes:
     Importance_Explorer_v2: Main class for analyzing feature importance in Koopman models with SLURM support.
 """
 
-from koopomics.utils import torch, pd, np, wandb
-
+import torch
+import numpy as np
+import pandas as pd
+import networkx as nx
+import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
+from scipy.signal import savgol_filter
+from captum.attr import IntegratedGradients
 from typing import Dict, List, Tuple, Union, Optional, Any
+from ..training.data_loader import OmicsDataloader
 import os
+import submitit
 import pickle
 from pathlib import Path
 import time
@@ -143,7 +152,6 @@ class Importance_Explorer:
         
         # Initialize the storage for attributions
         self.attributions_dicts = {}
-        self.registry_dir = 'importance_calc'
         
         # Set up the default time series parameters
         timeseries_length = len(test_df[time_id].unique())
@@ -182,8 +190,6 @@ class Importance_Explorer:
 
     def _compute_initial_state_median(self):
         """Compute the median of the initial state across all samples."""
-        from ..data_prep import OmicsDataloader
-
         dataloader_test = OmicsDataloader(self.norm_df, self.feature_list, self.replicate_id,
                                           batch_size=600, dl_structure='temporal',
                                           max_Kstep=7, mask_value=self.mask_value, shuffle=False)
@@ -289,8 +295,6 @@ class Importance_Explorer:
         Raises:
             ValueError: If method is not 'std' or 'range'
         """
-        from ..data_prep import OmicsDataloader
-
         if method not in ['std', 'range']:
             raise ValueError("Normalization method must be 'std' or 'range'")
             
@@ -411,10 +415,6 @@ class Importance_Explorer:
                 - min_ts: Minimum attributions
                 - min_indices_ts: Indices of minimum attributions
         """
-        from ..data_prep import OmicsDataloader
-
-        from captum.attr import IntegratedGradients
-
         device = next(self.model.parameters()).device
 
         
@@ -613,7 +613,6 @@ class Importance_Explorer:
         return pd.DataFrame(rows)
     
     def calculate_importances(self, 
-                            name: Optional[str] = "KOOP",
                             kstep: int = 1,
                             direction: str = 'forward',
                             start_timepoint_idx: int = 0,
@@ -651,26 +650,6 @@ class Importance_Explorer:
         
         key = (0, max_Kstep, start_timepoint_idx, end_timepoint_idx, fwd, bwd)
 
-        # ====== 1. Build filename for registry cache ======
-        if self.registry_dir and not os.path.exists(self.registry_dir):
-            os.makedirs(self.registry_dir, exist_ok=True)
-
-        print(f"{name}_importance_k{kstep}_{direction}_t{start_timepoint_idx}_to_{end_timepoint_idx}.pkl")
-
-        cache_file = os.path.join(
-            self.registry_dir,
-            f"{name}_importance_k{kstep}_{direction}_t{start_timepoint_idx}_to_{end_timepoint_idx}.pkl"
-        )
-
-        # ====== 2. Try loading from registry ======
-        if os.path.exists(cache_file):
-            with open(cache_file, 'rb') as f:
-                importance_df, attributions_dict = pickle.load(f)
-            self.attributions_dicts[key] = attributions_dict  # Restore in-memory
-            return importance_df, attributions_dict
-
-        # ====== 3. Compute and save if not cached ======
-
         if key not in self.attributions_dicts.keys():
             # Calculate attributions and store in the dictionary with the key
             self.attributions_dicts[key] = self.get_importance(
@@ -698,10 +677,6 @@ class Importance_Explorer:
             ascending=False
         ).reset_index(drop=True)
         
-        # Save to registry
-        with open(cache_file, 'wb') as f:
-            pickle.dump((importance_df, attributions_dict), f)
-
         return importance_df, attributions_dict        
 
     @staticmethod
@@ -780,9 +755,6 @@ class Importance_Explorer:
         cpu_results = {k: v.cpu() for k, v in results.items()}  
         
         # Save results to file
-        results_dir = Path(results_dir)
-        results_dir.mkdir(parents=True, exist_ok=True)  # Create directory if it doesn't exist
-
         result_file = results_dir / f"importance_job_{job_id}.pkl"
         try:
             with open(result_file, 'wb') as f:
@@ -820,7 +792,7 @@ class Importance_Explorer:
                               multishift: bool = False,
                               n_steps: int = 100,
                               batch_size: int = 8,
-                              ) -> "List[submitit.Job]":
+                              n_jobs: int = 4) -> List[submitit.Job]:
         """
         Submit multiple importance calculation jobs to SLURM for parallel execution.
         
@@ -843,7 +815,6 @@ class Importance_Explorer:
         Returns:
             List[submitit.Job]: List of submitted SLURM jobs
         """
-        import submitit
 
         # Prepare executor
         executor = submitit.AutoExecutor(folder=self.log_dir)
@@ -858,13 +829,11 @@ class Importance_Explorer:
         total_timepoints = min(end_timepoint_idx - start_timepoint_idx,
                               len(self.test_df[self.time_id].unique()) - start_timepoint_idx)
         
+        print(f"Processing {total_timepoints} timepoints across {n_jobs} jobs")
         
         # Adjust n_jobs if there are fewer timepoints than requested jobs
-        n_jobs = total_timepoints
+        n_jobs = min(n_jobs, total_timepoints)
         
-        print(f"Processing {total_timepoints} timepoints across {n_jobs} jobs")
-
-
         # Distribute timepoints among jobs
         timepoints = list(range(start_timepoint_idx, start_timepoint_idx + total_timepoints))
         chunks = [[] for _ in range(n_jobs)]
@@ -909,7 +878,7 @@ class Importance_Explorer:
 
         return jobs
 
-    def collect_importance_results(self, jobs: "List[submitit.Job]",
+    def collect_importance_results(self, jobs: List[submitit.Job],
                                   key: Tuple[int, int, int, int, bool, bool],
                                   wait: bool = True,
                                   timeout: int = 3600) -> Dict[str, torch.Tensor]:
@@ -927,18 +896,23 @@ class Importance_Explorer:
             
         Returns:
             Dict[str, torch.Tensor]: Combined dictionary with aggregated importance metrics
-            """
+        """
         if wait:
+            # Wait for all jobs to complete
             start_time = time.time()
-            while time.time() - start_time < timeout:
+            all_completed = False
+            
+            while not all_completed and (time.time() - start_time < timeout):
                 statuses = [job.done() for job in jobs]
-                if all(statuses):
-                    break
-                print(f"Waiting for jobs: {sum(statuses)}/{len(jobs)} done")
-                time.sleep(30)
-            else:
-                print(f"Timeout reached ({timeout}s). Proceeding with available results.")
-
+                all_completed = all(statuses)
+                
+                if not all_completed:
+                    print(f"Waiting for jobs to complete: {sum(statuses)}/{len(statuses)} done")
+                    time.sleep(30)  # Check every 30 seconds
+            
+            if not all_completed:
+                print(f"Warning: Not all jobs completed within timeout ({timeout} seconds)")
+                print(f"Proceeding with available results")
         
         # Collect results from all completed jobs
         job_results = []
@@ -948,9 +922,10 @@ class Importance_Explorer:
                 continue
             
             try:
-
+                # Try to get results directly from the job with device mapping to prevent CUDA errors
+                # We'll need to handle the map_location here to move tensors to the current device
                 result = job.results()
-                job_results.append(result[0])
+                job_results.append(result)
             except Exception as e:
                 print(f"Error getting results from job {job_id}: {e}")
                 
@@ -982,7 +957,7 @@ class Importance_Explorer:
                             try:
                                 # First try direct loading, which may fail with CUDA tensors
                                 result = pickle.load(f)
-                                job_results.append(result[0])
+                                job_results.append({'results': result})
                             except RuntimeError as e:
                                 if "CUDA" in str(e):
                                     # Retry with CPU mapping
@@ -990,7 +965,7 @@ class Importance_Explorer:
                                     # Use torch.load directly with explicit map_location
                                     try:
                                         result = torch.load(result_file, map_location='cpu')
-                                        job_results.append(result)
+                                        job_results.append({'results': result})
                                         print(f"Successfully loaded results with torch.load for job {job_id}")
                                     except Exception as e3:
                                         print(f"Error with torch.load for job {job_id}: {e3}")
@@ -1040,29 +1015,34 @@ class Importance_Explorer:
         
         # Extract and combine tensors from all jobs
         combined_results = {}
-        first_result = job_results[0]
-        print(job_results)
+        first_result = job_results[0]['results']
+        
         # Initialize tensors for combined results
         for tensor_key in ['mean_tp', 'RMS_ts_attributions', 'max_ts', 'max_indices_ts', 'min_ts', 'min_indices_ts']:
             if tensor_key == 'mean_tp':
                 # For mean_tp, we'll concatenate along the timepoint dimension (dim=0)
-                all_mean_tp = [job['results'][tensor_key] for job in job_results]
+                all_mean_tp = [job['results']['mean_tp'] for job in job_results]
                 combined_results[tensor_key] = torch.cat(all_mean_tp, dim=0)
-            elif tensor_key in first_result['results']:
+            elif tensor_key in first_result:
+                # For other tensors, we'll perform the appropriate operations
+                tensors = [job['results'][tensor_key] for job in job_results]
+                
                 if tensor_key == 'RMS_ts_attributions':
+                    # Recalculate RMS from the combined mean_tp
                     squared_ts = combined_results['mean_tp'] ** 2
                     mean_squared_ts = squared_ts.mean(dim=0)
                     combined_results[tensor_key] = mean_squared_ts.sqrt()
                 elif tensor_key == 'max_ts':
+                    # Get the maximum values with their indices
                     max_vals, max_indices = combined_results['mean_tp'].max(dim=0)
                     combined_results[tensor_key] = max_vals
                     combined_results['max_indices_ts'] = max_indices
                 elif tensor_key == 'min_ts':
+                    # Get the minimum values with their indices
                     min_vals, min_indices = combined_results['mean_tp'].min(dim=0)
                     combined_results[tensor_key] = min_vals
                     combined_results['min_indices_ts'] = min_indices
-
-            
+        
         # Move tensors to the current device
         for k, v in combined_results.items():
             combined_results[k] = v.to(self.device)
@@ -1090,6 +1070,7 @@ class Importance_Explorer:
                               multishift: bool = False,
                               n_steps: int = 100,
                               batch_size: int = 8,
+                              n_jobs: int = 4,
                               wait_for_results: bool = True) -> Dict[str, torch.Tensor]:
         """
         Calculate feature importances in parallel using SLURM jobs.
@@ -1141,6 +1122,7 @@ class Importance_Explorer:
             multishift=multishift,
             n_steps=n_steps,
             batch_size=batch_size,
+            n_jobs=n_jobs
         )
         
         # If not waiting for results, return job information
@@ -1226,9 +1208,6 @@ class Importance_Explorer:
         Returns:
             int: Index of the detected elbow point
         """
-        from scipy.signal import savgol_filter
-
-
         # Convert inputs to numpy arrays if they aren't already
         x = np.array(x)
         y = np.array(y)
@@ -1289,12 +1268,6 @@ class Importance_Explorer:
         Returns:
             Tuple[int, float]: Index of the elbow point and the corresponding y value
         """
-
-        if not hasattr(self.__class__, "_plt") or self.__class__._plt is None:
-                import matplotlib.pyplot as plt
-                self.__class__._plt = plt
-        plt = self.__class__._plt
-
         # Find elbow point
         elbow_idx = self.find_elbow_point(x, y, threshold=threshold)
         
@@ -1324,17 +1297,6 @@ class Importance_Explorer:
         Returns:
             dict: A dictionary where keys are features and values are colors.
         """
-        if not hasattr(self.__class__, "_plt") or self.__class__._plt is None:
-                import matplotlib.pyplot as plt
-                self.__class__._plt = plt
-        plt = self.__class__._plt
-
-        if not hasattr(self.__class__, "_px") or self.__class__._px is None:
-                import plotly.express as px
-
-                self.__class__._px = px
-        px = self.__class__._px
-
         # Generate a list of unique colors based on the number of features
         num_colors = len(features_list)
     
@@ -1373,11 +1335,6 @@ class Importance_Explorer:
         Returns:
             Tuple[pd.DataFrame, pd.DataFrame]: Edge data and feature importance data
         """
-
-        import networkx as nx
-        import plotly.graph_objects as go
-
-
         key = (start_Kstep, max_Kstep, start_timepoint_idx, end_timepoint_idx, fwd, bwd)
         
         # Calculate attributions and store in the dictionary with the key
@@ -1611,88 +1568,6 @@ class Importance_Explorer:
 
         return edge_df, feature_importance_df
 
-    def get_feature_importance_over_timeshift_df(
-        self,
-        threshold=None,
-        name = None,
-        **kwargs
-    ) -> pd.DataFrame:
-        """
-        Return a melted DataFrame of feature importances over time shifts.
-
-        Args:
-            threshold (float, optional): Threshold for filtering features by max importance.
-            **kwargs: Additional keyword arguments:
-                start_Kstep, max_Kstep, start_timepoint_idx, end_timepoint_idx, fwd, bwd
-
-        Returns:
-            pd.DataFrame: Melted DataFrame with feature importance and delta importance data.
-        """
-        # Extract parameters from kwargs with defaults from self.timeseries_key
-        start_Kstep = kwargs.get('start_Kstep', self.timeseries_key[0])
-        max_Kstep = kwargs.get('max_Kstep', self.timeseries_key[1])
-        start_timepoint_idx = kwargs.get('start_timepoint_idx', self.timeseries_key[2])
-        end_timepoint_idx = kwargs.get('end_timepoint_idx', self.timeseries_key[3])
-        fwd = kwargs.get('fwd', self.timeseries_key[4])
-        bwd = kwargs.get('bwd', self.timeseries_key[5])
-
-        key = (start_Kstep, max_Kstep, start_timepoint_idx, end_timepoint_idx, fwd, bwd)
-
-        if key not in self.attributions_dicts:
-            direction = "forward" if fwd else "backward" if bwd else "unknown"
-            assert direction in ["forward", "backward"], "Either fwd or bwd must be True."
-
-            importance_df, attributions_dict = self.calculate_importances(
-                name=name,
-                kstep=max_Kstep,
-                start_timepoint_idx=start_timepoint_idx,
-                end_timepoint_idx=end_timepoint_idx,
-                direction=direction,
-            )
-            self.attributions_dicts[key] = attributions_dict
-
-        attributions_dict = self.attributions_dicts[key]
-        RMS_importance_values = (attributions_dict['mean_tp']**2).mean(dim=2).sqrt()
-
-        time_points = self.test_df[self.time_id].unique()
-        n_importances = RMS_importance_values.shape[0]
-        valid_time_points = time_points[:n_importances] if n_importances <= len(time_points) else np.arange(n_importances)
-
-        df = pd.DataFrame(RMS_importance_values.cpu().numpy(), columns=self.feature_list, index=valid_time_points)
-        df['original tp'] = df.index
-
-        melted_df = df.melt(id_vars='original tp', var_name='Feature', value_name='Importance')
-        melted_df['Feature Max Importance'] = melted_df.groupby('Feature')['Importance'].transform('max')
-        melted_df['original tp'] = pd.to_numeric(melted_df['original tp'], errors='coerce')
-        melted_df = melted_df.sort_values(by=['Feature Max Importance', 'Feature', 'original tp'],
-                                        ascending=[False, True, True])
-        melted_df = melted_df.drop(columns=['Feature Max Importance'])
-
-        if threshold is not None:
-            feature_max_value = melted_df.groupby('Feature')['Importance'].max()
-            features_to_plot = feature_max_value[abs(feature_max_value) >= threshold].index
-            melted_df = melted_df[melted_df['Feature'].isin(features_to_plot)]
-
-        melted_df['Delta Importance'] = melted_df.groupby('Feature')['Importance'].diff()
-
-        sorted_tps = sorted(melted_df['original tp'].unique())
-        tp_to_target = {}
-        for i in range(len(sorted_tps)):
-            target_idx = i + max_Kstep
-            if target_idx < len(sorted_tps):
-                target = sorted_tps[target_idx]
-            else:
-                last_diff = sorted_tps[-1] - sorted_tps[-2] if len(sorted_tps) > 1 else 0
-                steps_beyond = target_idx - len(sorted_tps) + 1
-                target = sorted_tps[-1] + (steps_beyond * last_diff)
-            tp_to_target[sorted_tps[i]] = target
-
-        melted_df['target tp'] = melted_df['original tp'].map(tp_to_target)
-        melted_df['Kstep'] = max_Kstep
-
-        return melted_df
-
-
     def plot_feature_importance_over_timeshift_interactive(
         self,
         feature_color_mapping,
@@ -1721,18 +1596,6 @@ class Importance_Explorer:
         Returns:
             pd.DataFrame: Melted DataFrame with feature importance data
         """
-
-        if not hasattr(self.__class__, "_plt") or self.__class__._plt is None:
-                import matplotlib.pyplot as plt
-                self.__class__._plt = plt
-        plt = self.__class__._plt
-
-        if not hasattr(self.__class__, "_px") or self.__class__._px is None:
-                import plotly.express as px
-
-                self.__class__._px = px
-        px = self.__class__._px        
-
         # Extract parameters from kwargs with defaults from self.timeseries_key
         start_Kstep = kwargs.get('start_Kstep', self.timeseries_key[0])
         max_Kstep = kwargs.get('max_Kstep', self.timeseries_key[1])

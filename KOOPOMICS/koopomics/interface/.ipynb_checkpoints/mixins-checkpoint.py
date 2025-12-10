@@ -2,6 +2,8 @@ import os
 import torch
 import numpy as np
 import pandas as pd
+import submitit
+from datetime import datetime
 import logging
 from typing import Dict, List, Union, Optional, Any, Tuple
 
@@ -102,6 +104,17 @@ class ModelManagementMixin:
         self.config.load_config(path)
         logger.info(f"Configuration loaded successfully from {path}.")
         print(self.config.config)
+    
+    def reload_config(self):
+        """
+        Reload configuration from file.
+        
+        Parameters:
+            path: Path to load the configuration from
+        """
+        logger.info(f"Reloading configuration.")
+        self.config.reload_config()
+
 
 
 # ============= TRAINING MIXIN =============
@@ -181,6 +194,86 @@ class TrainingMixin:
 
 
         return best_metrics
+
+    def submit_train(
+        self,
+        yaml_path,
+        train_idx,
+        test_idx,
+        job_name: str = "koopman_train",
+        model_dict_save_dir: Optional[str] = None,
+        use_wandb: bool = False,
+        slurm_mem: str = "8G",
+        slurm_cpus: int = 4,
+        slurm_time: str = "4:00:00"
+    ) -> submitit.Job:
+        """
+        Submit training job with deferred model loading.
+        
+        Parameters
+        ----------
+
+        """
+        # Setup executor (no model-related operations here)
+        executor = submitit.AutoExecutor(folder="training_logs")
+        executor.update_parameters(
+            name=job_name,
+            slurm_mem=slurm_mem,
+            slurm_cpus_per_task=slurm_cpus,
+            slurm_time=slurm_time,
+        )
+        
+        # Prepare save directory
+        if model_dict_save_dir is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_dict_save_dir = f"trained_models"
+        os.makedirs(model_dict_save_dir, exist_ok=True)
+        
+        # Submit job with only config (not actual model)
+        job = executor.submit(
+            self._run_training,  # New internal method
+            config=self.config,
+            yaml_path=yaml_path,
+            train_idx=train_idx,
+            test_idx=test_idx,
+            model_dict_save_dir=model_dict_save_dir,
+            use_wandb=use_wandb
+        )
+        
+        return job, model_dict_save_dir
+    
+    @staticmethod
+    def _run_training(
+        config,
+        yaml_path,
+        train_idx,
+        test_idx,
+        model_dict_save_dir: str,
+        use_wandb: bool
+    ) -> float:
+        """Internal method that runs inside the SLURM job"""
+        from koopomics import KOOP
+
+        current_model = KOOP(config)
+
+        # 1. Load data
+        current_model.load_data(yaml_path=yaml_path, 
+                        train_idx=train_idx, 
+                        test_idx=test_idx)
+
+        # 2. Run training
+        current_model.train(
+            data=None,  # Already loaded
+            feature_list=None,
+            replicate_id=None,
+            use_wandb=use_wandb,
+            model_dict_save_dir=model_dict_save_dir,
+        )
+        
+        run_id = current_model.trainer.wandb_manager.run_id
+
+        return run_id
+
     
     def sweep_params(self, 
                     project_name: str, 
@@ -700,13 +793,13 @@ class InterpretationMixin:
         return self.model.eigen(plot=plot)
         
     def get_dynamics(self, dataset_df: Optional[pd.DataFrame] = None,
-                    test_set_df: Optional[pd.DataFrame] = None) -> KoopmanDynamics:
+                    test_df: Optional[pd.DataFrame] = None) -> KoopmanDynamics:
         """
         Create a KoopmanDynamics interpreter for analyzing and visualizing model dynamics.
         
         Parameters:
             dataset_df: Optional DataFrame for analysis (default: uses data from load_data())
-            test_set_df: Optional test set DataFrame for evaluation
+            test_df: Optional test set DataFrame for evaluation
             
         Returns:
             KoopmanDynamics: An interpreter object for analyzing Koopman dynamics
@@ -735,7 +828,7 @@ class InterpretationMixin:
             condition_id=self.condition_id,
             mask_value=self.mask_value,
             device=self.config.device,
-            test_set_df=test_set_df
+            test_df=test_df
         )
         
         logger.info("KoopmanDynamics interpreter created successfully")

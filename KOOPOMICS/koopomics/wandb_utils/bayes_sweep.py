@@ -1,10 +1,9 @@
 import os
-import wandb
 import logging
-import pandas as pd
+from koopomics.utils import torch, pd, np, wandb
+
 from typing import Dict, List, Optional, Any, Union
-import torch
-import numpy as np
+
 import json
 import yaml
 from pathlib import Path
@@ -16,7 +15,7 @@ from importlib.resources import files
 from .base_sweep import BaseSweepManager, OuterCVExecutor
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("koopomics")
 
 class BayesSweepManager(BaseSweepManager):
     """
@@ -78,6 +77,9 @@ class BayesSweepManager(BaseSweepManager):
         self.init_sweep(dl_structures, max_Ksteps, data_dir, outer_num_folds, inner_num_folds)
     
     def init_sweep(self, dl_structures, max_Ksteps, data_dir, outer_num_folds, inner_num_folds):
+        
+        import wandb
+
         """Initialize a single sweep that includes all dl_structure and max_Kstep combinations"""
         # Create model dict save dir if needed
         if self.model_dict_save_dir is None:

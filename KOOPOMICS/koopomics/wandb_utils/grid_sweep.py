@@ -1,10 +1,9 @@
 import os
-import wandb
 import logging
-import pandas as pd
+from koopomics.utils import torch, pd, np, wandb
+
 from typing import Dict, List, Optional, Any, Union
-import torch
-import numpy as np
+
 import json
 import yaml
 from pathlib import Path
@@ -12,7 +11,7 @@ from pathlib import Path
 from .base_sweep import BaseSweepManager
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("koopomics")
 
 class GridSweepManager(BaseSweepManager):
     """
@@ -40,6 +39,9 @@ class GridSweepManager(BaseSweepManager):
                 self.init_sweep(dl_structure, Kstep, datasets_dir, outer_num_folds, inner_num_folds)
     
     def init_sweep(self, dl_structure, max_Kstep, datasets_dir, outer_num_folds, inner_num_folds):
+        
+        import wandb
+
         """Initialize sweeps for a specific data structure and Kstep"""
         # Create model dict save dir if needed
         if self.model_dict_save_dir is None:

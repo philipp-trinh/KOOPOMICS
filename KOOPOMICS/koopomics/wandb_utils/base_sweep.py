@@ -1,27 +1,22 @@
 import os
-import wandb
 import logging
-import pandas as pd
+from koopomics.utils import torch, pd, np
+
 from typing import Dict, List, Optional, Any, Union, Callable
-import torch
-import numpy as np
+
 import pickle
-from sklearn.model_selection import KFold
-from ..training.data_loader import OmicsDataloader
+from ..data_prep import OmicsDataloader
 
 from ..data_prep.data_registry import DataRegistry
 
-
 import yaml
 import json
-import submitit
 import time
 from pathlib import Path
 
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("koopomics")
 
 
 class SweepConfigHandler:
@@ -44,90 +39,131 @@ class SweepConfigHandler:
             self._save_config_as_yaml(config_dict, self.config_yaml)
             return config_dict
             
-    def create_sweep_config(self,
+    def create_sweep_config(
+        self,
         method: str = "bayes",
-        metric: Dict[str, str] = {"name": "combined_test_loss", "goal": "minimize"},
+        metric: Dict[str, str] = None,
     ) -> Dict[str, Any]:
         """
-        Create a sweep configuration with updated defaults.
+        Create a standardized W&B sweep configuration with sensible defaults.
+
+        Includes encoder/decoder architecture, Koopman operator settings,
+        training, loss weighting, and data augmentation options.
         """
+
         if self.num_features is None:
-            raise ValueError("num_features must be set before creating a sweep configuration")
-            
+            raise ValueError("num_features must be set before creating a sweep configuration.")
+
+        if metric is None:
+            metric = {"name": "combined_test_loss", "goal": "minimize"}
+
+        # ------------------------------------------------------------------
+        # 🧠 Encoder parameters
+        # ------------------------------------------------------------------
         parameters = {
-            "E_dropout_rate_1": {"distribution": "uniform", "min": 0, "max": 1},
-            "E_dropout_rate_2": {"distribution": "uniform", "min": 0, "max": 1},
-            "E_layer_dims": {
+            "E_layer_input_dim": {"value": self.num_features},  # fixed input dimension
+            "E_layer_hidden1": {"distribution": "int_uniform", "min": 100, "max": 2000},
+            "E_layer_hidden2": {"distribution": "int_uniform", "min": 0, "max": 1000},
+            "E_layer_hidden3": {"distribution": "int_uniform", "min": 0, "max": 500},
+            "E_layer_output_dim": {"value": 3},  # latent dim fixed
+
+            "E_dropout_rate_1": {"distribution": "uniform", "min": 0.0, "max": 1.0},
+            "E_dropout_rate_2": {"distribution": "uniform", "min": 0.0, "max": 1.0},
+            "E_overfit_limit": {"distribution": "uniform", "min": 0.1, "max": 1.0},
+
+            # ------------------------------------------------------------------
+            # 🌀 Decoder parameters
+            # ------------------------------------------------------------------
+            "force_symmetric_decoder": {"values": [True, False]},
+            "D_layer_hidden1": {"distribution": "int_uniform", "min": 100, "max": 2000},
+            "D_layer_hidden2": {"distribution": "int_uniform", "min": 0, "max": 1000},
+            "D_layer_hidden3": {"distribution": "int_uniform", "min": 0, "max": 500},
+
+            # ------------------------------------------------------------------
+            # ⚙️ Model activation and Koopman operator
+            # ------------------------------------------------------------------
+            "activation_fn": {
                 "distribution": "categorical",
-                "values": [
-                    f"{self.num_features},500,10",
-                    f"{self.num_features},500,200,10",
-                    f"{self.num_features},1000,3",
-                    f"{self.num_features},2000,3",
-                    f"{self.num_features},500,500,10",
-                    f"{self.num_features},500,500,3",
-                    f"{self.num_features},100,100,3",
-                ],
+                "values": ["leaky_relu", "sine", "gelu", "swish"],
             },
-            'activation_fn': {
+            "operator": {"distribution": "categorical", "values": ["invkoop"]},
+            "op_reg": {
                 "distribution": "categorical",
-                "values": [
-                    "leaky_relu",
-                    "sine",
-                    "gelu",
-                    "swish"
-                ],
+                "values": ["banded", "nondelay", "skewsym", "None"],
             },
-            "E_overfit_limit": {"distribution": "uniform", "min": 0.1, "max": 1},
+            "op_bandwidth": {"distribution": "int_uniform", "min": 1, "max": 10},
+
+            # ------------------------------------------------------------------
+            # 🧩 Training configuration
+            # ------------------------------------------------------------------
+            "training_mode": {
+                "distribution": "categorical",
+                "values": ["full", "embed_tuned", "embed_tuned_stepwise"],
+            },
+            "max_Kstep": {"distribution": "int_uniform", "min": 1, "max": 6},
             "backpropagation_mode": {
                 "distribution": "categorical",
                 "values": ["full", "stepwise"],
             },
             "batch_size": {"distribution": "int_uniform", "min": 5, "max": 800},
-            "delay_size": {"distribution": "int_uniform", "min": 2, "max": 5},
-            "learning_rate": {"distribution": "log_uniform_values", "min": 1e-6, "max": 1e-2},
-            "learning_rate_change": {"distribution": "uniform", "min": 0.1, "max": 0.9},
-            "loss_weights": {
-                "distribution": "categorical",
-                "values": [
-                    "1,1,1,1,1,1",
-                    "1,1,1,1,0,0",
-                    "1,0.5,1,0,0.01,0.1",
-                    "1,0.5,1,0,0.00001,0.01",
-                    "1,0.05,0.01,0,0.00001,0.01",
-                    "1,0.005,0.01,0,0.000001,0.0001",
-                ],
-            },
-            "num_decays": {"distribution": "int_uniform", "min": 3, "max": 10},
             "num_epochs": {"distribution": "int_uniform", "min": 1000, "max": 5000},
-            "op_bandwidth": {"distribution": "int_uniform", "min": 1, "max": 10},
-            "op_reg": {
-                "distribution": "categorical",
-                "values": ["banded", "nondelay", "skewsym", "None"],
-            },
-            "operator": {"distribution": "categorical", "values": ["invkoop"]},
-            "sweep_name": {"value": "outer_4"},
-            "training_mode": {"distribution": "categorical", "values": ["full", "modular"]},
-            "weight_decay": {
+            "num_decays": {"distribution": "int_uniform", "min": 3, "max": 10},
+            "learning_rate": {
                 "distribution": "log_uniform_values",
                 "min": 1e-6,
-                "max": 1e-2
+                "max": 1e-2,
             },
+            "learning_rate_change": {"distribution": "uniform", "min": 0.1, "max": 0.9},
+            "weight_decay": {"distribution": "log_uniform_values", "min": 1e-6, "max": 1e-2},
+            "delay_size": {"distribution": "int_uniform", "min": 2, "max": 5},
+
+            # ------------------------------------------------------------------
+            # 🎯 Loss weight parameters
+            # ------------------------------------------------------------------
+            "loss_weight_forward": {"distribution": "uniform", "min": 1, "max": 10},
+            "loss_weight_backward": {"distribution": "uniform", "min": 1, "max": 10},
+            "loss_weight_latent_identity": {
+                "distribution": "log_uniform",
+                "min": 0.1,
+                "max": 1.0,
+            },
+            "loss_weight_identity": {"distribution": "uniform", "min": 0.5, "max": 1.0},
+            "loss_weight_orthogonality": {
+                "distribution": "log_uniform",
+                "min": 1e-6,
+                "max": 1e-1,
+            },
+            "loss_weight_temporal": {"distribution": "uniform", "min": 0.0, "max": 1.0},
+            "loss_weight_inverse_consistency": {
+                "distribution": "uniform",
+                "min": 0.0,
+                "max": 1.0,
+            },
+
+            # ------------------------------------------------------------------
+            # 🌿 Data augmentation parameters
+            # ------------------------------------------------------------------
             "augment_by": {
                 "distribution": "categorical",
                 "values": [
                     "noise",
-                    "noise, scale", 
-                    "noise, shift", 
+                    "noise, scale",
+                    "noise, shift",
                     "noise, scale, shift",
-                    "scale", 
-                    "shift"
-                    ],
+                    "scale",
+                    "shift",
+                    "None",
+                ],
             },
             "num_augmentations": {"distribution": "int_uniform", "min": 1, "max": 3},
+
+            # ------------------------------------------------------------------
+            # 🏷️ Metadata
+            # ------------------------------------------------------------------
+            "sweep_name": {"value": "outer_4"},
         }
 
-        logger.info("Default Sweep configuration created successfully.")
+        logger.info("✅ Sweep configuration initialized successfully.")
 
         return {
             "method": method,
@@ -263,7 +299,8 @@ class CVDataManager():
         #return datasets_dir
     
     def _create_outer_splits(self, outer_cv_dir, outer_num_folds):
-        
+        from sklearn.model_selection import KFold
+
         """Create outer CV splits"""
         # Create temporal dataloader for outer splits
         temporal_dl = OmicsDataloader(
@@ -361,6 +398,9 @@ class CVDataManager():
         return outer_splits
     
     def _process_inner_splits(self, outer_splits, dl_structure, max_Kstep, inner_num_folds):
+        
+        from sklearn.model_selection import KFold
+
         """Process and validate inner CV splits"""
         for outer_idx, (train_df, _) in enumerate(outer_splits):
             logger.info(f"\nValidating inner splits for outer fold {outer_idx}")
@@ -451,6 +491,9 @@ class CVDataManager():
         )
     
     def _create_cv_tensors(self, cv_dir, dl_structure, max_Kstep, outer_num_folds, inner_num_folds):
+        
+        from sklearn.model_selection import KFold
+
         """Create tensor files for CV training"""
         datasets_dir = f"{cv_dir}/CV_{dl_structure}_datasets"
         os.makedirs(datasets_dir, exist_ok=True)
@@ -624,6 +667,9 @@ class JobManager:
             model_dict_save_dir: Base directory for model outputs
             num_replicates: Number of identical replicates to run per job
         """
+
+        import submitit
+
         # Load sweep information
         with open(sweep_info_file, "r") as f:
             sweep_info = json.load(f)
@@ -664,6 +710,9 @@ class JobManager:
         # Monitor jobs briefly
         self._brief_monitoring()
     def _submit_sweep_jobs(self, sweep_info_file, job_name=None, sweep_id=None, model_dict_save_dir=None):
+        
+        import submitit
+
         """Submit sweep jobs to SLURM"""
         # Load sweep information
         with open(sweep_info_file, "r") as f:
@@ -673,7 +722,7 @@ class JobManager:
         executor = submitit.AutoExecutor(folder=f"{self.cv_save_dir}/CV_logs")
         executor.update_parameters(
             timeout_min=60,
-            slurm_mem="4G",
+            slurm_mem="10G",
             slurm_cpus_per_task=2,
             slurm_time="10:00:00",
         )
@@ -765,7 +814,8 @@ class JobManager:
                          project_name, sweep_id, model_dict_save_dir):
         """Function to run on SLURM node"""
         from koopomics.wandb_utils.base_sweep import CVUnit
-        
+        import wandb
+
         # Initialize CV unit
         cv_unit = CVUnit(
             train_config_path=train_config_path, 
@@ -962,6 +1012,7 @@ class CVUnit:
     def cross_validate(self):
         """Execute cross-validation with wandb sweep"""
         from koopomics import KOOP
+        import wandb
 
         # Initialize sweep run
         sweep_run = wandb.init()
@@ -1013,7 +1064,8 @@ class CVUnit:
     def _perform_cross_validation(self, sweep_run_id, config, project_name):
         """Perform cross-validation across selected folds"""
         from koopomics import KOOP
-        
+        from sklearn.model_selection import KFold
+
         metrics = []
         cv_run_ids = []
         cv_run_urls = []
@@ -1113,6 +1165,8 @@ class OuterCVExecutor:
         return model_dicts
     
     def submit_outer_cv_jobs(self, num_outer_folds: int = 5):
+        import submitit
+
         """Submit outer CV jobs to SLURM cluster"""
         executor = submitit.AutoExecutor(folder=self.cv_log_dir)
         executor.update_parameters(**self.slurm_params)

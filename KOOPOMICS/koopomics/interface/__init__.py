@@ -6,6 +6,7 @@ from .mixins import (ModelManagementMixin,
                     InitializationMixin
                     )
 from .data_interface import DataManagementMixin
+from .ensemble_interface import KoopEnsembleMixin
 
 __all__ = ['DataManagementMixin', 
             'ModelManagementMixin',
@@ -13,4 +14,6 @@ __all__ = ['DataManagementMixin',
             'PredictionEvaluationMixin',
             'VisualizationMixin',
             'InterpretationMixin',
-            'InitializationMixin']
+            'InitializationMixin',
+            'KoopEnsembleMixin',
+            ]

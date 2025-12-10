@@ -1,19 +1,16 @@
-from .data_loader import OmicsDataloader, PermutedDataLoader
+from ..data_prep import OmicsDataloader, PermutedDataLoader
 from ..model.koopmanANN import FFLinearizer, Koop, InvKoop, LinearizingKoop
 from ..model.embeddingANN import FF_AE
 from ..model.model_loader import KoopmanModel
 from .train_utils import Koop_Step_Trainer, Embedding_Trainer
 from ..test.test_utils import NaiveMeanPredictor
 
-import torch
-import pandas as pd
-import wandb
-import numpy as np
+from koopomics.utils import torch, pd, np, wandb
+from torch.utils.data import TensorDataset
+
 
 import os
 import random
-from sklearn.model_selection import KFold
-from torch.utils.data import TensorDataset
 
 
 
@@ -164,6 +161,9 @@ class HypManager:
         return decay_epochs.astype(int).tolist()
         
     def hyptrain(self, config=None):
+
+        import wandb
+
         # Initialize a new wandb run
         with wandb.init(config=config):
             # this config will be set by Sweep Controller
@@ -286,7 +286,8 @@ class HypManager:
     
     def cvtrain(self, num, sweep_id, sweep_run_name, config, train_tensor, val_tensor):
         run_name = f'{sweep_run_name}-{num}'
-        
+        import wandb
+
         with wandb.init(
             group=sweep_id,
             job_type=sweep_run_name,
@@ -382,6 +383,9 @@ class HypManager:
             return best_baseline_ratio
 
     def cross_validate(self):
+        import wandb
+        from sklearn.model_selection import KFold
+
         sweep_run = wandb.init()
         sweep_id = sweep_run.sweep_id or "unknown"
         sweep_url = sweep_run.get_sweep_url()

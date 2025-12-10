@@ -12,23 +12,19 @@ import logging
 from pathlib import Path
 
 # Third-party imports
-import torch
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-import plotly.express as px
-import ipywidgets as widgets
+from koopomics.utils import torch, pd, np, wandb
+
+from typing import Dict, List, Tuple, Union, Optional, Any
 
 # Local imports
-from ..training.data_loader import OmicsDataloader
+from ..data_prep.data_loader import OmicsDataloader
 from .latent_explorer import Latent_Explorer
 from .importance_explorer import Importance_Explorer
 from .mode_explorer import Modes_Explorer
 from .timeseries_explorer import Timeseries_Explorer
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("koopomics")
 
 class KoopmanDynamics:
     """
@@ -174,6 +170,10 @@ class KoopmanDynamics:
         Returns:
             dict: A dictionary where keys are features and values are colors.
         """
+        import matplotlib.pyplot as plt
+        import plotly.express as px
+
+
         # Generate a list of unique colors based on the number of features
         num_colors = len(features_list)
     
@@ -299,22 +299,49 @@ class KoopmanDynamics:
         )
         return edge_df
 
-    def plot_feature_importance_over_timeshift_interactive(self, title='Feature Importances Over Time Shifts',
-                                                        threshold=None, **kwargs):
+    def plot_feature_importance_over_timeshift_interactive(
+        self, 
+        title: str = 'Feature Importances Over Time Shifts',
+        threshold: Optional[float] = None,
+        feature_color_mapping: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> None:
         """
         Generate an interactive visualization of feature importance over time shifts.
         
-        Parameters:
-            title (str): Title for the plot.
-            threshold (float, optional): Threshold for feature importance filtering.
-            **kwargs: Additional arguments to pass to the plotting function.
-        """
-        # Generate color mapping for the features
-        self.feature_color_mapping = self.create_feature_color_mapping(self.features, mode='plotly')
+        Parameters
+        ----------
+        title : str, optional
+            Title for the plot (default: 'Feature Importances Over Time Shifts')
+        threshold : float, optional
+            Minimum importance value to display features
+        feature_color_mapping : dict, optional
+            Dictionary mapping features to colors. If None, will be automatically generated.
+        **kwargs
+            Additional arguments passed to the plotting function
+
+        Example
+        -------
+        >>> # With automatic color mapping
+        >>> ensemble.plot_feature_importance_over_timeshift_interactive()
         
-        # Create the interactive plot
+        >>> # With custom colors
+        >>> colors = {'gene1': '#FF0000', 'gene2': '#00FF00'}
+        >>> ensemble.plot_feature_importance_over_timeshift_interactive(
+        ...     feature_color_mapping=colors
+        ... )
+        """
+        # Create color mapping if not provided
+        if feature_color_mapping is None:
+            feature_color_mapping = self.create_feature_color_mapping(
+                self.features, 
+                mode='plotly'
+            )
+        self.feature_color_mapping = feature_color_mapping  # Store for potential reuse
+        
+        # Generate the interactive plot
         self.importance_explorer.plot_feature_importance_over_timeshift_interactive(
-            self.feature_color_mapping,
+            color_mapping=feature_color_mapping,
             title=title,
             threshold=threshold,
             **kwargs
@@ -331,3 +358,361 @@ class KoopmanDynamics:
             self.timeseries_explorer.plot_1d_timeseries()
         else:
             self.timeseries_explorer.plot_1d_timeseries(feature=feature)
+
+class KoopmanDynamicsEnsemble:
+    """
+    A collection of Koopman dynamics models for ensemble analysis of omics data.
+
+    This class manages multiple Koopman models and provides tools for comparative analysis,
+    visualization, and interpretation across the ensemble. Supports parallel computation
+    of latent dynamics, feature importance, and modal decompositions.
+
+    Attributes
+    ----------
+    models : list[KoopmanDynamics]
+        List of trained Koopman models in the ensemble.
+    df : pd.DataFrame
+        Input dataset containing features, conditions, and time points.
+    features : list[str]
+        Names of the feature columns used in modeling.
+    condition_id : str
+        Column name specifying biological/experimental conditions.
+    time_id : str
+        Column name specifying time point identifiers.
+    time_values : np.ndarray
+        Sorted unique time values across all models.
+    replicate_id : str | None
+        Column name for technical/biological replicates (optional).
+    device : torch.device
+        Computation device (CPU/GPU) used by all models.
+    test_df : pd.DataFrame | None
+        Optional held-out validation dataset.
+    
+    Explorers (Initialized on Demand)
+    ---------------------------------
+    latent_explorer : LatentDynamicsExplorer
+        Analyzes shared/divergent latent spaces across models.
+    importance_explorer : FeatureImportanceExplorer
+        Compares feature importance rankings across ensemble.
+    mode_explorer : ModalDecompositionExplorer
+        Computes and visualizes consensus/variable dynamical modes.
+    timeseries_explorer : TimeseriesExplorer
+        Ensemble predictions and reconstruction error analysis.
+    """
+    def __init__(
+        self,
+        models: Union[torch.nn.Module, List[torch.nn.Module]],
+        dataset_df: pd.DataFrame,
+        feature_list: List[str],
+        test_df: Optional[pd.DataFrame] = None,
+        mask_value: float = -1e-9,
+        condition_id: str = '',
+        time_id: str = '',
+        replicate_id: str = '',
+        device: Optional[torch.device] = None,
+        **kwargs
+    ) -> None:
+        """
+        Initialize ensemble with shared test dataset.
+
+        Parameters
+        ----------
+        models : Union[torch.nn.Module, List[torch.nn.Module]]
+            Single model or list of Koopman models
+        dataset_df : pd.DataFrame
+            Training data (features + metadata)
+        feature_list : List[str]
+            Names of feature columns
+        test_df : Optional[pd.DataFrame]
+            Single test dataset shared by all models
+        mask_value : float, optional
+            Missing data indicator (default: -1e-9)
+        condition_id : str, optional
+            Column name for experimental conditions
+        time_id : str, optional
+            Time column name (autodetected if empty)
+        replicate_id : str, optional
+            Column name for replicate IDs
+        device : Optional[torch.device]
+            Computation device (default: CPU)
+
+        Example
+        -------
+        >>> models = [load_model(f"model_{i}.pt") for i in range(3)]
+        >>> ensemble = KoopmanDynamicsEnsemble(
+        ...     models=models,
+        ...     dataset_df=training_data,
+        ...     feature_list=genes,
+        ...     test_df=validation_data  # Shared by all models
+        ... )
+        """
+        # Device setup
+        self.device = device or torch.device('cpu')
+        
+        # Ensure models is always a list
+        model_list = [models] if isinstance(models, torch.nn.Module) else models
+        
+        # Store shared datasets
+        self.df = dataset_df.copy()
+        self.test_df = test_df.copy() if test_df is not None else None
+        self.features = feature_list
+        
+        # Initialize dynamics for each model
+        self.dynamics_list = []
+        for model in model_list:
+            dynamics = model.get_dynamics(
+                dataset_df=self.df,
+                test_df=self.test_df,  # Same test_df for all
+                feature_list=self.features,
+                mask_value=mask_value,
+                condition_id=condition_id,
+                time_id=time_id,
+                replicate_id=replicate_id,
+                device=self.device
+            )
+            self.dynamics_list.append(dynamics)
+        
+        # Detect time column if not specified
+        self.time_id = time_id
+        self.time_values = np.sort(self.df[self.time_id].unique())
+        self.condition_id = condition_id
+        self.replicate_id = replicate_id
+        self.mask_value = mask_value
+        self.merged_imp_int_df_sorted == None
+
+
+    def create_feature_color_mapping(self, features_list, mode='matplotlib'):
+        """
+        Generate a color mapping dictionary for a given list of features.
+    
+        Parameters:
+            features_list (list): A list of features for which the color mapping is required.
+            mode (str): The mode for the color mapping ('matplotlib' or 'plotly').
+    
+        Returns:
+            dict: A dictionary where keys are features and values are colors.
+        """
+        import matplotlib.pyplot as plt
+        import plotly.express as px
+
+
+        # Generate a list of unique colors based on the number of features
+        num_colors = len(features_list)
+    
+        if mode == 'matplotlib':
+            colors = plt.cm.get_cmap('tab20', num_colors).colors
+            feature_color_mapping = {feature: colors[i] for i, feature in enumerate(features_list)}
+        elif mode == 'plotly':
+            colors = px.colors.qualitative.Plotly
+            # Ensure there are enough colors
+            colors = colors * (num_colors // len(colors) + 1)
+            feature_color_mapping = {feature: colors[i] for i, feature in enumerate(features_list)}
+        else:
+            raise ValueError("Mode must be 'matplotlib' or 'plotly'")
+    
+        return feature_color_mapping
+        
+    def gather_ensemble_importances(
+        self,
+        kstep: int = 1,
+        start_timepoint_idx: int = 0,
+        end_timepoint_idx: Optional[int] = None,
+        model_ids: Optional[List[str]] = None
+    ) -> Tuple[pd.DataFrame, List[Dict[str, np.ndarray]]]:
+        """
+        Calculate and aggregate feature interaction importances across all models in the ensemble.
+
+        Parameters
+        ----------
+        kstep : int, optional
+            Number of time steps for importance calculation (default: 1)
+        start_timepoint_idx : int, optional
+            Starting time point index (default: 0)
+        end_timepoint_idx : Optional[int], optional
+            Ending time point index (default: last time point)
+        model_ids : Optional[List[str]], optional
+            Custom identifiers for each model. If None, uses 'model_1', 'model_2', etc.
+
+        Returns
+        -------
+        Tuple[pd.DataFrame, List[Dict[str, np.ndarray]]]
+            - Merged DataFrame containing all importances with model identifiers
+            - List of raw attribution dictionaries for each model
+
+        Examples
+        --------
+        >>> # Basic usage with default parameters
+        >>> merged_df, attributions = ensemble.gather_ensemble_importances()
+        
+        >>> # With custom time range and model names
+        >>> merged_df, attributions = ensemble.gather_ensemble_importances(
+        ...     start_timepoint_idx=2,
+        ...     end_timepoint_idx=10,
+        ...     model_ids=['ctrl', 'treat1', 'treat2']
+        ... )
+        """
+        imp_int_dfs = []
+        self.attributions_dicts = []
+        
+        # Set default end timepoint if not specified
+        if end_timepoint_idx is None:
+            end_timepoint_idx = len(self.time_values) - 1
+        
+        for i, dyn in enumerate(self.dynamics_list):
+            # Calculate importances for current model
+            imp_int_df, attributions_dict = dyn.importance_explorer.calculate_importances(
+                kstep=kstep,
+                start_timepoint_idx=start_timepoint_idx,
+                end_timepoint_idx=end_timepoint_idx
+            )
+            
+            # Add model identifier
+            model_id = model_ids[i] if model_ids else f"model_{i+1}"
+            imp_int_df["model_id"] = model_id
+            
+            imp_int_dfs.append(imp_int_df)
+            self.attributions_dicts.append(attributions_dict)
+        
+        # Combine results from all models
+        merged_imp_int_df = pd.concat(imp_int_dfs, ignore_index=True)
+        
+        self.merged_imp_int_df_sorted = merged_imp_int_df.sort_values(
+                    by='importance', 
+                    key=abs, 
+                    ascending=False
+                ).reset_index(drop=True)
+        self.merged_imp_int_df_sorted.to_csv('merged_imp_int_df_sorted.csv', index=False)
+
+        return self.merged_imp_int_df_sorted, self.attributions_dicts 
+    
+    def rank_top_interactions(
+        self,
+        kstep: Optional[int] = 1,
+        start_timepoint_idx: Optional[int] = 0,
+        end_timepoint_idx: Optional[int] = None,
+        model_ids: Optional[List[str]] = None,
+    ) -> pd.DataFrame:
+        """
+        Compute time-resolved interaction importance rankings from merged ensemble importances.
+
+        Parameters
+        ----------
+        kstep : int, optional
+            Number of time steps for importance calculation (default: 1)
+        start_timepoint_idx : int, optional
+            Starting time point index (default: 0)
+        end_timepoint_idx : Optional[int], optional
+            Ending time point index (default: last time point)
+        model_ids : Optional[List[str]], optional
+            Custom identifiers for each model. If None, uses 'model_1', 'model_2', etc.
+        top_n : int, optional
+            Number of top interactions to return (default: 50)
+
+        Returns
+        -------
+        pd.DataFrame
+            Ranked interaction DataFrame with importance stats and timepoint information.
+        """
+
+        # 0. Gather importances
+        if not hasattr(self, 'merged_imp_int_df_sorted') or self.merged_imp_int_df_sorted is None:
+            self.merged_imp_int_df_sorted, _ = self.gather_ensemble_importances(
+                kstep=kstep,
+                start_timepoint_idx=start_timepoint_idx,
+                end_timepoint_idx=end_timepoint_idx,
+                model_ids=model_ids
+            )
+
+
+        # 1. Create interaction column
+        self.merged_imp_int_df['interaction'] = (
+            self.merged_imp_int_df['input_metabolite'] + '->' + self.merged_imp_int_df['output_metabolite']
+        )
+
+        # 2. Signed normalization per model (range [-1,1])
+        self.merged_imp_int_df['imp_signed_norm'] = (
+            self.merged_imp_int_df
+            .groupby('model_id')['importance']
+            .transform(lambda imp: imp / imp.abs().max())
+        )
+
+        # 3. Absolute importance for ranking
+        self.merged_imp_int_df['abs_importance'] = self.merged_imp_int_df['imp_signed_norm'].abs()
+
+        # 4. Rank within each model/Kstep/input_timepoint
+        self.merged_imp_int_df['rank_in_model'] = (
+            self.merged_imp_int_df
+            .groupby(['model_id', 'Kstep', 'input_timepoint'])['abs_importance']
+            .rank(ascending=False, method='min')
+        )
+
+        # 5. Aggregate interaction stats
+        interaction_stats = (
+            self.merged_imp_int_df
+            .groupby([
+                'interaction', 'input_metabolite', 'output_metabolite',
+                'Kstep', 'input_timepoint', 'output_timepoint'
+            ])
+            .agg(
+                avg_norm_importance = ('imp_signed_norm', 'mean'),
+                std_norm_importance = ('imp_signed_norm', 'std'),
+                avg_abs_importance  = ('abs_importance',  'mean'),
+                std_abs_importance  = ('abs_importance',  'std'),
+                n_models            = ('model_id',        'nunique'),
+                model_ranks         = ('rank_in_model',   lambda x: list(x))
+            )
+            .reset_index()
+        )
+
+        # 6. Compute average rank per interaction
+        model_ranks = (
+            self.merged_imp_int_df
+            .groupby([
+                'interaction', 'input_timepoint', 'output_timepoint', 'model_id'
+            ])['rank_in_model']
+            .first()
+            .unstack()
+            .add_prefix('rank_')
+            .reset_index()
+        )
+
+        avg_rank = (
+            model_ranks
+            .set_index(['interaction','input_timepoint','output_timepoint'])
+            .mean(axis=1)
+            .reset_index(name='avg_rank')
+        )
+
+        # 7. Merge stats + avg_rank
+        final_ranking = (
+            interaction_stats
+            .merge(avg_rank,
+                on=['interaction','input_timepoint','output_timepoint'],
+                how='left')
+            .sort_values(
+                ['input_metabolite','output_metabolite','avg_rank'],
+                ascending=True
+            )
+        )
+
+        # 8. Rank timepoints within each metabolite pair
+        final_ranking['timepoint_rank'] = (
+            final_ranking
+            .groupby(['input_metabolite','output_metabolite'])['avg_rank']
+            .rank(method='min')
+        )
+
+        # 9. Clean up model-rank columns
+        model_rank_cols = [c for c in final_ranking if c.startswith('rank_')]
+        for col in model_rank_cols:
+            final_ranking[col] = final_ranking[col].apply(
+                lambda x: int(x) if pd.notna(x) else np.nan
+            )
+
+        # 10. Sort and select top N
+        result = (
+            final_ranking
+            .sort_values(by=['avg_rank','avg_norm_importance'], ascending=[True, False])
+        )
+
+        return result

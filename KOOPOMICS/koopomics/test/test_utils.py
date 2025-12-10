@@ -8,17 +8,16 @@ This module provides evaluation and testing utilities for Koopman models, includ
 Author: KOOPOMICS Team
 """
 
-import pandas as pd
-import numpy as np
-import torch
-import torch.nn as nn
-import matplotlib.pyplot as plt
-from IPython.display import clear_output
-import json
-import seaborn as sns
-from mpl_toolkits.mplot3d import Axes3D
+from koopomics.utils import torch, pd, np, wandb
+from typing import Optional, Dict, Any, List
 
-from ..training.KoopmanMetrics import KoopmanMetricsMixin
+import torch.nn as nn
+
+from ..training.koopman_metrics import KoopmanMetricsMixin
+
+import logging
+
+logger = logging.getLogger("koopomics")
 
 
 class NaiveMeanPredictor(nn.Module):
@@ -161,8 +160,297 @@ class NaiveMeanPredictor(nn.Module):
         else:
             raise ValueError("Input must be either 2D or 3D.")
 
+"""
+🧮 Evaluator
+============
+
+Unified evaluation module for KOOPOMICS models.
+
+Computes:
+- Forward & backward prediction losses
+- Reconstruction, consistency & stability metrics
+- Embedding-only evaluation
+- Baseline comparison and ratios
+
+Fully compatible with unified `Training_Settings`
+and all Koopman trainers.
+"""
 
 class Evaluator(KoopmanMetricsMixin):
+    """🧮 Unified evaluator for Koopman models and baselines."""
+
+    def __init__(self, model: torch.nn.Module, train_loader, test_loader, settings):
+        """
+        Parameters
+        ----------
+        model : torch.nn.Module
+            Koopman model (defines `.embedding` and `.operator`).
+        train_loader, test_loader : DataLoader
+            Data for evaluation.
+        settings : Training_Settings
+            Unified runtime configuration object.
+        """
+        # Core
+        self.model = model
+        self.train_loader = train_loader
+        self.test_loader = test_loader
+        self.settings = settings
+
+        # Runtime + hyper settings
+        self.device = settings.runtime.device
+        self.mask_value = settings.hyper.mask_value
+        self.max_Kstep = settings.hyper.max_Kstep
+        self.loss_weights = settings.hyper.loss_weights
+        self.effective_loss_weights = self.loss_weights.copy()
+
+        # Criterion & baseline
+        self.criterion = settings.runtime.criterion  # ✅ unified masked criterion
+        self.baseline = getattr(settings.baseline, "model", None)
+
+        # Device sync
+        self.model.to(self.device)
+        if self.baseline is not None:
+            self.baseline.to(self.device)
+
+    # ==================================================================
+    # 🚀 MAIN EVALUATION ENTRY
+    # ==================================================================
+    def __call__(self, train_metrics: bool = False):
+        """Evaluate test set (and optionally train set), with optional baseline ratio."""
+        train_metrics_dict = self.evaluate(self.train_loader) if train_metrics else {}
+        test_metrics_dict = self.evaluate(self.test_loader)
+        baseline_metrics = {}
+
+        if self.baseline is not None:
+            baseline_metrics = self.evaluate_baseline()
+            base_loss = (baseline_metrics["forward_loss"] + baseline_metrics["backward_loss"]) / 2
+            test_loss = (test_metrics_dict["forward_loss"] + test_metrics_dict["backward_loss"]) / 2
+            ratio = (base_loss - test_loss) / base_loss if base_loss > 0 else 0.0
+            test_metrics_dict["baseline_ratio"] = ratio
+
+        logger.info(
+            f"✅ Eval done | FWD={test_metrics_dict['forward_loss']:.6f}, "
+            f"BWD={test_metrics_dict['backward_loss']:.6f}, "
+            f"Baseline ratio={test_metrics_dict.get('baseline_ratio', 0):.4f}"
+        )
+
+        return train_metrics_dict, test_metrics_dict, baseline_metrics
+
+    # ==================================================================
+    # 🔬 CORE EVALUATION LOOP
+    # ==================================================================
+    def evaluate(self, loader):
+        """Compute losses on a given loader using settings-driven config."""
+        self.model.eval()
+        total = self._init_loss_dict()
+
+        with torch.no_grad():
+            for data_seq in loader:
+                input_fwd = data_seq[0].to(self.device)
+                input_bwd = data_seq[-1].to(self.device)
+                rev_seq = torch.flip(data_seq, dims=[0])
+
+                # temporal consistency buffers if requested
+                if self.loss_weights.get("tempcons", 0) > 0 and self.max_Kstep > 1:
+                    self.temporal_cons_fwd_storage = torch.zeros(self.max_Kstep, *input_fwd.shape, device=self.device)
+                    self,temporal_cons_bwd_storage = torch.zeros(self.max_Kstep, *input_bwd.shape, device=self.device)
+
+                # multi-step prediction
+                for step in range(1, self.max_Kstep + 1):
+                    self.current_step = step
+                    if self.loss_weights.get("fwd", 0) > 0:
+                        tgt = data_seq[step].to(self.device)
+                        lf, lz = self.compute_forward_loss(input_fwd, tgt, fwd=step)
+                        total["fwd"] += lf
+                        total["latent"] += lz
+                    if self.loss_weights.get("bwd", 0) > 0:
+                        tgt = rev_seq[step].to(self.device)
+                        lb, lz = self.compute_backward_loss(input_bwd, tgt, bwd=step)
+                        total["bwd"] += lb
+                        total["latent"] += lz
+
+                # reconstruction + regularization terms
+                if self.loss_weights.get("identity", 0) > 0:
+                    total["identity"] += self.compute_identity_loss(input_fwd, input_fwd)
+                if self.loss_weights.get("invcons", 0) > 0:
+                    total["invcons"] += self.compute_inverse_consistency(input_fwd, None)
+                if self.loss_weights.get("tempcons", 0) > 0 and self.max_Kstep > 1:
+                    total["tempcons"] += (
+                        self.compute_temporal_consistency(temporal_cons_fwd_storage)
+                        + self.compute_temporal_consistency(temporal_cons_bwd_storage, bwd=True)
+                    ) * 0.5
+
+        # unbiased normalization by sample count
+        denom = max(1, sum(len(batch) for batch in loader))
+        for k in total.keys():
+            total[k] /= denom
+
+        prediction_loss = (total["fwd"] + total["bwd"]) / 2
+
+        return {
+            "forward_loss": total["fwd"].detach(),
+            "backward_loss": total["bwd"].detach(),
+            "reconstruction_loss": total["identity"].detach(),
+            "prediction_loss": prediction_loss.detach(),
+            "total_loss": self.calculate_total_loss(
+                total["fwd"], total["bwd"], total["latent"],
+                total["identity"], total["orth"],
+                total["invcons"], total["tempcons"], total["stability"]
+            ).detach(),
+        }
+
+    # ==================================================================
+    # 🧩 BASELINE (PREDICTION) EVALUATION
+    # ==================================================================
+    def evaluate_baseline(self):
+        """Evaluate the baseline model’s forward/backward prediction MSE."""
+        if self.baseline is None:
+            logger.warning("⚠️ Baseline not initialized; skipping baseline evaluation.")
+            return {"forward_loss": torch.tensor(0.0), "backward_loss": torch.tensor(0.0)}
+
+        self.baseline.eval()
+        total_fwd = torch.tensor(0.0, device=self.device)
+        total_bwd = torch.tensor(0.0, device=self.device)
+
+        with torch.no_grad():
+            for data_seq in self.test_loader:
+                input_fwd = data_seq[0].to(self.device)
+                input_bwd = data_seq[-1].to(self.device)
+                rev_seq = torch.flip(data_seq, dims=[0])
+
+                for step in range(self.max_Kstep):
+                    tgt_fwd = data_seq[step + 1].to(self.device)
+                    tgt_bwd = rev_seq[step + 1].to(self.device)
+                    if self.loss_weights.get("fwd", 0) > 0:
+                        total_fwd += self.criterion(self.baseline(input_fwd), tgt_fwd)
+                    if self.loss_weights.get("bwd", 0) > 0:
+                        total_bwd += self.criterion(self.baseline(input_bwd), tgt_bwd)
+
+        denom = max(1, sum(len(batch) for batch in self.test_loader))
+        return {
+            "forward_loss": (total_fwd / denom).detach(),
+            "backward_loss": (total_bwd / denom).detach(),
+        }
+
+    # ==================================================================
+    # 🎯 EMBEDDING-ONLY EVALUATION
+    # ==================================================================
+    def metrics_embedding(self):
+        """Evaluate embedding reconstruction (optionally vs baseline)."""
+        model_metrics = self.evaluate_embedding()
+        baseline_metrics = self.evaluate_baseline_embedding() if self.baseline else {}
+        return model_metrics, baseline_metrics
+
+    def evaluate_embedding(self):
+        """Reconstruction loss of the embedding module."""
+        self.model.eval()
+        total = torch.tensor(0.0, device=self.device)
+        with torch.no_grad():
+            for data_seq in self.test_loader:
+                for step in range(data_seq.shape[0]):
+                    x = data_seq[step].to(self.device)
+                    total += self.compute_identity_loss(x, x)
+        avg = total / max(1, len(self.test_loader))
+        return {"identity_loss": avg.detach()}
+
+    def evaluate_baseline_embedding(self):
+        """Reconstruction loss using the baseline network."""
+        if self.baseline is None:
+            return {"identity_loss": torch.tensor(0.0)}
+        self.baseline.eval()
+        total = torch.tensor(0.0, device=self.device)
+        with torch.no_grad():
+            for data_seq in self.test_loader:
+                for step in range(data_seq.shape[0]):
+                    x = data_seq[step].to(self.device)
+                    out = self.baseline(x)
+                    total += self.criterion(out, x)
+        avg = total / max(1, len(self.test_loader))
+        return {"identity_loss": avg.detach()}
+
+    # ==================================================================
+    # 🔎 FEATURE-WISE PREDICTION ERRORS
+    # ==================================================================
+
+    def compute_prediction_errors(self, loader=None, feature_names=None, per_feature=True):
+        """
+        Compute per-feature forward/backward prediction errors using
+        the same criterion type as training (with reduction='none').
+        """
+        self.model.eval()
+        loader = loader or self.test_loader
+
+        # 🔧 Dynamically instantiate the same loss function but with reduction='none'
+        crit_class = getattr(torch.nn, self.settings.hyper.criterion_name)
+        crit_none = crit_class(reduction="none")
+        crit_none = self.masked_criterion(crit_none, mask_value=self.mask_value)
+
+        total_fwd = torch.tensor(0.0, device=self.device)
+        total_bwd = torch.tensor(0.0, device=self.device)
+        n_batches = 0
+        fwd_feat_sum = bwd_feat_sum = None
+
+        with torch.no_grad():
+            for data_seq in loader:
+                n_batches += 1
+                input_fwd = data_seq[0].to(self.device)
+                input_bwd = data_seq[-1].to(self.device)
+                rev_seq = torch.flip(data_seq, dims=[0])
+
+                if per_feature and fwd_feat_sum is None:
+                    n_feat = input_fwd.shape[-1]
+                    fwd_feat_sum = torch.zeros(n_feat, device=self.device)
+                    bwd_feat_sum = torch.zeros(n_feat, device=self.device)
+
+                for step in range(1, self.max_Kstep + 1):
+                    tgt_fwd = data_seq[step].to(self.device)
+                    tgt_bwd = rev_seq[step].to(self.device)
+
+                    _, fwd_seq = self.model.predict(input_fwd, fwd=step)
+                    fwd_pred = fwd_seq[-1]
+
+                    bwd_seq, _ = self.model.predict(input_bwd, bwd=step)
+                    bwd_pred = bwd_seq[-1]
+
+                    # ✅ Apply dynamically created criterion
+                    per_elem_fwd = crit_none(fwd_pred, tgt_fwd)
+                    per_elem_bwd = crit_none(bwd_pred, tgt_bwd)
+
+                    total_fwd += per_elem_fwd.mean()
+                    total_bwd += per_elem_bwd.mean()
+
+                    if per_feature:
+                        reduce_dims = tuple(range(per_elem_fwd.dim() - 1))
+                        fwd_feat_sum += per_elem_fwd.mean(dim=reduce_dims)
+                        bwd_feat_sum += per_elem_bwd.mean(dim=reduce_dims)
+
+        denom = max(1, n_batches * self.max_Kstep)
+        result = {
+            "total_fwd_loss": float((total_fwd / denom).item()),
+            "total_bwd_loss": float((total_bwd / denom).item()),
+        }
+
+        if per_feature and fwd_feat_sum is not None:
+            fwd_vec = (fwd_feat_sum / denom).tolist()
+            bwd_vec = (bwd_feat_sum / denom).tolist()
+            if feature_names and len(feature_names) == len(fwd_vec):
+                result["fwd_feature_errors"] = dict(zip(feature_names, map(float, fwd_vec)))
+                result["bwd_feature_errors"] = dict(zip(feature_names, map(float, bwd_vec)))
+            else:
+                result["fwd_feature_errors"] = {i: float(v) for i, v in enumerate(fwd_vec)}
+                result["bwd_feature_errors"] = {i: float(v) for i, v in enumerate(bwd_vec)}
+        return result
+
+    # ==================================================================
+    # ⚙️ HELPERS
+    # ==================================================================
+    def _init_loss_dict(self):
+        """Zero-init all accumulators (same keys as trainers)."""
+        return {k: torch.tensor(0.0, device=self.device) for k in [
+            "fwd", "bwd", "latent", "identity", "orth", "invcons", "tempcons", "stability"
+        ]}
+
+class Evaluator_(KoopmanMetricsMixin):
     """
     Class for evaluating Koopman models and computing various performance metrics.
     
@@ -218,7 +506,8 @@ class Evaluator(KoopmanMetricsMixin):
         
         # Set loss weights
         self.loss_weights = kwargs.get('loss_weights', [1, 1, 1, 1, 1, 1])
-        
+        self.effective_loss_weights = self.loss_weights
+
         # Initialize state
         self.current_step = 0
         self.metrics = {}
@@ -309,7 +598,7 @@ class Evaluator(KoopmanMetricsMixin):
                 reverse_data_list = torch.flip(data_list, dims=[0])
     
                 # Get reconstruction loss
-                if self.loss_weights[3] >0:
+                if self.loss_weights["identity"] >0:
 
                     embedded_output, identity_output = self.model.embed(input_fwd)
                     reconstruction_loss = self.criterion(identity_output, input_fwd)
@@ -323,7 +612,7 @@ class Evaluator(KoopmanMetricsMixin):
     
                     # Initialize temporal consistency storage if needed
                     # Ensure proper device for temporal consistency storage
-                    if self.max_Kstep > 1 and self.loss_weights[5] > 0:
+                    if self.max_Kstep > 1 and self.loss_weights["tempcons"] > 0:
                         # Create storage tensors directly on the same device as input
                         self.temporal_cons_fwd_storage = torch.zeros(
                             self.max_Kstep, *input_fwd.shape,
@@ -337,31 +626,31 @@ class Evaluator(KoopmanMetricsMixin):
                         )
     
                     # Compute forward prediction loss
-                    if self.loss_weights[0] > 0:
+                    if self.loss_weights["fwd"] > 0:
                         loss_fwd_step, loss_latent_fwd_identity_step = self.compute_forward_loss(input_fwd, target_fwd, fwd=step)
                         loss_fwd_batch += loss_fwd_step
                         loss_latent_identity_batch += loss_latent_fwd_identity_step
     
                     # Compute backward prediction loss
-                    if self.loss_weights[1] > 0:
+                    if self.loss_weights["bwd"] > 0:
                         loss_bwd_step, loss_latent_bwd_identity_step = self.compute_backward_loss(input_bwd, target_bwd, bwd=step)
                         loss_bwd_batch += loss_bwd_step
                         loss_latent_identity_batch += loss_latent_bwd_identity_step
     
                     # Compute identity loss
-                    if self.loss_weights[3] > 0:
+                    if self.loss_weights["identity"] > 0:
                         loss_identity_step = (self.compute_identity_loss(input_fwd, target_fwd) +
                                              self.compute_identity_loss(input_bwd, target_bwd)) / 2
                         loss_identity_batch += loss_identity_step
     
                     # Compute inverse consistency loss
-                    if self.loss_weights[4] > 0:
+                    if self.loss_weights["invcons"] > 0:
                         loss_inv_cons_step = (self.compute_inverse_consistency(input_fwd, target_fwd) +
                                             self.compute_inverse_consistency(input_bwd, target_bwd)) / 2
                         loss_inv_cons_batch += loss_inv_cons_step
     
                     # Compute temporal consistency loss
-                    if self.loss_weights[5] > 0 and self.current_step > 1:
+                    if self.loss_weights["tempcons"] > 0 and self.current_step > 1:
                         loss_temp_cons_step = (self.compute_temporal_consistency(self.temporal_cons_fwd_storage) +
                                               self.compute_temporal_consistency(self.temporal_cons_bwd_storage, bwd=True)) / 2
                         loss_temp_cons_batch += loss_temp_cons_step
@@ -426,13 +715,13 @@ class Evaluator(KoopmanMetricsMixin):
                     target_bwd = reverse_data_list[step + 1].to(self.device)
     
                     # Forward prediction
-                    if self.loss_weights[0] > 0:
+                    if self.loss_weights["fwd"] > 0:
                         baseline_output = self.baseline(input_fwd)
                         loss_fwd = self.criterion(baseline_output, target_fwd)
                         loss_fwd_batch += loss_fwd
                         
                     # Backward prediction
-                    if self.loss_weights[1] > 0:
+                    if self.loss_weights["bwd"] > 0:
                         baseline_output = self.baseline(input_bwd)
                         loss_bwd = self.criterion(baseline_output, target_bwd)
                         loss_bwd_batch += loss_bwd

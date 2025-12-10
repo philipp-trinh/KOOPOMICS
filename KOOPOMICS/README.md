@@ -138,34 +138,3 @@ w_fwd, v_fwd, w_bwd, v_bwd = model.get_eigenvalues(plot=True)
 # Get embeddings for data
 embeddings = model.get_embeddings(data, feature_list=features, replicate_id="sample_id")
 ```
-
-## Examples
-
-See the `examples/` directory for detailed examples:
-
-- Basic usage with synthetic data
-- Analysis of metabolomic data
-- Visualizing Koopman dynamics
-
-## Documentation
-
-For more detailed information, see the documentation in the `docs/` directory.
-
-## Citation
-
-If you use KOOPOMICS in your research, please cite:
-
-```
-@article{koopomics2025,
-  title={KOOPOMICS: Koopman Operator Learning for OMICS Time Series Analysis},
-  author={Author, A. and Author, B.},
-  journal={Journal of Computational Biology},
-  year={2025},
-  volume={1},
-  pages={1--10}
-}
-```
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
